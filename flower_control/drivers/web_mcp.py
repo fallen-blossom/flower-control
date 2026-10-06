@@ -122,6 +122,39 @@ class WebMcpRuntime:
     def _diagnostic(self, task):
         return lambda details: self.store.record_event("web_lifecycle", task=task, details=details)
 
+    async def close_connection(self, tasks: frozenset[str]) -> None:
+        """Close only owned sessions on normal EOF; keep Stop and unknown effects."""
+        for session_id, record in tuple(self.sessions.items()):
+            if record.task not in tasks or record.closed:
+                continue
+            try:
+                if record.browser.persistent_profile is None:
+                    result = await self.close_temp(record.task, session_id)
+                elif record.browser.profile_kind == "ai":
+                    result = await self.close_ai(record.task, session_id)
+                else:
+                    continue
+                self.store.record_event("web_connection_cleanup", task=record.task,
+                    details={"session_id": session_id, "closed": result.get("closed") is True,
+                             "reason": result.get("reason"), "state": result.get("state")})
+            except Exception as error:
+                self.store.record_event("web_connection_cleanup", task=record.task,
+                    details={"session_id": session_id, "closed": False,
+                             "reason": error.code if isinstance(error, ControlError) else "cleanup_failed"})
+        for login_id, browser in tuple(self._logins.items()):
+            if browser.owner_task not in tasks or browser.profile_kind != "ai":
+                continue
+            try:
+                result = await self.cancel_ai_login(browser.owner_task, login_id)
+                if result.get("state") == "cancel_pending_user_close":
+                    await browser.disconnect()  # Keep the human's login window.
+                self.store.record_event("web_connection_login_cleanup", task=browser.owner_task,
+                    details={"login_id": login_id, "state": result.get("state")})
+            except Exception as error:
+                self.store.record_event("web_connection_login_cleanup", task=browser.owner_task,
+                    details={"login_id": login_id, "state": "cleanup_failed",
+                             "reason": error.code if isinstance(error, ControlError) else "cleanup_failed"})
+
     def _lifecycle(self, record, phase, trigger):
         if isinstance(record.browser, TemporaryWebSession):
             record.browser.record_lifecycle(phase, trigger=trigger)

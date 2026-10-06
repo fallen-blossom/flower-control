@@ -565,8 +565,13 @@ async def flower_web_close_ai(session_id: str, flower_origin: dict | None = None
 
 from .mcp_argument_adapter import preserve_literal_string_arguments
 preserve_literal_string_arguments(server)
-from .antigravity_adapter import install_antigravity_adapter
-install_antigravity_adapter(server, "flower-web")
+from .connection_adapter import install_connection_adapter
+
+async def _close_connection(tasks):
+    if _runtime is not None:
+        await _runtime.close_connection(tasks)
+
+install_connection_adapter(server, "flower-web", cleanup=_close_connection)
 
 
 if __name__ == "__main__":

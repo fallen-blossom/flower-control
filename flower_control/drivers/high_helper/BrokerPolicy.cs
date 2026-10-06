@@ -59,10 +59,12 @@ internal sealed record BrokerPolicy
                 throw new Boundary("policy_rejected");
             foreach (var host in value.NativeHosts)
             {
-                var expectedName = host.Kind switch { "claude-code" => "claude.exe", "antigravity" => "Antigravity.exe", _ => "" };
+                var expectedName = host.Kind switch { "claude-code" => "claude.exe", "antigravity" => "Antigravity.exe",
+                    "local-mcp" => Path.GetFileName(host.Path), _ => "" };
                 if (expectedName == "" || !Path.IsPathFullyQualified(host.Path)
                     || !Path.GetFileName(host.Path).Equals(expectedName, StringComparison.OrdinalIgnoreCase)
                     || host.Path.Contains('*') || host.Path.Contains('?')
+                    || host.Kind == "local-mcp" && !ConnectionHostImageAllowed(expectedName)
                     || !Regex.IsMatch(host.Sha256, "^[a-f0-9]{64}$"))
                     throw new Boundary("policy_rejected");
                 RejectLinks(host.Path);
@@ -75,6 +77,10 @@ internal sealed record BrokerPolicy
         }
         return value;
     }
+    // Pin an actual native client, never a general-purpose interpreter/shell.
+    internal static bool ConnectionHostImageAllowed(string name) =>
+        new[] { "Cursor.exe", "Code.exe", "Code - Insiders.exe", "opencode.exe", "Antigravity.exe", "claude.exe" }
+            .Contains(name, StringComparer.OrdinalIgnoreCase);
     internal static void RejectLinks(string path)
     {
         var item = new FileInfo(path);
@@ -160,7 +166,7 @@ internal static class ClientAdmission
         }
         throw new Boundary("codex_launch_chain_unverified");
     }
-    internal static int LaunchFlower(BrokerPolicy policy, string channel, bool probe = false)
+    internal static int LaunchFlower(BrokerPolicy policy, string channel, bool probe = false, bool connection = false)
     {
         if (policy.Fixture) throw new Boundary("fixture_launcher_rejected");
         // No script/argv surface: this one protected bootstrap selects one fixed module.
@@ -169,7 +175,10 @@ internal static class ClientAdmission
         var info = new ProcessStartInfo(policy.Python.Path) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = policy.Repository };
         // Display metadata only. Never use this environment field for admission.
         info.Environment["FLOWER_OPERATOR_HOST"] = admission.Evidence.Source switch
-        { "claude-code-flower" => "claude-code", "antigravity-flower" => "antigravity", _ => "codex" };
+        { "claude-code-flower" => "claude-code", "antigravity-flower" => "antigravity", "local-mcp-flower" => "local-mcp", _ => "codex" };
+        // Select explicitly; an absent/failed Hook must never downgrade itself.
+        info.Environment["FLOWER_ORIGIN_MODE"] = connection || admission.Evidence.Source is "antigravity-flower" or "local-mcp-flower"
+            ? "connection" : "hook";
         info.ArgumentList.Add("-I");
         info.ArgumentList.Add(Path.Combine(policy.Directory, "flower_bootstrap.py"));
         info.ArgumentList.Add(channel);

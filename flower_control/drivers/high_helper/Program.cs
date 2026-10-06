@@ -194,6 +194,8 @@ internal static class Program
                 return BrokerHost.Run(BrokerPolicy.Load(args[1], true));
             if (args.Length == 2 && args[0] == "--flower-client")
                 return ClientAdmission.LaunchFlower(BrokerPolicy.Load(Path.Combine(AppContext.BaseDirectory, "broker.json"), false), args[1]);
+            if (args.Length == 2 && args[0] == "--flower-connection-client")
+                return ClientAdmission.LaunchFlower(BrokerPolicy.Load(Path.Combine(AppContext.BaseDirectory, "broker.json"), false), args[1], connection: true);
             if (args.Length == 2 && args[0] == "--flower-probe")
                 return ClientAdmission.LaunchFlower(BrokerPolicy.Load(Path.Combine(AppContext.BaseDirectory, "broker.json"), false), args[1], probe: true);
             if (args.Length == 2 && args[0] == "--flower-admin")

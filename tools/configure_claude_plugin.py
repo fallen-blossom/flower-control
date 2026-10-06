@@ -35,14 +35,16 @@ def prepared_configuration(package: Path, output: Path, source_root: Path, *, ho
     policy_path = package / "versions" / version / "broker.json"
     policy = json.loads(policy_path.read_bytes())
     hosts = prep.get("native_hosts")
-    host_names = {"claude-code": "claude.exe", "antigravity": "antigravity.exe"}
-    if (host_kind not in host_names or not isinstance(hosts, list) or not hosts
-            or not any(isinstance(h, dict) and h.get("Kind") == host_kind for h in hosts)
+    host_names = {"claude-code": {"claude.exe"}, "antigravity": {"antigravity.exe"},
+                  "local-mcp": {"cursor.exe", "code.exe", "code - insiders.exe", "opencode.exe", "antigravity.exe", "claude.exe"}}
+    if (host_kind not in {*host_names, "codex"} or not isinstance(hosts, list)
+            or (host_kind != "codex" and not any(isinstance(h, dict) and h.get("Kind") == host_kind for h in hosts))
+            or (host_kind == "codex" and not (policy.get("CodexPackageFamilies") or policy.get("CodexImageRoots")))
             or policy.get("NativeHosts") != hosts
             or policy.get("Version") != version or Path(policy.get("Repository", "")).resolve() != root
             or any(type(h) is not dict or set(h) != {"Kind", "Path", "Sha256"}
                    or h["Kind"] not in host_names or not Path(h["Path"]).is_absolute()
-                   or Path(h["Path"]).name.lower() != host_names[h["Kind"]]
+                   or Path(h["Path"]).name.lower() not in host_names[h["Kind"]]
                    or not re.fullmatch(r"[a-f0-9]{64}", h["Sha256"]) for h in hosts)):
         raise ValueError("prepared_native_host_policy_required")
     if set(entries.get("mcpServers", {})) != set(CHANNELS):

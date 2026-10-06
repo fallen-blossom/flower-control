@@ -76,7 +76,7 @@ class HostToolCall:
     tool_input: Mapping[str, Any]
     hook_origin: Literal["trusted_hook", "trusted_connection", "unknown"] = "unknown"
     cwd: str | None = None  # Actual PreToolUse cwd; never read from MCP arguments.
-    host: Literal["codex", "claude-code", "antigravity"] = "codex"
+    host: Literal["codex", "claude-code", "antigravity", "local-connection"] = "codex"
 
 
 @dataclass(frozen=True)
@@ -211,7 +211,7 @@ class OriginLedger:
                 db.execute("INSERT INTO origin_task_boots VALUES (?,?)", (row["id"], epoch))
 
     def _prepare(self, call: HostToolCall) -> tuple[str, str]:
-        if call.hook_origin != ("trusted_connection" if call.host == "antigravity" else "trusted_hook"):
+        if call.hook_origin != ("trusted_connection" if call.host in ("antigravity", "local-connection") else "trusted_hook"):
             raise OriginError("hook_origin_unverified")
         session = _identifier(call.session_id, "session_id")
         _identifier(call.turn_id, "turn_id")
@@ -219,7 +219,7 @@ class OriginLedger:
         name = _identifier(call.tool_name, "tool_name")
         if name not in self.allowed_tools:
             raise OriginError("tool_not_allowed")
-        if call.host not in ("codex", "claude-code", "antigravity"):
+        if call.host not in ("codex", "claude-code", "antigravity", "local-connection"):
             raise OriginError("host_unrecognized")
         # Preserve existing Codex bindings; another host never inherits them.
         domain = (b"flower-session-v1\0" if call.host == "codex"

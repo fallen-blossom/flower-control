@@ -30,7 +30,7 @@ Codex 可以在一个任务里组合使用它们，例如先用 Web 编辑网页
 
 ## 安装与使用
 
-另附 [Windows 原生 Claude Code](docs/CLAUDE_CODE.zh-CN.md) 和 [反重力 IDE 基础接入](docs/ANTIGRAVITY.zh-CN.md)的源码适配，尚未构建、测试或安装。反重力按连接处理任务，不开放个人浏览器工具。下面的 Codex 实测结果不覆盖这些新接入。
+另附 [Windows 原生 Claude Code](docs/CLAUDE_CODE.zh-CN.md)、[反重力 IDE](docs/ANTIGRAVITY.zh-CN.md)和 [Cursor／VS Code／原生 OpenCode 共用接入](docs/LOCAL_CLIENTS.zh-CN.md)的源码及配置生成器。共用入口已做协议检查和助手构建；这些客户端尚未完成真实任务验收或安装。连接模式不开放私人 profile，也暂不支持同一目标跨通道接管。下面的 Codex 实测结果不覆盖这些客户端。
 
 当前准备发布的是 **Windows 源码预览版**。先看[安装教程](docs/INSTALL.zh-CN.md)，再看[浏览器登录教程](docs/BROWSER_PROFILES.zh-CN.md)。主要环境是 Windows 11 x64、当前 Codex 桌面版、CPython 3.14 x64 和 .NET 10 SDK；Web 通道另需标准系统路径安装的 Brave。Windows 10 和其它宿主的验收覆盖较少。
 

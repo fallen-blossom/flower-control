@@ -30,7 +30,7 @@ Press **Ctrl+Alt+9** to stop writes. Computer control shows a moving border, an 
 
 ## Start here
 
-Source adapters are included for [native Windows Claude Code](docs/CLAUDE_CODE.md) and a [reduced Antigravity IDE integration](docs/ANTIGRAVITY.md). They have not been built, tested, or installed. Antigravity uses connection scope and does not expose personal browser tools. The Codex runtime evidence below does not validate these adapters.
+Source adapters are included for [native Windows Claude Code](docs/CLAUDE_CODE.md) and [Antigravity](docs/ANTIGRAVITY.md), with a [shared local entry and configuration generator](docs/LOCAL_CLIENTS.md) for native Cursor, VS Code, and OpenCode. The shared entry has protocol checks and a helper build; individual clients have not completed real task acceptance or installation. Connection mode excludes private profiles and same-target cross-channel handoff. The Codex runtime evidence below does not validate these clients.
 
 This is a **Windows source preview**. Start with [installation](docs/INSTALL.md), then read [browser profiles and login](docs/BROWSER_PROFILES.md). The setup uses a current Codex desktop installation, Windows 11 x64, CPython 3.14 x64, and .NET 10 SDK. The Web channel also needs Brave at its standard system installation path. Windows 10 and other hosts have not received the same acceptance coverage.
 

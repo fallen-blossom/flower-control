@@ -38,7 +38,7 @@ def _peer_evidence_shape(evidence):
              "LauncherPid", "LauncherCreated", "CodexPid"}
     if type(evidence) is not dict:
         return False
-    return set(evidence) == (names | {"HostPid"} if evidence.get("Source") in {"claude-code-flower", "antigravity-flower"} else names)
+    return set(evidence) == (names | {"HostPid"} if evidence.get("Source") in {"claude-code-flower", "antigravity-flower", "local-mcp-flower"} else names)
 
 
 def _production_host_evidence(evidence):
@@ -47,7 +47,7 @@ def _production_host_evidence(evidence):
     source = evidence.get("Source")
     if source == "codex-flower":
         pid = evidence.get("CodexPid")
-    elif source in {"claude-code-flower", "antigravity-flower"} and evidence.get("CodexPid") is None:
+    elif source in {"claude-code-flower", "antigravity-flower", "local-mcp-flower"} and evidence.get("CodexPid") is None:
         pid = evidence.get("HostPid")
     else:
         return False
@@ -769,7 +769,7 @@ class HighHelperClient:
                     "running": True, "connected": True, "paused": facts["paused"], "high_token_verified": True,
                     "actual_integrity_rid": session._helper["Integrity"], "source_admitted": True,
                     "high_control_available": available, "reason": reason, "status": dict(facts),
-                    **({"host_source": session._evidence["Source"]} if session._evidence["Source"] != "codex-flower" else {})}
+                    "host_source": session._evidence["Source"]}
         except HighHelperError as error:
             return {**result, "state": "not_connected" if result["installed"] is True else "installation_unverified",
                     "reason": error.code}

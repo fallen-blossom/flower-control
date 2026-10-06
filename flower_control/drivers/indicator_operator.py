@@ -74,6 +74,9 @@ def resolve_operator_at(home: Path | None) -> dict:
 
 
 def resolve_operator() -> dict:
+    if os.environ.get('FLOWER_OPERATOR_HOST') == 'local-mcp':
+        return {'label': 'AI Agent', 'model': None, 'provider': None,
+                'source': 'native-host', 'config_path': None}
     if os.environ.get('FLOWER_OPERATOR_HOST') == 'antigravity':
         return {'label': 'Antigravity', 'model': None, 'provider': None,
                 'source': 'host', 'config_path': None}

@@ -73,7 +73,7 @@ def validate_build_evidence(evidence_path, binary_directory, source_hashes, bina
     return evidence
 
 
-def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_evidence, output=None, codex_roots=(), claude_images=(), antigravity_images=()):
+def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_evidence, output=None, codex_roots=(), claude_images=(), antigravity_images=(), local_mcp_images=()):
     sys.path.insert(0, str(repository))
     from flower_control.drivers.high_helper import _process, _BUNDLE_NAMES, _KERNEL
     from ctypes import wintypes
@@ -111,9 +111,12 @@ def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_ev
             raise ValueError("codex_install_root_rejected")
     native_hosts = []
     for kind, image in ([('claude-code', image) for image in claude_images]
-                        + [('antigravity', image) for image in antigravity_images]):
+                        + [('antigravity', image) for image in antigravity_images]
+                        + [('local-mcp', image) for image in local_mcp_images]):
         image = Path(image)
-        expected_name = 'claude.exe' if kind == 'claude-code' else 'antigravity.exe'
+        expected_name = {'claude-code': 'claude.exe', 'antigravity': 'antigravity.exe'}.get(kind, image.name.lower())
+        if kind == 'local-mcp' and expected_name not in {'cursor.exe', 'code.exe', 'code - insiders.exe', 'opencode.exe', 'antigravity.exe', 'claude.exe'}:
+            raise ValueError("native_mcp_client_required_not_interpreter")
         if not image.is_absolute() or image.name.lower() != expected_name or not image.is_file():
             raise ValueError("native_host_image_required")
         for item in (image, *image.parents):
@@ -226,10 +229,12 @@ def main():
                         help="Opt in one exact native Windows claude.exe path and SHA-256; no install or start.")
     parser.add_argument("--antigravity-image", type=Path, action="append", default=[],
                         help="Opt in an exact Windows Antigravity.exe path and SHA-256; no install or start.")
+    parser.add_argument("--local-mcp-image", type=Path, action="append", default=[],
+                        help="Pin an exact native Cursor, VS Code or OpenCode executable; no general interpreter.")
     args = parser.parse_args()
     repository = Path(__file__).resolve().parents[1]
     package = prepare(args.native_bin.resolve(strict=True), repository, args.app_bin, args.app_build_evidence,
-                      args.native_build_evidence, args.output, args.codex_root, args.claude_image, args.antigravity_image)
+                      args.native_build_evidence, args.output, args.codex_root, args.claude_image, args.antigravity_image, args.local_mcp_image)
     print(json.dumps({"package": str(package), "system_changed": False, "installed": False}, ensure_ascii=False))
 
 

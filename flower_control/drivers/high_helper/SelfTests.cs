@@ -9,6 +9,11 @@ internal static class SelfTests
     {
         int assertions = 0;
         void Require(bool value) { ++assertions; if (!value) throw new Boundary("selftest_failed"); }
+        Require(BrokerPolicy.ConnectionHostImageAllowed("Cursor.exe"));
+        Require(BrokerPolicy.ConnectionHostImageAllowed("Code - Insiders.exe"));
+        Require(BrokerPolicy.ConnectionHostImageAllowed("opencode.exe"));
+        foreach (var image in new[] { "node.exe", "python.exe", "pwsh.exe", "powershell.exe", "cmd.exe", "unknown.exe" })
+            Require(!BrokerPolicy.ConnectionHostImageAllowed(image));
         long waitElapsed = 1999;
         int waitChecks = 0, waitSleeps = 0;
         foreach (long crossed in new long[] { 2001, 2002 })
