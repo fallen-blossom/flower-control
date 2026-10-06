@@ -1,0 +1,373 @@
+{
+  "schema": 1,
+  "python": [
+    {
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/annotated-types/annotated_types-0.8.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "anyio",
+      "version": "4.15.1",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/anyio/anyio-4.15.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "attrs",
+      "version": "26.1.0",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/attrs/attrs-26.1.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "license_expression": "MPL-2.0",
+      "license_files": [
+        "licenses/third-party/certifi/certifi-2026.7.22.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "cffi",
+      "version": "2.1.1",
+      "license_expression": "MIT-0",
+      "license_files": [
+        "licenses/third-party/cffi/cffi-2.1.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/click/click-8.5.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "cryptography",
+      "version": "50.0.1",
+      "license_expression": "Apache-2.0 OR BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/cryptography/cryptography-50.0.1.dist-info/licenses/LICENSE",
+        "licenses/third-party/cryptography/cryptography-50.0.1.dist-info/licenses/LICENSE.APACHE",
+        "licenses/third-party/cryptography/cryptography-50.0.1.dist-info/licenses/LICENSE.BSD"
+      ]
+    },
+    {
+      "name": "greenlet",
+      "version": "3.5.6",
+      "license_expression": "MIT AND PSF-2.0",
+      "license_files": [
+        "licenses/third-party/greenlet/greenlet-3.5.6.dist-info/licenses/LICENSE",
+        "licenses/third-party/greenlet/greenlet-3.5.6.dist-info/licenses/LICENSE.PSF"
+      ]
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/h11/h11-0.16.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/httpcore/httpcore-1.0.9.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/httpx/httpx-0.28.1.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "httpx-sse",
+      "version": "0.4.3",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/httpx-sse/httpx_sse-0.4.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "idna",
+      "version": "3.20",
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/idna/idna-3.20.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "jsonschema",
+      "version": "4.26.0",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/jsonschema/jsonschema-4.26.0.dist-info/licenses/COPYING"
+      ]
+    },
+    {
+      "name": "jsonschema-specifications",
+      "version": "2025.9.1",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/jsonschema-specifications/jsonschema_specifications-2025.9.1.dist-info/licenses/COPYING"
+      ]
+    },
+    {
+      "name": "mcp",
+      "version": "1.30.0",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/mcp/mcp-1.30.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pillow",
+      "version": "12.3.0",
+      "license_expression": "MIT-CMU",
+      "license_files": [
+        "licenses/third-party/pillow/pillow-12.3.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "playwright",
+      "version": "1.63.0",
+      "license_expression": "Apache-2.0",
+      "license_files": [
+        "licenses/third-party/playwright/playwright-1.63.0.dist-info/licenses/LICENSE",
+        "licenses/third-party/playwright/playwright/driver/LICENSE",
+        "licenses/third-party/playwright/playwright/driver/package/LICENSE",
+        "licenses/third-party/playwright/playwright/driver/package/NOTICE",
+        "licenses/third-party/playwright/playwright/driver/package/ThirdPartyNotices.txt",
+        "licenses/third-party/playwright/playwright/driver/package/lib/serverRegistry.js.LICENSE",
+        "licenses/third-party/playwright/playwright/driver/package/lib/utilsBundle.js.LICENSE",
+        "licenses/third-party/playwright/playwright/driver/package/lib/webp_codec.LICENSE"
+      ]
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/pycparser/pycparser-3.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pydantic",
+      "version": "2.13.5",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/pydantic/pydantic-2.13.5.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pydantic-core",
+      "version": "2.46.5",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/pydantic-core/pydantic_core-2.46.5.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pydantic-settings",
+      "version": "2.15.0",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/pydantic-settings/pydantic_settings-2.15.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pyee",
+      "version": "13.0.0",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/pyee/pyee-13.0.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "pyjwt",
+      "version": "2.15.0",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/pyjwt/pyjwt-2.15.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "python-dotenv",
+      "version": "1.2.3",
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/python-dotenv/python_dotenv-1.2.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "python-multipart",
+      "version": "0.0.32",
+      "license_expression": "Apache-2.0",
+      "license_files": [
+        "licenses/third-party/python-multipart/python_multipart-0.0.32.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "pywin32",
+      "version": "312",
+      "license_expression": "LicenseRef-pywin32-mixed",
+      "license_files": [
+        "licenses/third-party/pywin32/adodbapi/license.txt",
+        "licenses/third-party/pywin32/pythonwin/License.txt",
+        "licenses/third-party/pywin32/pythonwin/Scintilla-License.txt",
+        "licenses/third-party/pywin32/pythonwin/pywin/idle/LICENSE.txt",
+        "licenses/third-party/pywin32/pywin32-312.dist-info/licenses/adodbapi/license.txt",
+        "licenses/third-party/pywin32/pywin32-312.dist-info/licenses/com/License.txt",
+        "licenses/third-party/pywin32/pywin32-312.dist-info/licenses/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE",
+        "licenses/third-party/pywin32/pywin32-312.dist-info/licenses/pythonwin/License.txt",
+        "licenses/third-party/pywin32/pywin32-312.dist-info/licenses/pythonwin/Scintilla/License.txt",
+        "licenses/third-party/pywin32/pywin32-312.dist-info/licenses/pythonwin/pywin/idle/LICENSE.txt",
+        "licenses/third-party/pywin32/pywin32-312.dist-info/licenses/win32/License.txt",
+        "licenses/third-party/pywin32/win32/License.txt",
+        "licenses/third-party/pywin32/win32com/License.txt",
+        "licenses/third-party/pywin32/win32comext/License.txt",
+        "licenses/third-party/pywin32/win32comext/mapi/MAPIStubLibrary-License.txt",
+        "licenses/third-party/pywin32/win32comext/mapi/NOTICE.md"
+      ],
+      "component_license_note": "BSD-style Win32/COM bindings; separate PSF, MIT, Scintilla and LGPL-2.1 adodbapi notices. Flower has no adodbapi or Pythonwin import.",
+      "upstream_metadata_license": "PSF"
+    },
+    {
+      "name": "referencing",
+      "version": "0.37.0",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/referencing/referencing-0.37.0.dist-info/licenses/COPYING"
+      ]
+    },
+    {
+      "name": "rpds-py",
+      "version": "2026.6.3",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/rpds-py/rpds_py-2026.6.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "sse-starlette",
+      "version": "3.4.11",
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/sse-starlette/sse_starlette-3.4.11.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "starlette",
+      "version": "1.7.0",
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/starlette/starlette-1.7.0.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "license_expression": "PSF-2.0",
+      "license_files": [
+        "licenses/third-party/typing-extensions/typing_extensions-4.16.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "license_expression": "MIT",
+      "license_files": [
+        "licenses/third-party/typing-inspection/typing_inspection-0.4.4.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "uvicorn",
+      "version": "0.54.0",
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "licenses/third-party/uvicorn/uvicorn-0.54.0.dist-info/licenses/LICENSE.md"
+      ]
+    }
+  ],
+  "app_nuget": [
+    {
+      "name": "FlaUI.Core",
+      "version": "5.0.0",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "FlaUI.UIA3",
+      "version": "5.0.0",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "Interop.UIAutomationClient",
+      "version": "10.19041.0",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "Microsoft.Win32.SystemEvents",
+      "version": "8.0.0",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "System.CodeDom",
+      "version": "8.0.0",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "System.Configuration.ConfigurationManager",
+      "version": "8.0.1",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "System.Diagnostics.EventLog",
+      "version": "8.0.1",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "System.Diagnostics.PerformanceCounter",
+      "version": "8.0.1",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "System.Drawing.Common",
+      "version": "8.0.10",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "System.Management",
+      "version": "8.0.0",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "System.Security.Cryptography.ProtectedData",
+      "version": "8.0.0",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "System.Security.Permissions",
+      "version": "8.0.0",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "System.Windows.Extensions",
+      "version": "8.0.0",
+      "license_expression": "MIT"
+    }
+  ],
+  "source_only": true,
+  "bundled_dependency_binaries": false
+}

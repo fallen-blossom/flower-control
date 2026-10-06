@@ -1,0 +1,16 @@
+. (Join-Path $PSScriptRoot 'InstallCommon.ps1')
+# Read-only prerequisite check. Never reset Git or overwrite dirty sources.
+Assert-FlowerVersion $versionSource
+$saved = Get-Content -LiteralPath (Join-Path $packageRoot 'source-snapshot.json') -Raw | ConvertFrom-Json
+if ($saved.schema -ne 1) { throw 'source_snapshot_manifest_rejected' }
+Assert-FlowerNoLinks (Join-Path $packageRoot 'source-snapshot')
+foreach ($property in $saved.hashes.PSObject.Properties) {
+    $snapshotFile = Join-Path (Join-Path $packageRoot 'source-snapshot') $property.Name
+    if ((Get-FileHash -LiteralPath $snapshotFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $property.Value) { throw 'source_snapshot_hash_changed' }
+}
+$policy = Get-Content -LiteralPath (Join-Path $versionSource 'broker.json') -Raw | ConvertFrom-Json
+foreach ($property in $policy.SourceHashes.PSObject.Properties) {
+    if ($property.Name -ne '@bootstrap' -and $saved.hashes.($property.Name) -ne $property.Value) { throw 'source_snapshot_policy_mismatch' }
+}
+Assert-FlowerSource
+Write-Output ('matching_rollback_python_source:' + $version)

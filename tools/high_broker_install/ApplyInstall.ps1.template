@@ -1,0 +1,45 @@
+param([switch]$CompleteTaskRegistration)
+. (Join-Path $PSScriptRoot 'InstallCommon.ps1')
+# First-install recovery only. An existing task/version change still needs review.
+Assert-FlowerNoLinks $brokerRoot
+Assert-FlowerVersion $versionSource
+Assert-FlowerSource
+if ((Get-FileHash -LiteralPath (Join-Path $packageRoot 'task.xml') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $taskXmlHash) { throw 'task_xml_changed' }
+$existingTask = Get-FlowerTask
+if ($existingTask) { throw 'existing_task_requires_explicit_drain_update_review' }
+$activePath = Join-Path $brokerRoot 'active.json'
+
+if ($CompleteTaskRegistration) {
+    if (!(Test-Path -LiteralPath $activePath) -or !(Test-Path -LiteralPath $versionTarget)) { throw 'registration_resume_requires_published_version' }
+    if ((Get-FileHash -LiteralPath $activePath).Hash -ne (Get-FileHash -LiteralPath (Join-Path $packageRoot 'active.json')).Hash) { throw 'registration_resume_active_changed' }
+    Assert-FlowerVersion $versionTarget
+    Assert-FlowerAcl $brokerRoot
+    Assert-FlowerAcl (Join-Path $brokerRoot 'versions')
+    Assert-FlowerAcl $activePath
+    Assert-FlowerAcl $versionTarget
+    foreach ($item in Get-ChildItem -LiteralPath $versionTarget -Recurse -Force) { Assert-FlowerAcl $item.FullName }
+} else {
+    if (Test-Path -LiteralPath $activePath) { throw 'existing_installation_requires_explicit_update_review' }
+    if (Test-Path -LiteralPath $versionTarget) { throw 'version_target_already_exists' }
+    if ((Test-Path -LiteralPath $brokerRoot) -and @(Get-ChildItem -LiteralPath $brokerRoot -Force).Count -ne 0) { throw 'existing_installation_requires_explicit_update_review' }
+    New-Item -ItemType Directory -Path $brokerRoot -Force | Out-Null
+    Set-Acl -LiteralPath $brokerRoot -AclObject (New-FlowerAcl $true)
+    $versions = Join-Path $brokerRoot 'versions'
+    New-Item -ItemType Directory -Path $versions -Force | Out-Null
+    Set-Acl -LiteralPath $versions -AclObject (New-FlowerAcl $true)
+    Copy-Item -LiteralPath $versionSource -Destination $versionTarget -Recurse
+    Assert-FlowerVersion $versionTarget
+    Set-Acl -LiteralPath $versionTarget -AclObject (New-FlowerAcl $true)
+    foreach ($item in Get-ChildItem -LiteralPath $versionTarget -Recurse -Force) { Set-Acl -LiteralPath $item.FullName -AclObject (New-FlowerAcl $item.PSIsContainer) }
+    Copy-Item -LiteralPath (Join-Path $packageRoot 'active.json') -Destination $activePath
+    Set-Acl -LiteralPath $activePath -AclObject (New-FlowerAcl $false)
+}
+
+try {
+    Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Xml (Get-Content -LiteralPath (Join-Path $packageRoot 'task.xml') -Raw) | Out-Null
+} catch {
+    Write-Warning '版本文件保留。核对同版本/字节/ACL、确认任务缺失后，使用本脚本 -CompleteTaskRegistration 续完；不自动删除或改写既有任务。'
+    throw
+}
+# No start, runas, UAC/Defender change, client manifest write or file deletion.
+Write-Output ('installed_fixed_version:' + $version)

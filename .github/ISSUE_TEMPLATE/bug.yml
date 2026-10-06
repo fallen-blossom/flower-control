@@ -1,0 +1,26 @@
+name: Bug report
+description: A Flower task failed or produced the wrong result
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "Describe the smallest useful reproduction. Do not attach credentials, browser profiles, raw state databases, or private screenshots."
+  - type: textarea
+    id: task
+    attributes:
+      label: Task and actual result
+      description: What did you ask Flower to do, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows, Codex and Brave versions; Web/App/Computer channel; loaded source fingerprint if available.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted error or reproduction
+      description: Keep account names, private paths, screenshots and keys out of the report.

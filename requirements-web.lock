@@ -1,0 +1,5 @@
+# Windows x64 CPython 3.14; publisher wheel hashes from PyPI.
+# Base requirements.lock supplies typing_extensions==4.16.0.
+playwright==1.63.0 --hash=sha256:2f9a707a6c6c91157ed77bff2b8caeb04b3c8d46e70d585fc134298cbe4b5cc6
+pyee==13.0.0 --hash=sha256:48195a3cddb3b1515ce0695ed76036b5ccc2ef3a9f963ff9f77aec0139845498
+greenlet==3.5.6 --hash=sha256:f8f0bd690e1a41294ac87905e8121c81a3761ec2583c768f13467428606c8c7a

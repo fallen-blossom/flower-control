@@ -1,0 +1,44 @@
+. (Join-Path $PSScriptRoot 'InstallCommon.ps1')
+$task = Get-FlowerTask
+$taskState = 'absent'
+if ($task) {
+    Disable-ScheduledTask -TaskName $taskName -TaskPath '\' | Out-Null
+    $disabledTask = Get-FlowerTask
+    if ($null -eq $disabledTask -or $disabledTask.Settings.Enabled -ne $false) { throw 'autostart_disable_unconfirmed' }
+    $taskState = 'disabled'
+}
+# Startup disable succeeds independently of pipe/instance state.
+$result = [ordered]@{ task_name = $taskName; task_state = $taskState; broker_state = 'unknown'; instance_stopped = $false }
+try {
+    $reply = Invoke-FlowerAdmin 'status'
+    if ($reply.Phase -ne 'status' -or $reply.Status.pid -le 0 -or $reply.Status.created -le 0 -or !$reply.Status.high_verified) { throw 'broker_status_unconfirmed' }
+    $instancePid = [int]$reply.Status.pid
+    $instanceCreated = [long]$reply.Status.created
+    $result['instance_pid'] = $instancePid
+    $result['instance_created'] = $instanceCreated
+    $paused = Invoke-FlowerAdmin 'pause'
+    if ($paused.Phase -ne 'control' -or $paused.Command -ne 'pause' -or
+        $paused.Status.pid -ne $instancePid -or $paused.Status.created -ne $instanceCreated) { throw 'broker_pause_unconfirmed' }
+    $shutdown = Invoke-FlowerAdmin 'shutdown'
+    if ($shutdown.Phase -ne 'control' -or $shutdown.Command -ne 'shutdown' -or
+        $shutdown.Status.pid -ne $instancePid -or $shutdown.Status.created -ne $instanceCreated) { throw 'broker_shutdown_unconfirmed' }
+    $result['broker_state'] = 'shutdown_pending'
+    $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        $processErrors = @()
+        $instance = Get-Process -Id $instancePid -ErrorAction SilentlyContinue -ErrorVariable processErrors
+        foreach ($errorItem in $processErrors) {
+            if ($errorItem.FullyQualifiedErrorId -notlike 'NoProcessFoundForGivenId*') { throw 'broker_exit_query_unconfirmed' }
+        }
+        if ($null -eq $instance -or $instance.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $instanceCreated) {
+            $result['instance_stopped'] = $true
+            $result['broker_state'] = 'stopped'
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ($deadline.ElapsedMilliseconds -lt 8000)
+} catch {
+    $result['instance_error'] = $_.Exception.Message
+}
+# No deletion, Stop-Process, task removal or global policy change.
+$result | ConvertTo-Json -Compress

@@ -1,0 +1,130 @@
+$ErrorActionPreference = 'Stop'
+# Windows PowerShell's function autoload can otherwise land Get-FileHash in
+# a short-lived nested scope. Load its built-in module before helper functions.
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Global -ErrorAction Stop
+$packageRoot = @@PACKAGE@@
+$brokerRoot = @@BROKER@@
+$version = @@VERSION@@
+$taskName = @@TASK@@
+$taskXmlHash = @@TASKXMLHASH@@
+$versionSource = Join-Path $packageRoot ('versions\' + $version)
+$versionTarget = Join-Path $brokerRoot ('versions\' + $version)
+$command = Join-Path $versionTarget 'Flower.HighHelper.exe'
+
+function Get-FlowerTask {
+    $lookupErrors = @()
+    $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue -ErrorVariable lookupErrors
+    foreach ($errorItem in $lookupErrors) {
+        if ($errorItem.FullyQualifiedErrorId -notlike 'CmdletizationQuery_NotFound*') { throw 'task_lookup_unconfirmed' }
+    }
+    return $task
+}
+
+function Assert-FlowerNoLinks([string]$root) {
+    $cursor = [System.IO.DirectoryInfo]::new($root)
+    while ($null -ne $cursor) {
+        if ($cursor.Exists -and (($cursor.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'installation_link_rejected' }
+        $cursor = $cursor.Parent
+    }
+    if (!(Test-Path -LiteralPath $root)) { return }
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $pending.Push($root)
+    while ($pending.Count -gt 0) {
+        $item = Get-Item -LiteralPath $pending.Pop() -Force
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'installation_link_rejected' }
+        if ($item.PSIsContainer) {
+            foreach ($child in Get-ChildItem -LiteralPath $item.FullName -Force) { $pending.Push($child.FullName) }
+        }
+    }
+}
+
+function New-FlowerAcl([bool]$directory) {
+    if ($directory) { $acl = [System.Security.AccessControl.DirectorySecurity]::new() }
+    else { $acl = [System.Security.AccessControl.FileSecurity]::new() }
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    $inherit = [System.Security.AccessControl.InheritanceFlags]::None
+    if ($directory) { $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
+    foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+            [System.Security.Principal.SecurityIdentifier]::new($sid), [System.Security.AccessControl.FileSystemRights]::FullControl,
+            $inherit, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow))
+    }
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+        [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'), [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
+        $inherit, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow))
+    return $acl
+}
+
+function Get-FlowerAclRules($acl) {
+    return @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
+        '{0}|{1}|{2}|{3}|{4}|{5}' -f $_.IdentityReference.Value, $_.AccessControlType, [int]$_.FileSystemRights,
+            [int]$_.InheritanceFlags, [int]$_.PropagationFlags, $_.IsInherited
+    } | Sort-Object) -join "`n"
+}
+
+function Assert-FlowerAcl([string]$path) {
+    $item = Get-Item -LiteralPath $path -Force
+    $actual = Get-Acl -LiteralPath $path
+    $expectedAcl = New-FlowerAcl $item.PSIsContainer
+    if (!$actual.AreAccessRulesProtected -or
+        $actual.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544' -or
+        (Get-FlowerAclRules $actual) -ne (Get-FlowerAclRules $expectedAcl)) { throw 'installation_acl_changed' }
+}
+
+function Assert-FlowerVersion([string]$directory) {
+    Assert-FlowerNoLinks $directory
+    $expected = Get-Content -LiteralPath (Join-Path $packageRoot 'active.json') -Raw | ConvertFrom-Json
+    if ($expected.schema -ne 1 -or $expected.version -ne $version) { throw 'package_version_changed' }
+    $policy = Get-Content -LiteralPath (Join-Path $versionSource 'broker.json') -Raw | ConvertFrom-Json
+    $known = @('installation.json') + @($expected.hashes.PSObject.Properties.Name) + @($policy.AppWorkerHashes.PSObject.Properties | ForEach-Object { 'app\' + $_.Name })
+    $actual = @(Get-ChildItem -LiteralPath $directory -File -Recurse -Force | ForEach-Object { $_.FullName.Substring($directory.TrimEnd('\').Length + 1) })
+    if (Compare-Object ($known | Sort-Object) ($actual | Sort-Object)) { throw 'version_file_inventory_changed' }
+    foreach ($property in $expected.hashes.PSObject.Properties) {
+        if ($property.Name -ne [System.IO.Path]::GetFileName($property.Name) -or
+            (Get-FileHash -LiteralPath (Join-Path $directory $property.Name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $property.Value) { throw 'version_hash_changed' }
+    }
+    foreach ($property in $policy.AppWorkerHashes.PSObject.Properties) {
+        if ($property.Name -ne [System.IO.Path]::GetFileName($property.Name) -or
+            (Get-FileHash -LiteralPath (Join-Path (Join-Path $directory 'app') $property.Name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $property.Value) { throw 'app_version_hash_changed' }
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $directory 'installation.json')).Hash -ne
+        (Get-FileHash -LiteralPath (Join-Path $packageRoot 'active.json')).Hash) { throw 'version_manifest_changed' }
+}
+
+function Assert-FlowerSource {
+    $policy = Get-Content -LiteralPath (Join-Path $versionSource 'broker.json') -Raw | ConvertFrom-Json
+    foreach ($property in $policy.SourceHashes.PSObject.Properties) {
+        if ($property.Name -eq '@bootstrap') { continue }
+        if ((Get-FileHash -LiteralPath (Join-Path $policy.Repository $property.Name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $property.Value) { throw 'matching_python_source_required' }
+    }
+}
+
+function Invoke-FlowerAdmin([string]$operation) {
+    if (!(Test-Path -LiteralPath $command -PathType Leaf)) { throw 'fixed_admin_entry_missing' }
+    if ($operation -notin @('status','pause','resume','shutdown')) { throw 'fixed_admin_operation_rejected' }
+    # Windows PowerShell does not reliably update LASTEXITCODE for a GUI exe.
+    # Own this exact child and read its actual ExitCode and separate pipes.
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $command
+    $start.Arguments = '--flower-admin ' + $operation
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        if (!$process.Start()) { throw 'broker_admin_start_failed' }
+        $outputRead = $process.StandardOutput.ReadToEndAsync()
+        $errorRead = $process.StandardError.ReadToEndAsync()
+        if (!$process.WaitForExit(12000)) { throw 'broker_admin_timeout_outcome_unknown' }
+        $outputText = $outputRead.GetAwaiter().GetResult()
+        $errorText = $errorRead.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw 'broker_admin_unconfirmed' }
+        if (![string]::IsNullOrWhiteSpace($errorText)) { throw 'broker_admin_diagnostic_unexpected' }
+        $lines = @($outputText.Trim() -split '\r?\n')
+        if ($lines.Count -ne 1) { throw 'broker_admin_reply_unconfirmed' }
+        return ($lines[0] | ConvertFrom-Json)
+    } finally { $process.Dispose() }
+}

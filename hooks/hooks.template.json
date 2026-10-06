@@ -1,0 +1,17 @@
+{
+  "description": "Bind Flower MCP calls to the current Codex chat without granting private access.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__(flower[-_]web__(flower_origin_probe|flower_web_start_temp|flower_web_run|flower_web_screenshot|flower_web_action_status|flower_web_cancel|flower_web_close_temp|flower_web_open_ai|flower_web_close_ai|flower_web_reconnect_ai|flower_web_begin_ai_login|flower_web_ai_login_status|flower_web_finish_ai_login|flower_web_cancel_ai_login|flower_web_request_luohua_access|flower_web_luohua_access_status|flower_web_begin_luohua_login|flower_web_luohua_login_status|flower_web_finish_luohua_login|flower_web_cancel_luohua_login|flower_web_open_luohua|flower_web_reconnect_luohua|flower_web_close_luohua)|flower[-_]app__(flower_app_origin_probe|flower_app_list_windows|flower_app_select_window|flower_app_activate|flower_app_observe|flower_app_set_value|flower_app_invoke|flower_app_set_toggle|flower_app_select_item|flower_app_action_status|flower_app_cancel|flower_app_pause)|flower[-_]computer__(flower_computer_origin_probe|flower_computer_list_windows|flower_computer_select_window|flower_computer_observe|flower_computer_activate|flower_computer_input|flower_computer_action_status|flower_computer_cancel|flower_computer_pause))$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__RECIPIENT_PYTHON_AND_HOOK__",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

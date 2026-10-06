@@ -1,0 +1,9 @@
+[project]
+name = "flower-control"
+version = "0.1.0"
+description = "Local Windows Web, App, and Computer control through MCP"
+requires-python = ">=3.14,<3.15"
+dependencies = ["mcp==1.30.0", "Pillow==12.3.0"]
+
+[tool.setuptools.packages.find]
+include = ["flower_control*"]
