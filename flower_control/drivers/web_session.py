@@ -36,11 +36,14 @@ import win32com.client
 
 from flower_control.control.state import ControlError
 from flower_control.control.native import process_identity, process_is_alive
+from flower_control.browsers import (CHROMIUM_BROWSER_PATHS, DEFAULT_BROWSER_NAME,
+                                     is_supported_browser_image)
 from flower_control.drivers.worker_python import worker_python
 from .web_effects import CLOSE_STOP_CODES, KNOWN_STAGES, WebClosePending, error_with_effect
 
 
-DEFAULT_BRAVE = Path(r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe")
+# Chromium-family default; Chrome/Edge are accepted by the same contract.
+DEFAULT_BRAVE = CHROMIUM_BROWSER_PATHS[DEFAULT_BROWSER_NAME]
 _CDP_PATH = re.compile(r"/devtools/browser/[0-9a-fA-F-]{36}\Z")
 _START_TIMEOUT = 25.0
 _MAX_MESSAGE = 16_000_000
@@ -447,7 +450,7 @@ class SessionPage:
 
 
 class TemporaryWebSession:
-    """A fresh OS-temp profile and exact owned Brave Job."""
+    """A fresh OS-temp profile and an exact owned Chromium Job."""
 
     def __init__(self, *, brave_executable: Path = DEFAULT_BRAVE, headless: bool = True,
                  guarded: bool = False, persistent_profile: Path | None = None,
@@ -456,7 +459,9 @@ class TemporaryWebSession:
                  owner_task_matches: Callable[[object], bool] | None = None,
                  diagnostic: Callable[[dict], None] | None = None) -> None:
         executable = Path(brave_executable)
-        if not executable.is_absolute() or executable.name.lower() != "brave.exe":
+        # The code keeps its historical name; Brave, Chrome and Edge are all
+        # accepted because they share this worker's engine and CDP contract.
+        if not executable.is_absolute() or not is_supported_browser_image(executable):
             raise ValueError("exact_brave_executable_required")
         self.brave_executable = executable
         self.headless = bool(headless)

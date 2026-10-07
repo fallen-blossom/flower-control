@@ -23,6 +23,7 @@ import win32process
 from flower_control.control.native import process_creation_filetime
 from flower_control.control.state import ControlError
 from flower_control.browser_window_policy import BrowserWindowAccess, BrowserWindowPolicy
+from flower_control.browsers import is_supported_browser_image
 from flower_control.drivers.computer_native import (NativeInputError, WindowIdentity, assert_window,
                                                     bind_window, is_owned_popup)
 from flower_control.drivers.high_helper import HighHelperError
@@ -99,7 +100,7 @@ def _ordinary_window(hwnd: int, *, task: str, policy: BrowserWindowPolicy | None
         image = _process_image_and_liveness(pid)
         if image.name.lower() in _EXCLUDED_IMAGES:
             return _omit_window(diagnostics, "protected_system_process")
-        if image.name.lower() == "brave.exe" and policy is None:
+        if is_supported_browser_image(image) and policy is None:
             return _omit_window(diagnostics, "browser_scope_unavailable")
         failure_reason = "browser_scope_unavailable"
         access = (policy.inspect(task, pid, image) if policy is not None

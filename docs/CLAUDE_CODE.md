@@ -11,7 +11,7 @@ WSL, Claude Desktop, and cloud agents are outside this integration.
 
 Follow [Windows installation](INSTALL.md) for Python, .NET, dependency setup, and
 the native/app builds. Set DOTNET_CLI_TELEMETRY_OPTOUT=1 before using the SDK.
-Web currently supports Brave. Use a regular source directory, not a junction or
+Web accepts the Chromium-family Brave, Chrome, and Edge (Brave verified; Chrome and Edge pending verification). Use a regular source directory, not a junction or
 the development worktree. Confirm the actual claude.exe comes from the official
 Claude installation; do not rename another program or substitute node.exe.
 

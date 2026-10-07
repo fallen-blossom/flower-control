@@ -4,7 +4,7 @@
 
 Flower Control gives Codex tools to operate websites and Windows apps. Ask it to fill a form, use a menu, edit a page, upload a file, or drag an object on a canvas.
 
-- **Web** reads and operates webpage elements through Playwright. This preview supports Brave; other browsers are planned.
+- **Web** reads and operates webpage elements through Playwright. The Chromium-family Brave, Chrome, and Edge are accepted; Brave is verified, and Chrome and Edge are pending verification.
 - **App** reads and operates accessible Windows controls through FlaUI, including fields, lists, menus, and dialogs.
 - **Computer** takes screenshots of a selected window and sends mouse and keyboard input for canvases, dragging, shortcuts, and interfaces without useful accessible controls.
 

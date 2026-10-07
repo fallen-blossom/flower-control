@@ -2,9 +2,9 @@
 
 [English](BROWSER_PROFILES.md)
 
-Flower Web 打开的是自己管理的 Brave。你日常 Brave 已经登录，不等于 Flower 的专用环境也登录了。
+Flower Web 打开的是自己管理的 Chromium 内核浏览器（默认 Brave）。你日常浏览器已经登录，不等于 Flower 的专用环境也登录了。
 
-这份教程讲 Web 通道的专用环境。Web 暂时只支持 Brave，当前为预览版，后续会逐步扩展其他浏览器的兼容性。其他浏览器窗口可以通过 App／Computer 操作现有界面，继续使用该窗口原有的登录状态，但不会变成 Flower Web 会话。
+这份教程讲 Web 通道的专用环境。Web 通道接受 Chromium 内核的 Brave、Chrome、Edge；Brave 是已验证配置，Chrome 和 Edge 在当前预览版中待验证。其他浏览器窗口可以通过 App／Computer 操作现有界面，继续使用该窗口原有的登录状态，但不会变成 Flower Web 会话。
 
 | 环境 | 用来做什么 | 授权 | 正常关闭后 |
 | --- | --- | --- | --- |

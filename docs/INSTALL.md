@@ -8,7 +8,7 @@ This route builds the current source and prepares the administrator helper local
 
 - Windows 11 x64 and an interactive desktop session, using a Windows account that can approve UAC for itself.
 - Current Codex desktop app. The installed Microsoft Store Codex host is the primary tested host; do not assume a headless CLI has the same desktop access.
-- For the Web channel, Brave installed at `C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe`. App and Computer operate selected Windows windows and are not restricted to Brave.
+- For the Web channel, a Chromium-family browser installed at its standard system path, for example Brave at `C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe`. Brave is the verified configuration; Chrome and Edge are accepted but pending verification. App and Computer operate selected Windows windows and are not restricted to a particular browser.
 - [CPython 3.14 x64](https://www.python.org/downloads/windows/) and [.NET 10 SDK x64](https://dotnet.microsoft.com/download/dotnet/10.0).
 
 Choose a normal local directory for the source. Avoid a junction, network share, or folder you plan to move. Docker, WSL, a hosted browser, and a Flower cloud account are not required.

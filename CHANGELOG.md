@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — restored Computer frame reliability, next-step display, and Chromium-family Web
+
+- The moving Computer frame no longer disappears when another topmost window covers it or when the scoped app opens a visible top-level panel without an owner. The frame layer keeps a periodic read-only z-order probe, re-raises itself when covered, and keeps the frame for a same-process visible top-level window while still excluding Flower's own overlays.
+- The optional per-call `next_step` display text (1-48 characters, shown as the 下一步 line on the Computer HUD) was restored on `observe`, `activate`, and `input`. It is display text only and grants no authority; an empty value keeps the previous signature.
+- Web request validation now accepts the Chromium-family executables Brave, Chrome, and Edge. Brave remains the only configuration with real foreground verification; Chrome and Edge are **pending verification**.
+
+No new dependency, telemetry, remote service, or automatic update was added.
+
 ## Unreleased — optional local connection mode
 
 Adds a shared stdio connection entry and recipient-local configurations for Cursor, VS Code, native OpenCode v1/v2, and Antigravity. Original Codex chat hooks remain the default. An optional Flower Control Compatibility plugin can coexist with the original in local Codex. It shares one administrator helper, has distinct MCP names, and has no chat isolation, private browser access, or cross-channel handoff. No telemetry, remote service, or dependency was added.

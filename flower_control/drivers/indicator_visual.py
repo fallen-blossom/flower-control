@@ -170,11 +170,14 @@ def _fit_text(text, width, font):
     return text + '…' if font.getlength('…') <= width else ''
 
 
-def render_status_image(size, dpi, title, stage_label, checkpoint, elapsed, estimate=None):
+def render_status_image(size, dpi, title, stage_label, checkpoint, elapsed, estimate=None,
+                        next_step=None):
     """Original transparent status drawing, with trusted stage and elapsed time.
 
     The timer keeps the original fixed slot and shared text baseline. The task
     lifetime never becomes a countdown. The caller supplies every stage/estimate.
+    An optional host-authored next step adds its own line; it is display text
+    only and never proves that any step happened.
     """
     from PIL import Image, ImageDraw
     width, height = size
@@ -204,6 +207,16 @@ def render_status_image(size, dpi, title, stage_label, checkpoint, elapsed, esti
     draw.text((x + body_font.getlength(visible_prefix), y), line[len(visible_prefix):],
               font=body_font, anchor='lt', fill='#F38BA8' if attention else '#BAC2DE',
               stroke_width=scale, stroke_fill='#11111B')
+    if next_step:
+        y += px(20, dpi) * scale
+        note_prefix = '下一步：'
+        note_line = _fit_text(note_prefix + next_step, available * scale, body_font)
+        visible_note = note_line[:min(len(note_prefix), len(note_line))]
+        draw.text((x, y), visible_note, font=body_font, anchor='lt', fill='#A6E3A1',
+                  stroke_width=scale, stroke_fill='#11111B')
+        draw.text((x + body_font.getlength(visible_note), y), note_line[len(visible_note):],
+                  font=body_font, anchor='lt', fill='#CDD6F4',
+                  stroke_width=scale, stroke_fill='#11111B')
     tx, _, _, _ = timer_slot(width, dpi)
     draw.text((tx * scale, header_baseline), '耗时', font=body_font, anchor='ls',
               fill='#A6ADC8', stroke_width=scale, stroke_fill='#11111B')

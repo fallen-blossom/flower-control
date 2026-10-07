@@ -6,7 +6,7 @@ Claude Code 的源码接入已经写好，**尚未构建、测试或安装**。W
 
 ## 先准备什么
 
-需要当前原生 Claude Code、Flower 源码、CPython 3.14 x64、.NET 10 SDK，以及一个可为自己批准 UAC 的 Windows 账号。Web 暂时只支持 Brave。基本依赖和原生构建步骤见 [Windows 安装教程](INSTALL.zh-CN.md)，构建前设置 DOTNET_CLI_TELEMETRY_OPTOUT=1。Claude 的模型服务及隐私设置由 Claude 管理；Flower 没有加入遥测。
+需要当前原生 Claude Code、Flower 源码、CPython 3.14 x64、.NET 10 SDK，以及一个可为自己批准 UAC 的 Windows 账号。Web 接受 Chromium 内核的 Brave、Chrome、Edge（Brave 已验证，Chrome、Edge 待验证）。基本依赖和原生构建步骤见 [Windows 安装教程](INSTALL.zh-CN.md)，构建前设置 DOTNET_CLI_TELEMETRY_OPTOUT=1。Claude 的模型服务及隐私设置由 Claude 管理；Flower 没有加入遥测。
 
 源码应在普通本地目录，不能直接使用开发 worktree 的 Junction 作为安装源。先从官方安装来源确认 claude.exe 的实际路径；不要给其他程序改名，也不要拿 node.exe、claude.cmd 或 WSL 入口代替它。
 

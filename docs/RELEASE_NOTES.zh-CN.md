@@ -4,7 +4,7 @@
 
 Flower Control 给 Codex 提供操作网页和 Windows 软件的工具。告诉它要做什么，就能填写表单、使用菜单、编辑网页、上传文件，或者拖动画布里的物体。
 
-- **Web** 通过 Playwright 读取和操作网页元素，当前只支持 Brave，后续计划扩展其他浏览器。
+- **Web** 通过 Playwright 读取和操作网页元素，接受 Chromium 内核的 Brave、Chrome、Edge；Brave 已验证，Chrome、Edge 待验证。
 - **App** 通过 FlaUI 读取和操作 Windows 控件，包括输入框、列表、菜单和弹窗。
 - **Computer** 截取选定窗口后操作鼠标和键盘，适合画布、拖拽、快捷键，以及控件读不出来的界面。
 

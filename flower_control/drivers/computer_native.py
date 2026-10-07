@@ -208,6 +208,28 @@ def is_owned_popup(parent: WindowIdentity, hwnd: int) -> bool:
         return False
 
 
+def same_process_window(parent: WindowIdentity, hwnd: int) -> bool:
+    """Read-only same-application visible top-level relation, without GW_OWNER.
+
+    Application dialogs, tool palettes and panels are frequently created
+    without an explicit owner, yet they still belong to the running task
+    context. This narrows nothing about authority: input keeps its own exact
+    foreground, target and Stop checks; the relation only keeps a HUD frame
+    from disappearing while the same application owns the foreground.
+
+    The relation is deliberately process-wide: an unrelated top-level of the
+    same process also keeps the frame, because dropping it in that case looked
+    like the original defect. Tightening this needs a real owner or thread
+    signal, not a guess, so the tradeoff stays documented here.
+    """
+    try:
+        return (bool(hwnd) and win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd)
+                and win32gui.GetAncestor(hwnd, win32con.GA_ROOT) == hwnd
+                and win32process.GetWindowThreadProcessId(hwnd)[1] == parent.pid)
+    except win32gui.error:
+        return False
+
+
 def new_visible_followups(identity: WindowIdentity, before: frozenset[int],
                           *, bind_allowed: bool, window_binder=None) -> dict:
     """Report new same-process top-levels without reading their content."""

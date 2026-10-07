@@ -58,6 +58,28 @@ from flower_control.control.scheduling import Phase
 import asyncio
 import uuid
 import zlib
+
+
+NEXT_STEP_LIMIT = 48
+
+
+def valid_next_step(value):
+    """Optional host-authored HUD text: bounded, display-only, no authority.
+
+    It never grants a target, never changes a stage and never replaces a
+    receipt; it only tells the user (and a later read-only inspection) what the
+    caller intends to do next.
+    """
+    if value is None:
+        return None
+    # The signed call payload must stay byte-identical to the Hook-visible
+    # arguments, so this validates instead of normalizing the host text. The
+    # indicator trims surrounding whitespace for display, and this accepts the
+    # same range, so both sides share one rule instead of two.
+    if (type(value) is not str or not 1 <= len(value.strip()) <= NEXT_STEP_LIMIT
+            or any(ord(character) < 32 for character in value)):
+        raise ComputerBoundaryError("invalid_next_step")
+    return value
 from dataclasses import replace
 from .computer_targets import _region_digest
 from flower_control.control.target_selection import selection_permitted
@@ -401,6 +423,7 @@ class ComputerRuntime:
         self._owned_window_binder = owned_window_binder
         self._indicators = {}
         self._task_hints = {}
+        self._next_steps: dict[str, str | None] = {}
 
     def _acquire_indicator(self, grant, hint, on_stop, *, paths=(), prepare=False, factory=None):
         hint = self._task_hints.get(grant.task_id, hint)
@@ -436,6 +459,11 @@ class ComputerRuntime:
             # task pause through the callback created above, without old leases.
             indicator._active_stop = on_stop
             indicator.keep_alive(hint)
+            # Host-authored display text; it is not authority and never
+            # replaces a receipt or a stage transition.
+            set_next_step = getattr(indicator, "set_next_step", None)
+            if set_next_step is not None:
+                set_next_step(self._next_steps.get(grant.task_id))
             indicator.reserve_mouse_paths(paths)
             return indicator
 
@@ -614,14 +642,19 @@ class ComputerRuntime:
                     raise ControlError("resource_paused_or_quarantined")
 
     def observe(self, target: dict, action_id: str, goal_hint: str | None = None,
-                *, trusted_task: str | None = None) -> dict:
+                *, next_step: str | None = None, trusted_task: str | None = None) -> dict:
         payload = {"target": target, "action_id": action_id}
         if goal_hint is not None:
             payload["goal_hint"] = goal_hint
+        next_step = valid_next_step(next_step)
+        if next_step is not None:
+            payload["next_step"] = next_step
         grant = self._authorized("flower_computer_observe", payload, target, "capture",
                                  trusted_task=trusted_task)
         if goal_hint:
             self._task_hints[grant.task_id] = goal_hint[:80]
+        if next_step is not None:
+            self._next_steps[grant.task_id] = next_step
         return self._measure_call(grant, action_id, None,
                                   lambda: self._observe_impl(grant, action_id, payload, goal_hint))
 
@@ -771,11 +804,16 @@ class ComputerRuntime:
         return result
 
     def activate(self, target: dict, restore_minimized: bool, action_id: str,
-                 *, trusted_task: str | None = None) -> dict:
+                 *, next_step: str | None = None, trusted_task: str | None = None) -> dict:
         payload = {"target": target, "restore_minimized": restore_minimized,
                    "action_id": action_id}
+        next_step = valid_next_step(next_step)
+        if next_step is not None:
+            payload["next_step"] = next_step
         grant = self._authorized("flower_computer_activate", payload, target, "input",
                                  trusted_task=trusted_task)
+        if next_step is not None:
+            self._next_steps[grant.task_id] = next_step
         if not grant.capture_allowed:
             raise ComputerBoundaryError("capture_not_approved")
         if type(restore_minimized) is not bool:
@@ -788,11 +826,16 @@ class ComputerRuntime:
 
     def input(self, target: dict, observation_id: str, command: str,
               arguments: dict, action_id: str,
-              *, trusted_task: str | None = None) -> dict:
+              *, next_step: str | None = None, trusted_task: str | None = None) -> dict:
         payload = {"target": target, "observation_id": observation_id,
                    "command": command, "arguments": arguments, "action_id": action_id}
+        next_step = valid_next_step(next_step)
+        if next_step is not None:
+            payload["next_step"] = next_step
         grant = self._authorized("flower_computer_input", payload, target, "input",
                                  trusted_task=trusted_task)
+        if next_step is not None:
+            self._next_steps[grant.task_id] = next_step
         return self._measure_call(grant, action_id, observation_id, lambda:
             self._input_impl(grant, target, observation_id, command, arguments, action_id,
                              payload, trusted_task))

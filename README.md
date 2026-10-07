@@ -32,7 +32,7 @@ Press **Ctrl+Alt+9** to stop writes. Computer control shows a moving border, an 
 
 Source adapters are included for [native Windows Claude Code](docs/CLAUDE_CODE.md) and [Antigravity](docs/ANTIGRAVITY.md), with a [shared local entry and configuration generator](docs/LOCAL_CLIENTS.md) for native Cursor, VS Code, and OpenCode. The shared entry has protocol checks and a helper build; individual clients have not completed real task acceptance or installation. Connection mode excludes private profiles and same-target cross-channel handoff. The Codex runtime evidence below does not validate these clients.
 
-This is a **Windows source preview**. Start with [installation](docs/INSTALL.md), then read [browser profiles and login](docs/BROWSER_PROFILES.md). The setup uses a current Codex desktop installation, Windows 11 x64, CPython 3.14 x64, and .NET 10 SDK. The Web channel also needs Brave at its standard system installation path. Windows 10 and other hosts have not received the same acceptance coverage.
+This is a **Windows source preview**. Start with [installation](docs/INSTALL.md), then read [browser profiles and login](docs/BROWSER_PROFILES.md). The setup uses a current Codex desktop installation, Windows 11 x64, CPython 3.14 x64, and .NET 10 SDK. The Web channel also needs a Chromium-family browser at its standard system installation path (Brave is verified; Chrome and Edge are pending verification). Windows 10 and other hosts have not received the same acceptance coverage.
 
 Installation prepares a package for **your Windows account and your source directory**. It is not a portable copy of the developer's administrator helper. Keep the source directory, Python runtime, and virtual environment in place after installation.
 
@@ -52,7 +52,7 @@ Flower has **no usage telemetry, crash uploads, remote configuration, or automat
 
 ## Browser compatibility
 
-The **Web channel currently supports Brave only**. This is a preview release; support for other browsers is planned for later versions.
+The **Web channel accepts the Chromium-family browsers Brave, Chrome, and Edge**. Brave is the verified configuration; Chrome and Edge share the same engine and request path, but their real-foreground use is **pending verification** in this preview. Other engines are not supported.
 
 **App and Computer are general Windows window tools.** You can select a window from another browser and operate its visible interface through Computer. App can use whatever accessible controls that browser exposes. This does not create a managed Web session or import that browser's cookies into Flower.
 

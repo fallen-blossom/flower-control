@@ -2,9 +2,9 @@
 
 [简体中文](BROWSER_PROFILES.zh-CN.md)
 
-Flower Web opens its own Brave windows. An existing login in your everyday Brave window does not become a Flower Web login automatically.
+Flower Web opens its own managed Chromium-family windows (Brave by default). An existing login in your everyday browser window does not become a Flower Web login automatically.
 
-This guide covers the Web channel's managed profiles. Web currently supports Brave only in this preview; support for other browsers is planned. App and Computer can work with other selected browser windows, using the existing interface and login without creating a Flower Web session.
+This guide covers the Web channel's managed profiles. The Web channel accepts the Chromium-family Brave, Chrome, and Edge; Brave is the verified configuration, and Chrome and Edge are pending verification in this preview. App and Computer can work with other selected browser windows, using the existing interface and login without creating a Flower Web session.
 
 | Profile | Use | Permission | Data after normal close |
 | --- | --- | --- | --- |

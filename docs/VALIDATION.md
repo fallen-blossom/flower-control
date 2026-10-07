@@ -28,3 +28,7 @@ The small regression subset shipped with this source preview covers the repaired
 ```
 
 These tests do not launch a browser or send desktop input. They do not replace the workflow acceptance above.
+
+## Later source updates
+
+A later source update (installed as `bf71808c0d154a054fd4d112210eb68d`) restored the moving Computer frame when another topmost window covers it or when the scoped app opens an unowned visible top-level panel, restored the optional `next_step` HUD line on `observe`/`activate`/`input`, and widened Web request validation to the Chromium-family Brave, Chrome, and Edge. The frame re-raise and the restored `next_step` display have offline and self-window evidence, and a fresh connection shows `next_step` in the computer tool schemas; a real user-foreground border observation and real Chrome/Edge sessions are still pending verification.

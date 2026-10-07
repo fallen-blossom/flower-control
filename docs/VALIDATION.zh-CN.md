@@ -21,3 +21,7 @@ Jev 在工具里直接执行合法选择，不再交给主模型逐步批准。�
 ```
 
 它不启动浏览器、不输入键鼠，只验证这部分逻辑，不替代上面的真实工作链。
+
+## 后续源码更新
+
+后续源码更新（安装版 `bf71808c0d154a054fd4d112210eb68d`）修复了流动边框在别的置顶窗口遮挡、或所属应用打开无 owner 的可见顶级面板时丢失的问题，恢复了 `observe`／`activate`／`input` 上可选的 `next_step` HUD 行，并把 Web 请求校验放宽到 Chromium 内核的 Brave、Chrome、Edge。边框重顶和恢复后的 `next_step` 显示已有离线／自窗口证据，新连接里 computer 工具 schema 也确认含 `next_step`；真实用户前台的边框目视和真实 Chrome／Edge 会话仍待验证。

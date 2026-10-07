@@ -32,7 +32,7 @@ Codex 可以在一个任务里组合使用它们，例如先用 Web 编辑网页
 
 另附 [Windows 原生 Claude Code](docs/CLAUDE_CODE.zh-CN.md)、[反重力 IDE](docs/ANTIGRAVITY.zh-CN.md)和 [Cursor／VS Code／原生 OpenCode 共用接入](docs/LOCAL_CLIENTS.zh-CN.md)的源码及配置生成器。共用入口已做协议检查和助手构建；这些客户端尚未完成真实任务验收或安装。连接模式不开放私人 profile，也暂不支持同一目标跨通道接管。下面的 Codex 实测结果不覆盖这些客户端。
 
-当前准备发布的是 **Windows 源码预览版**。先看[安装教程](docs/INSTALL.zh-CN.md)，再看[浏览器登录教程](docs/BROWSER_PROFILES.zh-CN.md)。主要环境是 Windows 11 x64、当前 Codex 桌面版、CPython 3.14 x64 和 .NET 10 SDK；Web 通道另需标准系统路径安装的 Brave。Windows 10 和其它宿主的验收覆盖较少。
+当前准备发布的是 **Windows 源码预览版**。先看[安装教程](docs/INSTALL.zh-CN.md)，再看[浏览器登录教程](docs/BROWSER_PROFILES.zh-CN.md)。主要环境是 Windows 11 x64、当前 Codex 桌面版、CPython 3.14 x64 和 .NET 10 SDK；Web 通道另需标准系统路径安装的 Chromium 内核浏览器（Brave 已验证，Chrome、Edge 待验证）。Windows 10 和其它宿主的验收覆盖较少。
 
 安装时会根据你的 Windows 账号和源码目录生成管理员助手配置，不能直接拿开发者电脑上的固定更新包安装。装好后保留源码目录、Python 和虚拟环境。
 
@@ -52,7 +52,7 @@ Flower **不采集使用统计、不上传崩溃报告、不接收远端配置�
 
 ## 浏览器兼容性
 
-**Web 暂时只支持 Brave，当前为预览版，后续会逐步扩展其他浏览器的兼容性。**
+**Web 通道接受 Chromium 内核的 Brave、Chrome 和 Edge。Brave 是已验证配置；Chrome 和 Edge 与 Brave 同内核、走同一条请求路径，但真实前台使用在当前预览版中仍待验证。其他内核不支持。**
 
 **App 和 Computer 面向普通 Windows 窗口。** 其他浏览器窗口也可以选给 Computer，通过可见界面操作；App 能否读到具体按钮和字段，取决于该浏览器提供的控件信息。这种操作不等于接入 Web 通道，也不会把日常浏览器的 Cookie 导入 Flower。
 

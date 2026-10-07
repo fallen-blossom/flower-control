@@ -33,8 +33,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "bytes": 2056,
-      "sha256": "d986561fef2daa851b6ada7ca587d2370dcd7b39998a52d7bfc0b910b1fedf92"
+      "bytes": 3049,
+      "sha256": "bf31c9521329e4cd77018c5dce6856885c28d16529bdab5de1f67885aa0dde5e"
     },
     {
       "path": "CONTRIBUTING.md",
@@ -58,33 +58,33 @@
     },
     {
       "path": "docs/BROWSER_PROFILES.md",
-      "bytes": 3862,
-      "sha256": "e2d8c8758a265baebcaee5bd0824b9c41e3456bf7c17ae78b557c4f09dde6746"
+      "bytes": 3979,
+      "sha256": "a104e03a01d7f11748c9ebe7bc4b05b1da52016a69b77d5c770465686118cad5"
     },
     {
       "path": "docs/BROWSER_PROFILES.zh-CN.md",
-      "bytes": 3173,
-      "sha256": "6392b5270a04c6a92fd9d39893d3f2308a22f3e682f27b817e2d40b461af30f1"
+      "bytes": 3248,
+      "sha256": "ec06ca7bbf1a2e5dff59682612b3f166a6034b4e786ebc3ab43d24f98d5488a2"
     },
     {
       "path": "docs/CLAUDE_CODE.md",
-      "bytes": 4523,
-      "sha256": "04a26716685d9e88d23351d975ea0b6e24c3af7ada0b98302f5f12f05266c039"
+      "bytes": 4605,
+      "sha256": "bc0cfe2919ecf59be14693ebaebd41a27ee8062b98547e973274e227cc55c7cc"
     },
     {
       "path": "docs/CLAUDE_CODE.zh-CN.md",
-      "bytes": 5163,
-      "sha256": "3c9dfd84e1d6d025fa92fcad1c5da44d9a9d34e12a9396a8920e8e6595c809e3"
+      "bytes": 5236,
+      "sha256": "cd79c115c0bdd0fae537026e1638cd1485c2e89f03937f96f5e0b8039b246f73"
     },
     {
       "path": "docs/INSTALL.md",
-      "bytes": 7915,
-      "sha256": "dd1ea0b19d260beff023bb4acb0a20fba8ebcd37e598290997a183bca621b4e4"
+      "bytes": 8089,
+      "sha256": "3a0b1b3fb9cf74860971146f93d3955973fb01742d76e87cbfe4461e199928d8"
     },
     {
       "path": "docs/INSTALL.zh-CN.md",
-      "bytes": 6391,
-      "sha256": "ec50ebe72e18f115ae8cf897d5a711a421db575b1ba57093b221025b2c804264"
+      "bytes": 6569,
+      "sha256": "a542b5ae934a16d5c24dc343f135807cc01ae72fc56f2e51ab1517f113d2d0e7"
     },
     {
       "path": "docs/LOCAL_CLIENTS.md",
@@ -98,13 +98,13 @@
     },
     {
       "path": "docs/RELEASE_NOTES.md",
-      "bytes": 3069,
-      "sha256": "8329e785a41ad701caba6626955d40d440e31a2d6d9c2ad042d4e90fcbd25d26"
+      "bytes": 3135,
+      "sha256": "6f93648a8c93881a482ac4db4ff967a5a9ebb7603b47c8f7b3fd2fa1c3941653"
     },
     {
       "path": "docs/RELEASE_NOTES.zh-CN.md",
-      "bytes": 2784,
-      "sha256": "e7b07b76d1c7dc0d914f63288cf12f3e309b5798511722ef5866a5286871a19c"
+      "bytes": 2818,
+      "sha256": "fccff96d5c8e6575950c267846cf536bf58da60c22831296b27f2b76ac7e47c8"
     },
     {
       "path": "docs/SHARING.md",
@@ -113,13 +113,13 @@
     },
     {
       "path": "docs/VALIDATION.md",
-      "bytes": 3269,
-      "sha256": "0c08d462505fc24e2223d13421cf09ae4c872bfc7d88ccc6af50c270c7872ebf"
+      "bytes": 3934,
+      "sha256": "aab20e6182a04299ad3127896048b821bc40ab769a8faa0408b49d5ba86036d4"
     },
     {
       "path": "docs/VALIDATION.zh-CN.md",
-      "bytes": 2158,
-      "sha256": "704cb2f61f652f733c7919177a7b6157976ce043d0619dcf145e8b123a2e4eba"
+      "bytes": 2749,
+      "sha256": "84b95815a5f1109ec83d0138178fd61db5a442bb33e087f2187cbebf150c223b"
     },
     {
       "path": "flower_control/__init__.py",
@@ -193,8 +193,8 @@
     },
     {
       "path": "flower_control/authorization/origin.py",
-      "bytes": 19241,
-      "sha256": "e0baf7c76596a505bfb65ae5045aee49575d6cdd3377c50ff9989ac5c266c026"
+      "bytes": 19371,
+      "sha256": "e30c0026d2753663f114721e0409cf8bbe5711ebfe0d5bfaa19d060e228c76bd"
     },
     {
       "path": "flower_control/authorization/semantic.py",
@@ -203,13 +203,18 @@
     },
     {
       "path": "flower_control/browser_window_policy.py",
-      "bytes": 5990,
-      "sha256": "59b6deb0ebe18cc0d9404cb6c011a55fbbe9ad7fa2a52cff6e6666a883bfe923"
+      "bytes": 6193,
+      "sha256": "fe98ebaae87069a518509a44cba6ad1dde7411d11b2da96cf15577b72906ca88"
+    },
+    {
+      "path": "flower_control/browsers.py",
+      "bytes": 3000,
+      "sha256": "e378b03713e012cb3c059ee2f102bd74e993907382fc820ed18ef92dc016132d"
     },
     {
       "path": "flower_control/computer.py",
-      "bytes": 43558,
-      "sha256": "0deb235974229aaaad88a82c5cb67b62d557e6e27f0a6c910ff5bf7cfa2c8761"
+      "bytes": 44836,
+      "sha256": "92690074c72ad290169c4156e55fef79624fd46024452531ad2f62af2a171df3"
     },
     {
       "path": "flower_control/connection_adapter.py",
@@ -363,8 +368,8 @@
     },
     {
       "path": "flower_control/drivers/app_lifecycle.py",
-      "bytes": 17514,
-      "sha256": "dce974f57e1ab14efb7c8bf49b92904858d9c575e40aaaea10a314e5bc4b803d"
+      "bytes": 17614,
+      "sha256": "48d9dbf18fcea8b72d2f651580df7c7ba9fea8181bd77880953145890fe60b7c"
     },
     {
       "path": "flower_control/drivers/app_native/AppCheckpoint.cs",
@@ -493,13 +498,13 @@
     },
     {
       "path": "flower_control/drivers/computer_mcp.py",
-      "bytes": 141717,
-      "sha256": "f2c8ebf2bf6edd14bdfdf0f50839e708b1886a759c40f8bb958d0a601c7cfbed"
+      "bytes": 143694,
+      "sha256": "c62433cb0429678f5723bbea6a4de67a4307bacd9d18e3a62b91d94f21b967a3"
     },
     {
       "path": "flower_control/drivers/computer_native.py",
-      "bytes": 59141,
-      "sha256": "76d838b63dd22f182b5899c5bee43557a76d450929eaa61b402884075fc41830"
+      "bytes": 60267,
+      "sha256": "c10aedbf0bac5912305c5ec866bcb54243c35cbe3b8d01dc4e2e2eec8e410c29"
     },
     {
       "path": "flower_control/drivers/computer_phase.py",
@@ -538,8 +543,8 @@
     },
     {
       "path": "flower_control/drivers/foreground_indicator.py",
-      "bytes": 32134,
-      "sha256": "73332af2d7d45febf87e4b3adc09f114cf6ca521d867fcdf604080ccd68b28c0"
+      "bytes": 46371,
+      "sha256": "a746d44be190739cb567706b1575552428c6964943e6ffc52955aa3ecb624ba2"
     },
     {
       "path": "flower_control/drivers/foreground_resume.py",
@@ -718,8 +723,8 @@
     },
     {
       "path": "flower_control/drivers/indicator_visual.py",
-      "bytes": 10663,
-      "sha256": "681078c008e370aaef3f3edf5758ebf1da18a27fa94b0c3cd13c9befd457a6c5"
+      "bytes": 11440,
+      "sha256": "500957cd9c42248d06c12b97f52e43db69d647a1d14db972ab722668434b6512"
     },
     {
       "path": "flower_control/drivers/web_artifacts.py",
@@ -768,8 +773,8 @@
     },
     {
       "path": "flower_control/drivers/web_session.py",
-      "bytes": 69691,
-      "sha256": "cbd8532f84fd6b7f677d3e17413f131e4d7db0b880e7b4f32bdf17991d40e3cf"
+      "bytes": 70046,
+      "sha256": "6200bfa9f871dd4342e0ae203589fc64975f6b6757d663f76cd5acb2d02d4f82"
     },
     {
       "path": "flower_control/drivers/web_worker.py",
@@ -818,13 +823,13 @@
     },
     {
       "path": "flower_control/web.py",
-      "bytes": 33985,
-      "sha256": "809909080170d12cff5bd86f7c7e048b8f323ea0b94479d4c888ee9e9085b7f1"
+      "bytes": 34741,
+      "sha256": "9b81389d46e0e618e99d7ef7ec313be2145f495b1ba7083469c61de50f3e6d82"
     },
     {
       "path": "flower_control/window_registry.py",
-      "bytes": 21386,
-      "sha256": "64c7d6c6e294a01ec2633b6b06f5003957dae17e0d5c812e8a4c8a4a1c2ec996"
+      "bytes": 21449,
+      "sha256": "5e0136e160c28ab7cdd556be5e264aad4359617b106e0aeed6af40e2e914bc93"
     },
     {
       "path": "hooks/claude_pre_tool_use.py",
@@ -1158,13 +1163,13 @@
     },
     {
       "path": "README.md",
-      "bytes": 6647,
-      "sha256": "fca4f4ab6e1defccea9981db167a5404fcb0c3a9d16254e4408ff231910b98b4"
+      "bytes": 6876,
+      "sha256": "298566c88da0a1fb872774571aef6f53e6d679ed070c685a7b02e9932f92bb9c"
     },
     {
       "path": "README.zh-CN.md",
-      "bytes": 5911,
-      "sha256": "68fa487190c9891cfd2a3310afe6c7d83412c3e0e96cb8287672ffe832f3e73e"
+      "bytes": 6112,
+      "sha256": "5da9beb037610ae61734256b5570991e94c3b9fef32ab8a163d1ef2d01e851d8"
     },
     {
       "path": "requirements-web.lock",
@@ -1198,8 +1203,8 @@
     },
     {
       "path": "tests/test_foreground_indicator_owned_modal.py",
-      "bytes": 2421,
-      "sha256": "a3f5246deb689ae4a1a0c589fd71425aca48047d7fc70d4513e3c879c00ea183"
+      "bytes": 3446,
+      "sha256": "04513ad785e1d1db9c2e71b94d5a26725ecbb30d2a2413fd4fba19f4028b7f50"
     },
     {
       "path": "tests/test_web_closed_browser_update.py",

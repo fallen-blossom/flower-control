@@ -1,10 +1,11 @@
-"""Web MCP process with Hook-bound temporary background Brave sessions."""
+"""Web MCP process with Hook-bound temporary background Chromium sessions (Brave by default)."""
 
 import asyncio
 import base64
 import binascii
 import hashlib
 import re
+import sys
 import threading
 from contextlib import AsyncExitStack
 from contextvars import ContextVar
@@ -13,6 +14,8 @@ from functools import wraps
 from mcp.server.fastmcp import Image
 
 from flower_control._status import create_server
+from flower_control.browsers import (CHROMIUM_BROWSER_PATHS, DEFAULT_BROWSER_NAME,
+                                     default_browser_executable)
 from flower_control.authorization.hook_bridge import (FLOWER_TOOLS,
                                                       state_directory)
 from flower_control.authorization.origin import OriginError, OriginLedger
@@ -54,9 +57,17 @@ def _get_runtime() -> tuple[WebMcpRuntime, OriginLedger]:
             return _runtime, _ledger
         directory = state_directory()
         store = StateStore(directory, jev_enabled=lambda: jev_enabled(directory))
-        # The default App/Computer target pickers exclude Brave windows, so a
-        # login-only Brave has no cross-channel Flower input path.
+        # The default App/Computer target pickers exclude Flower-managed
+        # Chromium windows, so a login-only browser has no cross-channel
+        # Flower input path.
+        try:
+            browser_executable = default_browser_executable()
+        except ValueError:
+            # A bad FLOWER_WEB_BROWSER value must never disable the channel.
+            browser_executable = CHROMIUM_BROWSER_PATHS[DEFAULT_BROWSER_NAME]
+            print("flower_web_browser_selection_invalid; using default", file=sys.stderr)
         runtime = WebMcpRuntime(store, allow_visible_login_fixture=True,
+                                ai_brave_executable=browser_executable,
                                 jev_client_factory=jev_client_factory(directory))
         ledger = OriginLedger(store, allowed_tools=FLOWER_TOOLS)
         _runtime, _ledger = runtime, ledger
@@ -172,7 +183,7 @@ async def flower_origin_probe(flower_origin: dict | None = None) -> dict[str, ob
             "private_grant": status["authorized"]}
 
 
-@server.tool(name="flower_web_start_temp", description="Start a new owned Brave session for this verified chat. Default visible mode opens a maximized taskbar window and requests no activation. Choose hidden when a background task benefits from no window. Does not attach to daily or private browser profiles.")
+@server.tool(name="flower_web_start_temp", description="Start a new owned Chromium session (Brave by default; Chrome/Edge when locally configured) for this verified chat. Default visible mode opens a maximized taskbar window and requests no activation. Choose hidden when a background task benefits from no window. Does not attach to daily or private browser profiles.")
 @_measured_public_tool
 async def flower_web_start_temp(window_mode: str | None = None,
                                 flower_origin: dict | None = None) -> dict:
@@ -189,7 +200,7 @@ async def flower_web_start_temp(window_mode: str | None = None,
         return {"state": "failed", "reason": "temporary_browser_start_failed"}
 
 
-@server.tool(name="flower_web_open_ai", description="Open the fixed Flower AI Brave profile in a maximized taskbar window with no activation requested. Reuse a healthy instance owned by the same chat in this MCP runtime; a live instance recorded by a previous runtime requires the same chat's explicit reconnect. The profile directory is never supplied by the caller.")
+@server.tool(name="flower_web_open_ai", description="Open the fixed Flower AI profile in the managed Chromium browser, maximized as a taskbar window, with no activation requested. Reuse a healthy instance owned by the same chat in this MCP runtime; a live instance recorded by a previous runtime requires the same chat's explicit reconnect. The profile directory is never supplied by the caller.")
 @_measured_public_tool
 async def flower_web_open_ai(flower_origin: dict | None = None) -> dict:
     try:
@@ -202,7 +213,7 @@ async def flower_web_open_ai(flower_origin: dict | None = None) -> dict:
         return {"state": "failed", "reason": "ai_browser_open_failed", "profile_data": "retained"}
 
 
-@server.tool(name="flower_web_reconnect_ai", description="Reconnect this verified chat to its exact still-running AI Brave instance after an MCP restart. The browser PID, creation time, executable and CDP endpoint must match saved evidence; new page references are required.")
+@server.tool(name="flower_web_reconnect_ai", description="Reconnect this verified chat to its exact still-running AI browser instance after an MCP restart. The browser PID, creation time, executable and CDP endpoint must match saved evidence; new page references are required.")
 @_measured_public_tool
 async def flower_web_reconnect_ai(session_id: str, flower_origin: dict | None = None) -> dict:
     try:
@@ -216,7 +227,7 @@ async def flower_web_reconnect_ai(session_id: str, flower_origin: dict | None = 
                 "profile_data": "retained"}
 
 
-@server.tool(name="flower_web_begin_ai_login", description="Open the dedicated AI profile in a visible Brave window for human login. Optionally start on an HTTPS login page (or loopback HTTP for local testing). The login-only browser has no CDP or page worker; close it before finish_ai_login.")
+@server.tool(name="flower_web_begin_ai_login", description="Open the dedicated AI profile in a visible Chromium window for human login. Optionally start on an HTTPS login page (or loopback HTTP for local testing). The login-only browser has no CDP or page worker; close it before finish_ai_login.")
 @_measured_public_tool
 async def flower_web_begin_ai_login(initial_url: str | None = None,
                                     flower_origin: dict | None = None) -> dict:
@@ -282,7 +293,7 @@ async def flower_web_cancel_ai_login(login_id: str,
 
 
 @server.tool(name="flower_web_begin_luohua_login",
-             description="After this chat's semantic Luohua permission is recorded, open the dedicated Luohua Brave profile visibly for human login. No page worker or CDP is attached. Close the window before finishing login.")
+             description="After this chat's semantic Luohua permission is recorded, open the dedicated Luohua profile visibly for human login. No page worker or CDP is attached. Close the window before finishing login.")
 @_measured_public_tool
 async def flower_web_begin_luohua_login(flower_origin: dict | None = None) -> dict:
     try:
@@ -348,7 +359,7 @@ async def flower_web_cancel_luohua_login(login_id: str,
 
 
 @server.tool(name="flower_web_open_luohua",
-             description="Open this chat's dedicated Luohua Brave profile in a maximized taskbar window after the user's semantic permission is recorded. The same chat grant covers the entire profile and all three channels.")
+             description="Open this chat's dedicated Luohua profile in a maximized taskbar window of the managed Chromium browser after the user's semantic permission is recorded. The same chat grant covers the entire profile and all three channels.")
 @_measured_public_tool
 async def flower_web_open_luohua(flower_origin: dict | None = None) -> dict:
     try:
@@ -363,7 +374,7 @@ async def flower_web_open_luohua(flower_origin: dict | None = None) -> dict:
 
 
 @server.tool(name="flower_web_reconnect_luohua",
-             description="Reconnect this authorized chat to its exact still-running Luohua Brave instance after MCP restart.")
+             description="Reconnect this authorized chat to its exact still-running Luohua browser instance after MCP restart.")
 @_measured_public_tool
 async def flower_web_reconnect_luohua(session_id: str,
                                       flower_origin: dict | None = None) -> dict:
@@ -380,7 +391,7 @@ async def flower_web_reconnect_luohua(session_id: str,
 
 
 @server.tool(name="flower_web_close_luohua",
-             description="Normally close this chat's exact managed Luohua Brave instance, checking Stop and the current profile grant before each page and preserving unsaved confirmations. Pending or stopped closes retain the session; private profile data is retained. Observe uncertain results without replay.")
+             description="Normally close this chat's exact managed Luohua Chromium instance, checking Stop and the current profile grant before each page and preserving unsaved confirmations. Pending or stopped closes retain the session; private profile data is retained. Observe uncertain results without replay.")
 @_measured_public_tool
 async def flower_web_close_luohua(session_id: str,
                                   flower_origin: dict | None = None) -> dict:
@@ -397,7 +408,7 @@ async def flower_web_close_luohua(session_id: str,
 
 
 @server.tool(name="flower_web_run", description=(
-    "Run one bounded command in this chat's owned temporary, AI or authorized Luohua Brave session. "
+    "Run one bounded command in this chat's owned temporary, AI or authorized Luohua Chromium session. "
     "Luohua uses one profile-wide grant per chat. list_pages returns IDs by default; "
     "{include_metadata:true,offset?,limit?,expected_digest?,site?} returns bounded page metadata and paging. "
     "site is an optional page filter. Titles/origins/ownership metadata do not grant page authority. "
@@ -535,7 +546,7 @@ async def flower_web_cancel(session_id: str, action_id: str,
         return _rejected(error)
 
 
-@server.tool(name="flower_web_close_temp", description="Normally close this chat's exact temporary Brave session, checking Stop before each page and preserving unsaved confirmations. Pending or stopped closes retain the original session for fresh observation; unknown closes must not be replayed. Existing action receipts remain queryable.")
+@server.tool(name="flower_web_close_temp", description="Normally close this chat's exact temporary Chromium session, checking Stop before each page and preserving unsaved confirmations. Pending or stopped closes retain the original session for fresh observation; unknown closes must not be replayed. Existing action receipts remain queryable.")
 @_measured_public_tool
 async def flower_web_close_temp(session_id: str,
                                 flower_origin: dict | None = None) -> dict:
@@ -549,7 +560,7 @@ async def flower_web_close_temp(session_id: str,
         return {"state": "outcome_uncertain", "reason": "temporary_browser_close_failed"}
 
 
-@server.tool(name="flower_web_close_ai", description="Normally close this chat's exact managed AI Brave instance, checking Stop before each page and preserving unsaved confirmations. Pending or stopped closes retain the original session; observe uncertain outcomes without replay. Dedicated profile data is retained.")
+@server.tool(name="flower_web_close_ai", description="Normally close this chat's exact managed AI Chromium instance, checking Stop before each page and preserving unsaved confirmations. Pending or stopped closes retain the original session; observe uncertain outcomes without replay. Dedicated profile data is retained.")
 @_measured_public_tool
 async def flower_web_close_ai(session_id: str, flower_origin: dict | None = None) -> dict:
     try:

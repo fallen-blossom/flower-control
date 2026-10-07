@@ -6,7 +6,7 @@
 
 ## 先准备什么
 
-使用 Windows 11 x64、当前 Codex 桌面版、[CPython 3.14 x64](https://www.python.org/downloads/windows/)和 [.NET 10 SDK x64](https://dotnet.microsoft.com/download/dotnet/10.0)。Web 通道另需标准系统路径安装的 Brave；App 和 Computer 操作选定的 Windows 窗口，不限于 Brave。当前主要验过 Microsoft Store 的 Codex 宿主。你的 Windows 账号应能给自己批准 UAC，不能用另一个管理员账号代装后假定身份相同。
+使用 Windows 11 x64、当前 Codex 桌面版、[CPython 3.14 x64](https://www.python.org/downloads/windows/)和 [.NET 10 SDK x64](https://dotnet.microsoft.com/download/dotnet/10.0)。Web 通道另需标准系统路径安装的 Chromium 内核浏览器（例如 `C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe` 的 Brave）；Brave 已验证，Chrome、Edge 已接受但待验证。App 和 Computer 操作选定的 Windows 窗口，不限于某一种浏览器。当前主要验过 Microsoft Store 的 Codex 宿主。你的 Windows 账号应能给自己批准 UAC，不能用另一个管理员账号代装后假定身份相同。
 
 源码放普通本地文件夹，不用 Junction 或网络盘，装好后不要移动。无需 Docker、WSL、托管浏览器或 Flower 云账号。
 

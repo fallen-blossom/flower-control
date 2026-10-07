@@ -14,6 +14,7 @@ import threading
 import pythoncom
 import win32com.client
 
+from flower_control.browsers import is_supported_browser_image
 from flower_control.control.state import ControlError, StateStore
 from flower_control.control.native import process_creation_filetime, process_identity
 
@@ -99,7 +100,9 @@ class BrowserWindowPolicy:
         return marker
 
     def inspect(self, task: str, pid: int, image: Path) -> BrowserWindowAccess:
-        if image.name.lower() != "brave.exe":
+        # Brave, Chrome and Edge share this profile/marker contract; any other
+        # image is not a Flower-managed Chromium window.
+        if not is_supported_browser_image(image):
             return BrowserWindowAccess()
         profile = self._profile_for_process(pid)
         if profile is None:

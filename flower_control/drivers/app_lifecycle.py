@@ -17,6 +17,7 @@ import win32con
 import win32gui
 import win32process
 
+from flower_control.browsers import is_supported_browser_image
 from flower_control.control.native import process_creation_filetime
 from flower_control.local_target import _process_image_and_liveness
 from flower_control.drivers.computer_native import (WindowIdentity, assert_window,
@@ -124,7 +125,8 @@ def launch_application(executable: str, args: list[str], *, mode: str,
     path = path.resolve(strict=True)
     if path.suffix.lower() != ".exe" or not path.is_file():
         raise AppLifecycleError("executable_not_found")
-    if path.name.lower() in {"brave.exe", "credentialuibroker.exe", "consent.exe", "logonui.exe"}:
+    if (is_supported_browser_image(path)
+            or path.name.lower() in {"credentialuibroker.exe", "consent.exe", "logonui.exe"}):
         raise AppLifecycleError("app_launch_target_excluded")
     if (existing_identity is None) != (resolve_existing is None):
         raise AppLifecycleError("invalid_existing_instance")

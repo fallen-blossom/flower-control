@@ -12,6 +12,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 import gc
+from pathlib import Path
 import threading
 import time
 from typing import Callable, Iterable
@@ -23,7 +24,7 @@ import win32gui
 from flower_control.drivers.computer_native import (
     MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK,
     InputBatch, VirtualDesktop, WindowIdentity, assert_window, virtual_desktop,
-    window_geometry, is_owned_popup,
+    window_geometry, is_owned_popup, same_process_window,
 )
 from . import indicator_native_draw as drawing
 from .indicator_operator import OperatorCache
@@ -42,9 +43,16 @@ _WS_EX_TOPMOST = 0x00000008
 _GWL_EXSTYLE = -20
 _SWP_NOACTIVATE = 0x0010
 _SWP_SHOWWINDOW = 0x0040
+_SWP_NOSIZE = 0x0001
+_SWP_NOMOVE = 0x0002
 _HWND_TOPMOST = -1
 _SW_HIDE = 0
 _SW_SHOWNA = 8
+# Bounded, read-only z-order probe intervals and history for diagnostics.
+_Z_ORDER_INTERVAL = 0.5
+_MAX_Z_ORDER_WALK = 64
+_LAYOUT_NOTE_LIMIT = 32
+_MAX_FRAME_PIXELS = 8_000_000
 ScreenRect = tuple[int, int, int, int]
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -63,6 +71,12 @@ _user32.RemovePropW.argtypes = (wintypes.HWND, wintypes.LPCWSTR)
 _user32.RemovePropW.restype = wintypes.HANDLE
 _user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
 _user32.ShowWindow.restype = wintypes.BOOL
+_user32.GetPropW.argtypes = (wintypes.HWND, wintypes.LPCWSTR)
+_user32.GetPropW.restype = wintypes.HANDLE
+_user32.SetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPCWSTR)
+_user32.SetWindowTextW.restype = wintypes.BOOL
+_user32.GetWindowDisplayAffinity.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+_user32.GetWindowDisplayAffinity.restype = wintypes.BOOL
 
 
 class IndicatorError(RuntimeError):
@@ -95,6 +109,62 @@ def _rects(rects: Iterable[ScreenRect]) -> tuple[ScreenRect, ...]:
     if len(result) > 4096 or any(not _valid_rect(rect) for rect in result):
         raise ValueError("invalid_screen_rects")
     return result
+
+
+def flower_hud_window(hwnd: int) -> bool:
+    """True for any Flower task indicator window, including another chat's HUD."""
+    try:
+        return bool(hwnd and win32gui.IsWindow(hwnd) and _user32.GetPropW(hwnd, _MARKER))
+    except win32gui.error:
+        return False
+
+
+def covering_window(hwnd: int, rect: ScreenRect,
+                    own: Iterable[int] = ()) -> int | None:
+    """Read-only z-order probe: the first visible window above hwnd that overlaps.
+
+    IsWindowVisible alone cannot prove that a topmost border is still on screen;
+    this walks the real z-order so a covered border can be reported and re-raised.
+    """
+    own_handles = frozenset(own)
+    try:
+        current = hwnd
+        for _ in range(_MAX_Z_ORDER_WALK):
+            current = win32gui.GetWindow(current, win32con.GW_HWNDPREV)
+            if not current:
+                return None
+            if current in own_handles:
+                continue
+            if not win32gui.IsWindowVisible(current) or win32gui.IsIconic(current):
+                continue
+            if _intersects(rect, tuple(win32gui.GetWindowRect(current))):
+                return int(current)
+        return None
+    except win32gui.error:
+        return None
+
+
+def describe_window(hwnd: int) -> dict:
+    """Read-only window facts for the HUD inspector; never activates anything."""
+    try:
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return {"hwnd": int(hwnd or 0), "alive": False}
+        style = int(_user32.GetWindowLongPtrW(hwnd, _GWL_EXSTYLE))
+        affinity_value = wintypes.DWORD()
+        affinity_ok = bool(_user32.GetWindowDisplayAffinity(hwnd, ctypes.byref(affinity_value)))
+        rect = tuple(int(value) for value in win32gui.GetWindowRect(hwnd))
+        return {"hwnd": int(hwnd), "alive": True,
+                "visible": bool(win32gui.IsWindowVisible(hwnd)),
+                "minimized": bool(win32gui.IsIconic(hwnd)), "rect": list(rect),
+                "class_name": win32gui.GetClassName(hwnd),
+                "text": win32gui.GetWindowText(hwnd)[:160],
+                "click_through": bool(style & _WS_EX_TRANSPARENT),
+                "no_activate": bool(style & _WS_EX_NOACTIVATE),
+                "topmost": bool(style & _WS_EX_TOPMOST),
+                "layered": bool(style & _WS_EX_LAYERED),
+                "display_affinity": int(affinity_value.value) if affinity_ok else 0}
+    except win32gui.error:
+        return {"hwnd": int(hwnd or 0), "alive": False, "error": "window_query_failed"}
 
 
 def choose_panel_rect(window_rect: ScreenRect, client_rect: ScreenRect,
@@ -233,6 +303,15 @@ class ForegroundIndicator:
         self._stage = "prepare" if prepare else "execute"
         self._checkpoint = "动作结束后核对结果"
         self._estimated_seconds = None
+        # Host-authored HUD text, layout reasons, paint counters and the last
+        # rendered frames; all of them are diagnostics, never authority.
+        self._next_step: str | None = None
+        self._layout_reason = "target_window"
+        self._layout_notes: list[dict] = []
+        self._covered_by: dict[int, int | None] = {}
+        self._paints = {"borders": 0, "panel": 0, "stop": 0}
+        self._topmost_raises = 0
+        self._frames: dict | None = None
 
     _STAGES = {"execute": "执行阶段", "prepare": "准备目标", "queued": "等待执行", "input": "输入阶段",
                "verify": "核对结果", "wait": "等待变化", "stopping": "停止请求已收到",
@@ -268,6 +347,31 @@ class ForegroundIndicator:
     def linger(self, seconds: float = 3):
         with self._layout_condition:
             self._expires = min(self._expires, time.monotonic() + seconds)
+
+    def set_next_step(self, next_step: str | None):
+        """Show the host's short next step on its own panel line.
+
+        This is display text from the calling model: it never grants authority,
+        never changes stage semantics and never replaces a real receipt.
+        """
+        if next_step is not None and (type(next_step) is not str or
+                not 1 <= len(next_step.strip()) <= 48 or
+                any(ord(c) < 32 for c in next_step)):
+            raise ValueError("invalid_indicator_next_step")
+        with self._layout_condition:
+            self._next_step = None if next_step is None else next_step.strip()
+
+    def next_step(self) -> str | None:
+        with self._layout_condition:
+            return self._next_step
+
+    def panel_text(self, target_label: str | None = None) -> str:
+        """One-line HUD text, also mirrored into the panel window title."""
+        with self._layout_condition:
+            stage, checkpoint, note = self._stage, self._checkpoint, self._next_step
+        hint = self.task_hint if checkpoint == "动作结束后核对结果" else checkpoint
+        line = f"{self.title_text()} | 接下来：{self._STAGES[stage]} · {hint}"
+        return line + (f" | 下一步：{note}" if note else "")
 
     def status_text(self, target_label: str | None = None) -> str:
         with self._layout_condition:
@@ -310,6 +414,12 @@ class ForegroundIndicator:
             self.error_detail = (self.error_detail + f"; {error.__cause__}")[:500]
         self.error = IndicatorError(code)
 
+    def _note_layout(self, code: str, **facts) -> None:
+        """Bounded in-memory layout history for the HUD inspector."""
+        entry = {"code": code, "at": round(time.monotonic(), 3), **facts}
+        self._layout_notes.append(entry)
+        del self._layout_notes[:-_LAYOUT_NOTE_LIMIT]
+
     @staticmethod
     def _style(hwnd: int, *, click_through: bool, capture_excluded: bool = True) -> None:
         ctypes.set_last_error(0)
@@ -338,17 +448,25 @@ class ForegroundIndicator:
                                    _SWP_NOACTIVATE | (_SWP_SHOWWINDOW if show else 0)):
             raise ctypes.WinError(ctypes.get_last_error())
 
+    def _raise_topmost(self, hwnd: int, keep_above: Iterable[int] = ()) -> None:
+        """One no-activate z-order re-assert without moving or resizing."""
+        flags = _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE
+        if not _user32.SetWindowPos(hwnd, _HWND_TOPMOST, 0, 0, 0, 0, flags):
+            raise ctypes.WinError(ctypes.get_last_error())
+        for other in keep_above:
+            if other and other != hwnd and win32gui.IsWindow(other):
+                _user32.SetWindowPos(other, _HWND_TOPMOST, 0, 0, 0, 0, flags)
+        self._topmost_raises += 1
+
     def _target_layout(self):
         assert_window(self.identity)
         minimized = win32gui.IsIconic(self.identity.hwnd)
-        foreground_matches = True
+        reason = "target_minimized" if minimized else "target_window"
         if self.prepare and not minimized:
             foreground = win32gui.GetAncestor(win32gui.GetForegroundWindow(), win32con.GA_ROOT)
-            # An owned modal belongs to this visible task context. This only
-            # preserves the HUD; input still requires its exact foreground grant.
-            foreground_matches = (foreground == self.identity.hwnd or
-                                  is_owned_popup(self.identity, foreground))
-        if self.prepare and (minimized or not foreground_matches):
+            reason = self._task_context(foreground) or "foreground_other_app"
+        self._layout_reason = reason
+        if self.prepare and (minimized or reason == "foreground_other_app"):
             monitor = win32api.MonitorFromPoint(win32gui.GetCursorPos(), win32con.MONITOR_DEFAULTTONEAREST)
             return None, tuple(win32api.GetMonitorInfo(monitor)["Work"])
         if minimized:
@@ -356,6 +474,27 @@ class ForegroundIndicator:
         geometry = window_geometry(self.identity)
         monitor = win32api.MonitorFromWindow(self.identity.hwnd, win32con.MONITOR_DEFAULTTONEAREST)
         return geometry, tuple(win32api.GetMonitorInfo(monitor)["Work"])
+
+    def _task_context(self, foreground: int) -> str | None:
+        """Classify the current foreground for the HUD frame; None means unrelated.
+
+        An owned modal was already accepted. A same-application visible
+        top-level window is accepted as well, because dialogs, wizards and tool
+        panels are frequently created without GW_OWNER while they still belong
+        to the running task; users reported the flowing frame dropping out in
+        exactly those cases. Flower HUD windows of any chat are never accepted,
+        and this relation authorizes nothing: input still requires its own exact
+        foreground, target, Stop and receipt checks.
+        """
+        if foreground == self.identity.hwnd:
+            return "target_window"
+        if is_owned_popup(self.identity, foreground):
+            return "owned_modal"
+        if (foreground and foreground not in self._window_handles
+                and same_process_window(self.identity, foreground)
+                and not flower_hud_window(foreground)):
+            return "same_app_window"
+        return None
 
     def _run_ui(self) -> None:
         """The shared Medium/High HUD; only its independent Stop hit area clicks."""
@@ -441,6 +580,7 @@ class ForegroundIndicator:
             # Preserve the current controller's externally observed handle order.
             self._window_handles[:] = [*borders, panel_hwnd, button_hwnd]
             next_geometry = 0.0
+            next_occlusion = 0.0
             strips = ()
             old_strips = None
             bounds = button_bounds = None
@@ -450,6 +590,8 @@ class ForegroundIndicator:
             preferred_width = 0
             dpi = 96
             geometry = None
+            panel_image = None
+            frame_images = []
             while not self._close_requested.is_set() and time.monotonic() < self._expires:
                 if win32gui.PumpWaitingMessages():
                     break
@@ -485,8 +627,12 @@ class ForegroundIndicator:
                     if width_signature != (title, dpi):
                         preferred_width = preferred_status_width(title, dpi)
                         width_signature = (title, dpi)
+                    with self._layout_condition:
+                        note = self._next_step
+                    self._note_layout(self._layout_reason, borders=bool(strips),
+                                      foreground_kept=geometry is not None, next_step=bool(note))
                     panel_width = min(preferred_width, work[2] - work[0] - px(16, dpi))
-                    panel_height = px(56, dpi)
+                    panel_height = px(76 if note else 56, dpi)
                     bounds = choose_panel_rect(visible, client, work, avoid,
                                                panel_size=(max(1, panel_width), panel_height), margin=px(8, dpi))
                     if bounds is None:
@@ -515,6 +661,7 @@ class ForegroundIndicator:
                         self._layout_applied_revision = revision
                         self._layout_condition.notify_all()
                     next_geometry = now + .18
+                frame_images = []
                 if strips:
                     perimeter = max(1, 2 * ((visible[2] - visible[0]) + (visible[3] - visible[1])) - 4)
                     for hwnd, (x, y, w, h, vertical, reverse, offset) in zip(borders, strips):
@@ -526,24 +673,53 @@ class ForegroundIndicator:
                                                   now * .12 % 1, offset, perimeter, vertical,
                                                   reverse, edge, not vertical)
                         drawing.paint_image(hwnd, image)
+                        self._paints["borders"] += 1
+                        frame_images.append((x, y, image))
                         if reposition:
                             _user32.ShowWindow(hwnd, _SW_SHOWNA)
+                    if now >= next_occlusion:
+                        # A topmost border can still be buried by a later topmost
+                        # window; IsWindowVisible cannot see that. Probe the real
+                        # z-order at a bounded interval and re-raise only then.
+                        next_occlusion = now + _Z_ORDER_INTERVAL
+                        for hwnd, (x, y, w, h, *_rest) in zip(borders, strips):
+                            covered = covering_window(hwnd, (x, y, x + w, y + h),
+                                                      self._window_handles)
+                            self._covered_by[hwnd] = covered
+                            if covered is not None:
+                                try:
+                                    self._raise_topmost(hwnd, keep_above=(panel_hwnd, button_hwnd))
+                                except OSError as exc:
+                                    # A failed z-order re-assert must not tear
+                                    # down an otherwise usable HUD.
+                                    self._note_layout("border_reassert_failed", hwnd=int(hwnd),
+                                                      error=type(exc).__name__)
+                                else:
+                                    self._note_layout("border_covered_reasserted", hwnd=int(hwnd),
+                                                      covered_by=int(covered))
                 else:
                     for hwnd in borders:
                         _user32.ShowWindow(hwnd, _SW_HIDE)
+                        self._covered_by.pop(hwnd, None)
                 old_strips = strips
                 if bounds is not None:
                     l, t, r, b = bounds
                     width, height = r - l, b - t
                     with self._layout_condition:
                         stage, checkpoint, estimate = self._stage, self._checkpoint, self._estimated_seconds
+                        note = self._next_step
                         elapsed = int(max(0, now - self._operation_started))
-                    signature = (bounds, dpi, title, stage, checkpoint, estimate, elapsed)
+                    signature = (bounds, dpi, title, stage, checkpoint, estimate, elapsed, note)
                     if signature != last_text_signature:
                         next_hint = self.task_hint if checkpoint == "动作结束后核对结果" else checkpoint
-                        image = render_status_image((width, height), dpi, title,
-                                                    self._STAGES[stage], next_hint, elapsed, estimate)
-                        drawing.paint_image(panel_hwnd, image)
+                        panel_image = render_status_image((width, height), dpi, title,
+                                                          self._STAGES[stage], next_hint, elapsed,
+                                                          estimate, note)
+                        drawing.paint_image(panel_hwnd, panel_image)
+                        self._paints["panel"] += 1
+                        # The drawn text is pixels; mirror one line into the panel
+                        # title so a read-only inspector can still read it.
+                        _user32.SetWindowTextW(panel_hwnd, self.panel_text())
                         last_text_signature = signature
                     stop_signature = (button_bounds, dpi, stopping)
                     if stop_signature != last_stop_signature:
@@ -551,8 +727,16 @@ class ForegroundIndicator:
                         image = render_action_image("正在停止" if stopping else "停止本次操作",
                                                     (bw, bh), dpi, destructive=True)
                         drawing.paint_image(button_hwnd, image)
+                        self._paints["stop"] += 1
                         _user32.ShowWindow(button_hwnd, _SW_SHOWNA)
                         last_stop_signature = stop_signature
+                with self._layout_condition:
+                    self._frames = {
+                        "dpi": dpi, "title": title,
+                        "visible": tuple(visible) if geometry is not None else None,
+                        "strips": tuple(frame_images),
+                        "panel": (tuple(bounds), panel_image)
+                        if bounds is not None and panel_image is not None else None}
                 self._ready.set()
                 self._close_requested.wait(max(0, .067 - (time.monotonic() - now)))
         except BaseException as error:
@@ -621,3 +805,92 @@ class ForegroundIndicator:
 
     def __exit__(self, _type, _value, _traceback) -> None:
         self.close()
+
+    def state(self) -> dict:
+        """Read-only HUD diagnostics for the inspector; it never sends input."""
+        with self._layout_condition:
+            stage, checkpoint, note = self._stage, self._checkpoint, self._next_step
+            panel = self._panel_bounds
+            notes = list(self._layout_notes)
+            applied, revision = self._layout_applied_revision, self._layout_revision
+            estimated = self._estimated_seconds
+        handles = list(self._window_handles)
+        return {
+            "title": self.title_text(),
+            "stage": stage, "stage_label": self._STAGES[stage],
+            "checkpoint": checkpoint, "next_step": note, "task_hint": self.task_hint,
+            "text": self.panel_text(),
+            "elapsed_seconds": round(max(0.0, time.monotonic() - self._operation_started), 3),
+            "estimated_seconds": estimated,
+            "thread_alive": bool(self._thread is not None and self._thread.is_alive()),
+            "closed": self._closed.is_set(),
+            "error": getattr(self.error, "code", None), "error_detail": self.error_detail,
+            "capture_excluded": bool(self.capture_excluded),
+            "persistent": bool(self.persistent), "prepare": bool(self.prepare),
+            "target": {"hwnd": int(self.identity.hwnd), "pid": int(self.identity.pid)},
+            "layout_reason": self._layout_reason,
+            "layout_applied": applied >= revision,
+            "panel_bounds": list(panel) if panel else None,
+            "borders": [describe_window(hwnd) for hwnd in handles[:4]],
+            "border_covered_by": {str(hwnd): self._covered_by.get(hwnd)
+                                  for hwnd in handles[:4]},
+            "panel_windows": [describe_window(hwnd) for hwnd in handles[4:]],
+            "paints": dict(self._paints), "topmost_raises": self._topmost_raises,
+            "layout_notes": notes,
+        }
+
+    def dump_frames(self, directory) -> dict:
+        """Export this HUD's own rendered layers; screen capture cannot see them.
+
+        The indicator windows use WDA_EXCLUDEFROMCAPTURE, so desktop screenshots
+        omit them. These PNGs come from the exact layered images the indicator
+        uploads, which makes them the faithful record of frame and text.
+        """
+        from PIL import Image
+        with self._layout_condition:
+            frames = self._frames
+        if not frames:
+            raise IndicatorError("indicator_frames_unavailable")
+        strips = list(frames.get("strips") or ())
+        panel = frames.get("panel")
+        pieces = [(int(x), int(y), image) for x, y, image in strips]
+        if panel is not None:
+            pieces.append((int(panel[0][0]), int(panel[0][1]), panel[1]))
+        if not pieces:
+            raise IndicatorError("indicator_frames_unavailable")
+        root = Path(directory)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise IndicatorError("indicator_dump_directory_unavailable") from exc
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+        written = []
+        frame_skipped = None
+        if panel is not None:
+            panel_path = root / f"hud-{stamp}-panel.png"
+            panel[1].save(panel_path)
+            written.append(str(panel_path))
+        left = min(x for x, _, _ in pieces)
+        top = min(y for _, y, _ in pieces)
+        right = max(x + image.size[0] for x, _, image in pieces)
+        bottom = max(y + image.size[1] for _, y, image in pieces)
+        if (right - left) * (bottom - top) <= _MAX_FRAME_PIXELS:
+            canvas = Image.new("RGBA", (right - left, bottom - top), (0, 0, 0, 0))
+            for x, y, image in pieces:
+                canvas.alpha_composite(image.convert("RGBA"), (x - left, y - top))
+            frame_path = root / f"hud-{stamp}-frame.png"
+            canvas.save(frame_path)
+            written.append(str(frame_path))
+        else:
+            # A silent omission once looked exactly like "the border was never
+            # drawn", so the skipped composite is reported explicitly.
+            frame_skipped = "pixel_limit"
+        result = {"directory": str(root), "files": written,
+                  "origin": [left, top, right, bottom],
+                  "borders": [[x, y, image.size[0], image.size[1]]
+                              for x, y, image in pieces[:len(strips)]],
+                  "panel_bounds": list(panel[0]) if panel is not None else None,
+                  "text": self.panel_text()}
+        if frame_skipped is not None:
+            result["frame_skipped"] = frame_skipped
+        return result
