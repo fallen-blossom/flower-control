@@ -88,13 +88,13 @@
     },
     {
       "path": "docs/LOCAL_CLIENTS.md",
-      "bytes": 4271,
-      "sha256": "4a736eb4cdf19444411cae2eb8fdc8f01def44c7b6a6532b19f8e30f178d133c"
+      "bytes": 4239,
+      "sha256": "3862fd92960e0b811c9ff85ae7c79bfda3e09bf68291100e007a44926d7899d3"
     },
     {
       "path": "docs/LOCAL_CLIENTS.zh-CN.md",
-      "bytes": 5093,
-      "sha256": "8759d0661e804bd7e04d596e6d7599f17bf1f468c65c40ea6b09d00309a04307"
+      "bytes": 5047,
+      "sha256": "2cd214e7009750938337b616e74803687aebbe34c0ec657ac7a9da50c77c9f73"
     },
     {
       "path": "docs/RELEASE_NOTES.md",
