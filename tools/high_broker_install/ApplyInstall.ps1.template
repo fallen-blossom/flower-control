@@ -1,47 +1,138 @@
-param([switch]$CompleteTaskRegistration)
+param([switch]$Resume,[switch]$CompleteTaskRegistration,[string]$SetupOperationId='',[string]$SetupPlanPath='',
+    [string]$SetupPlanSha256='',[string]$SetupScriptPath='',[string]$ExpectedScriptSha256='')
 . (Join-Path $PSScriptRoot 'InstallCommon.ps1')
-# First-install recovery only. An existing task/version change still needs review.
+$Resume=$Resume -or $CompleteTaskRegistration
+$stagePath=Join-Path $packageRoot ('install-stage-'+$installOperation+'.json')
+Assert-FlowerNoLinks $stagePath -Shallow
+$script:installStage=[ordered]@{schema=1;operation='install';operation_id=$installOperation;plan_sha256=$installPlanHash;
+    version=$version;program_root=$brokerRoot;package_root=$packageRoot;task_xml_sha256=$taskXmlHash;
+    location_request_sha256=$locationRequestHash;state='prepared';completed=$false;task_started=$false;completed_stages=@()}
+function Save-FlowerInstallStage([string]$state) {
+    $script:installStage.state=$state
+    $script:installStage['utc']=[DateTime]::UtcNow.ToString('o')
+    Assert-FlowerNoLinks $stagePath -Shallow
+    $temporary=$stagePath+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
+    [IO.File]::WriteAllText($temporary,($script:installStage|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+    if(Test-Path -LiteralPath $stagePath){[IO.File]::Replace($temporary,$stagePath,[System.Management.Automation.Language.NullString]::Value)}
+    else{[IO.File]::Move($temporary,$stagePath)}
+}
+function Complete-FlowerInstallStage([string]$state) {
+    if($script:installStage.completed_stages -notcontains $state){$script:installStage.completed_stages+=@($state)}
+    Save-FlowerInstallStage $state
+}
+function Assert-FlowerTaskXmlNode($expected,$actual) {
+    if($null -eq $actual -or $expected.LocalName -cne $actual.LocalName){throw 'installed_task_definition_changed'}
+    foreach($attribute in $expected.Attributes){if($attribute.Name -ne 'xmlns' -and $actual.GetAttribute($attribute.Name) -cne $attribute.Value){throw 'installed_task_definition_changed'}}
+    $children=@($expected.ChildNodes|Where-Object {$_.NodeType -eq [Xml.XmlNodeType]::Element})
+    if($children.Count -eq 0){if($expected.InnerText -ine $actual.InnerText){throw 'installed_task_definition_changed'};return}
+    $actualChildren=@($actual.ChildNodes|Where-Object {$_.NodeType -eq [Xml.XmlNodeType]::Element})
+    if($expected.LocalName -in @('Actions','Principals','Triggers') -and $actualChildren.Count -ne $children.Count){throw 'installed_task_definition_changed'}
+    foreach($child in $children){
+        $matches=@($actualChildren|Where-Object {$_.LocalName -ceq $child.LocalName})
+        if($matches.Count -ne 1){throw 'installed_task_definition_changed'}
+        Assert-FlowerTaskXmlNode $child $matches[0]
+    }
+}
+function Assert-FlowerRegisteredInstallTask($task) {
+    if($null -eq $task){throw 'installation_task_registration_unconfirmed'}
+    $policy=Get-FlowerPreparedPolicy
+    if(@($task.Actions).Count -ne 1 -or $task.Actions.Execute -ine $command -or $task.Actions.Arguments -cne '--serve' -or
+        $task.Actions.WorkingDirectory -ine $versionTarget -or $task.Principal.UserId -cne $policy.UserSid -or
+        [string]$task.Principal.RunLevel -notin @('Highest','HighestAvailable') -or
+        [string]$task.Principal.LogonType -notin @('Interactive','InteractiveToken') -or $task.Settings.Enabled -ne $true){throw 'installed_task_identity_changed'}
+    [xml]$expectedXml=[IO.File]::ReadAllText((Join-Path $packageRoot 'task.xml'))
+    [xml]$actualXml=[string](Export-ScheduledTask -TaskName $taskName -TaskPath '\')
+    Assert-FlowerTaskXmlNode $expectedXml.DocumentElement $actualXml.DocumentElement
+    Assert-FlowerTaskSecurity
+}
 Assert-FlowerNoLinks $brokerRoot
 Assert-FlowerVersion $versionSource
 Assert-FlowerSource
-if ((Get-FileHash -LiteralPath (Join-Path $packageRoot 'task.xml') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $taskXmlHash) { throw 'task_xml_changed' }
-$existingTask = Get-FlowerTask
-if ($existingTask) { throw 'existing_task_requires_explicit_drain_update_review' }
-$activePath = Join-Path $brokerRoot 'active.json'
-
-if ($CompleteTaskRegistration) {
-    if (!(Test-Path -LiteralPath $activePath) -or !(Test-Path -LiteralPath $versionTarget)) { throw 'registration_resume_requires_published_version' }
-    if ((Get-FileHash -LiteralPath $activePath).Hash -ne (Get-FileHash -LiteralPath (Join-Path $packageRoot 'active.json')).Hash) { throw 'registration_resume_active_changed' }
-    Assert-FlowerVersion $versionTarget
-    Assert-FlowerAcl $brokerRoot
-    Assert-FlowerAcl (Join-Path $brokerRoot 'versions')
-    Assert-FlowerAcl $activePath
-    Assert-FlowerAcl $versionTarget
-    foreach ($item in Get-ChildItem -LiteralPath $versionTarget -Recurse -Force) { Assert-FlowerAcl $item.FullName }
-} else {
-    if (Test-Path -LiteralPath $activePath) { throw 'existing_installation_requires_explicit_update_review' }
-    if (Test-Path -LiteralPath $versionTarget) { throw 'version_target_already_exists' }
-    if ((Test-Path -LiteralPath $brokerRoot) -and @(Get-ChildItem -LiteralPath $brokerRoot -Force).Count -ne 0) { throw 'existing_installation_requires_explicit_update_review' }
-    New-Item -ItemType Directory -Path $brokerRoot -Force | Out-Null
-    Set-FlowerProtection $brokerRoot
-    $versions = Join-Path $brokerRoot 'versions'
-    New-Item -ItemType Directory -Path $versions -Force | Out-Null
-    Set-FlowerProtection $versions
-    Copy-Item -LiteralPath $versionSource -Destination $versionTarget -Recurse
-    Assert-FlowerVersion $versionTarget
-    Set-FlowerProtection $versionTarget
-    foreach ($item in Get-ChildItem -LiteralPath $versionTarget -Recurse -Force) { Set-FlowerProtection $item.FullName }
-    Copy-Item -LiteralPath (Join-Path $packageRoot 'active.json') -Destination $activePath
-    Set-FlowerProtection $activePath
+if((Get-FileHash -LiteralPath (Join-Path $packageRoot 'task.xml') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $taskXmlHash){throw 'task_xml_changed'}
+$hasReceipt=Test-Path -LiteralPath $stagePath
+if($hasReceipt) {
+    $previous=Get-Content -LiteralPath $stagePath -Raw -Encoding UTF8|ConvertFrom-Json
+    foreach($key in @('schema','operation','operation_id','plan_sha256','version','program_root','package_root','task_xml_sha256','location_request_sha256')) {
+        if($previous.$key -cne $script:installStage[$key]){throw 'install_resume_plan_changed'}
+    }
+    if(!$Resume -and !$previous.completed){throw ('install_resume_required:'+ $stagePath)}
+    $script:installStage.completed_stages=@($previous.completed_stages)
+} elseif($Resume){throw 'install_resume_receipt_required'}
+$existingTask=Get-FlowerTask
+if(!$hasReceipt -and $null -ne $existingTask){throw 'existing_task_requires_explicit_drain_update_review'}
+$activePath=Join-Path $brokerRoot 'active.json'
+$retainedRoot=if(!$hasReceipt){Test-FlowerRetainedRoot}else{$false}
+if($hasReceipt -and (Test-Path -LiteralPath $brokerRoot)){
+    Assert-FlowerInstallOwner
 }
-
-Initialize-FlowerRecovery
+if(!$hasReceipt) {
+    if((Test-Path -LiteralPath $activePath) -or (Test-Path -LiteralPath $versionTarget) -or
+        ((Test-Path -LiteralPath $brokerRoot) -and @(Get-ChildItem -LiteralPath $brokerRoot -Force).Count -ne 0)){
+        if(!$retainedRoot){throw 'existing_installation_requires_explicit_update_review'}
+    }
+}
 try {
-    Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Xml (Get-Content -LiteralPath (Join-Path $packageRoot 'task.xml') -Raw) | Out-Null
-    Assert-FlowerTaskSecurity
+    Save-FlowerInstallStage 'preflight_verified'
+    Initialize-FlowerInstallLayout -Resume:($hasReceipt -or $retainedRoot)
+    New-Item -ItemType Directory -Path $brokerRoot -Force|Out-Null
+    Set-FlowerProtection $brokerRoot
+    $versions=Join-Path $brokerRoot 'versions'
+    New-Item -ItemType Directory -Path $versions -Force|Out-Null
+    Set-FlowerProtection $versions
+    New-Item -ItemType Directory -Path $versionTarget -Force|Out-Null
+    Set-FlowerProtection $versionTarget
+    Write-FlowerInstallOwner
+    if($SetupPlanPath){
+        $null=Write-FlowerResumeAnchor -Kind 'setup' -OperationId $SetupOperationId -PlanPath $SetupPlanPath -PlanSha256 $SetupPlanSha256 `
+            -ScriptPath $SetupScriptPath -ScriptSha256 $ExpectedScriptSha256 -ResultPath $stagePath
+    }
+    Complete-FlowerInstallStage 'layout_initialized'
+    $active=Get-FlowerPreparedActive
+    $policy=Get-FlowerPreparedPolicy
+    $files=@{}
+    foreach($row in $active.hashes.PSObject.Properties){$files.Add($row.Name,[string]$row.Value)}
+    if($active.PSObject.Properties.Name -contains 'runtime_hashes'){foreach($row in $active.runtime_hashes.PSObject.Properties){$files.Add($row.Name.Replace('/','\'),[string]$row.Value)}}
+    foreach($group in @('AppWorkerHashes','WgcWorkerHashes')) {
+        if($policy.PSObject.Properties.Name -notcontains $group){continue}
+        $prefix=if($group -ceq 'AppWorkerHashes'){'app\'}else{'wgc\'}
+        foreach($row in $policy.$group.PSObject.Properties){$files.Add($prefix+$row.Name,[string]$row.Value)}
+    }
+    $files.Add('installation.json',(Get-FileHash -LiteralPath (Join-Path $packageRoot 'active.json') -Algorithm SHA256).Hash.ToLowerInvariant())
+    Save-FlowerInstallStage 'copying_version'
+    foreach($relative in @($files.Keys|Sort-Object)) {
+        if([IO.Path]::IsPathRooted($relative) -or $relative.Contains(':') -or @($relative.Split('\')|Where-Object {$_ -in @('','.','..')}).Count -gt 0){throw 'install_payload_relative_path_rejected'}
+        $target=Join-Path $versionTarget $relative
+        $missing=[Collections.Generic.Stack[string]]::new()
+        for($cursor=[IO.Path]::GetDirectoryName($target);!(Test-Path -LiteralPath $cursor);$cursor=[IO.Path]::GetDirectoryName($cursor)){$missing.Push($cursor)}
+        while($missing.Count -gt 0){$path=$missing.Pop();New-Item -ItemType Directory -Path $path|Out-Null;Set-FlowerProtection $path}
+        Copy-FlowerInstallFile (Join-Path $versionSource $relative) $target $files[$relative]
+    }
+    Assert-FlowerVersion $versionTarget
+    # Only the sealed new-layout request supports retained-root reinstall.
+    # Legacy HighHelper preparation keeps its existing fixed-root contract.
+    if($null -ne (Get-FlowerLocationRequest)){Assert-FlowerRetainedMetadata}
+    Complete-FlowerInstallStage 'version_verified'
+    Copy-FlowerInstallFile (Join-Path $packageRoot 'active.json') $activePath $files['installation.json']
+    Complete-FlowerInstallStage 'active_published'
+    Initialize-FlowerRecovery
+    Complete-FlowerInstallStage 'recovery_initialized'
+    Register-FlowerInstallLocation
+    Complete-FlowerInstallStage 'location_registered'
+    $existingTask=Get-FlowerTask
+    if($null -eq $existingTask) {
+        Save-FlowerInstallStage 'task_registration_pending'
+        Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Xml ([IO.File]::ReadAllText((Join-Path $packageRoot 'task.xml')))|Out-Null
+    }
+    Assert-FlowerRegisteredInstallTask (Get-FlowerTask)
+    Complete-FlowerInstallStage 'task_registered'
+    $script:installStage.completed=$true
+    Save-FlowerInstallStage 'installed_not_started'
+    [ordered]@{schema=1;operation='install';operation_id=$installOperation;version=$version;program_root=$brokerRoot;
+        state='installed_not_started';installed=$true;task_registered=$true;task_started=$false;runtime_verified=$false;
+        result_path=$stagePath;resume_supported=$true}|ConvertTo-Json -Compress
 } catch {
-    Write-Warning '版本文件保留。核对同版本/字节/ACL、确认任务缺失后，使用本脚本 -CompleteTaskRegistration 续完；不自动删除或改写既有任务。'
+    $script:installStage['reason']=$_.Exception.Message
+    try{Save-FlowerInstallStage 'incomplete'}catch{[Console]::Error.WriteLine('install_stage_receipt_write_unconfirmed')}
+    Write-Warning ('首装未完成，保留所有已发布文件；复用原计划并加 -Resume 继续。阶段回执：'+$stagePath)
     throw
 }
-# No start, runas, UAC/Defender change, client manifest write or file deletion.
-Write-Output ('installed_fixed_version:' + $version)

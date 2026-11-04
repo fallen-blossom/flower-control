@@ -98,7 +98,8 @@ def _atomic_create_directory(root):
 
 
 def _root():
-    root = Path(tempfile.gettempdir()) / "flower-web-upload-leases-v1"
+    from flower_control.data_paths import runtime_temp_root
+    root = runtime_temp_root() / "flower-web-upload-leases-v1"
     _check_no_reparse(root)
     root.mkdir(mode=0o700, exist_ok=True)
     _check_no_reparse(root)

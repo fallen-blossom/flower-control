@@ -29,7 +29,9 @@ def prepared_configuration(package: Path, output: Path, source_root: Path, *, ho
             or Path(prep.get("source_root", "")).resolve() != root
             or prep.get("installed") is not False or output.exists()):
         raise ValueError("new_output_and_matching_prepared_source_required")
-    production = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "FlowerControl/HighHelper"
+    from tools.prepare_high_broker_install import preparation_location
+    selected_root = prep.get("installation_root")
+    production = preparation_location(Path(selected_root) if selected_root else None).program_root
     if Path(prep.get("production_root", "")).resolve() != production.resolve():
         raise ValueError("fixed_program_files_helper_required")
     policy_path = package / "versions" / version / "broker.json"

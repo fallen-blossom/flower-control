@@ -9,7 +9,8 @@ internal static partial class SettingsWorkspace
     private sealed record WorkReply(string Kind, UserPermissionSettings? Submitted = null, UserPermissionSettings? Committed = null,
         SettingsUiPreference? Preference = null, SettingsWordSnapshot? Words = null, string? Error = null,
         string? PreferenceError = null, string? WordError = null, string? SubmittedWords = null, string? SubmittedMode = null,
-        DecisionProviderSnapshot? DecisionSettings = null, DecisionProviderPreferences? SubmittedDecisionSettings = null);
+        DecisionProviderSnapshot? DecisionSettings = null, DecisionProviderPreferences? SubmittedDecisionSettings = null,
+        int? DiagnosticFiles = null);
     private static Task<WorkReply>? work;
     private static CancellationTokenSource? workStop;
     private static SettingsWordSnapshot words = new("", "absent");
@@ -56,6 +57,7 @@ internal static partial class SettingsWorkspace
         wordDraft = words.Text;
         programHealth.Clear();
         InitializeDisplayPreference();
+        RefreshRuntimeIdentity();
     }
     private static string CapabilityText()
     {
@@ -164,6 +166,8 @@ internal static partial class SettingsWorkspace
         if (reply.Kind == "decision_save") { CompleteDecisionServiceSave(reply); return; }
         if (reply.Kind == "browser_preferences") { CompleteBrowserPreferenceSave(reply); return; }
         if (reply.Kind == "display_preferences") { CompleteDisplayPreferenceSave(reply); return; }
+        if (CompleteMaintenanceWork(reply)) return;
+        if (reply.Kind == "product_check" || productCheckPending) { CompleteProductCheck(reply); return; }
         if (reply.Error is not null)
         {
             closeAfterSave = false; notice = (reply.Error.Contains("outcome_unknown") ? UiText.Get("结果待核对：") : UiText.Get("操作未完成：")) + UserFacingError(reply.Error) + "（" + reply.Error + UiText.Get("）；原草稿保留，不自动重试。");
@@ -328,7 +332,7 @@ internal static partial class SettingsWorkspace
                 if (pageControls.Any(c => c.Kind == "COMBOBOX" && SendMessageW(c.Handle, 0x157, IntPtr.Zero, IntPtr.Zero) != IntPtr.Zero)) return false;
                 if (picking) { EndPick(); notice = UiText.Get("选窗已取消。"); UpdateChrome(); } else RequestClose(); return true;
             }
-            if (key == 0x53 && control) { RequestSave(); return true; }
+            if (key == 0x53 && control && GetKeyState(18) >= 0) { RequestSave(); return true; }
             if (key == 112) { ShowWorkspaceHelp(); return true; }
         }
         return message.Kind is >= 0x100 and <= 0x109 && IsDialogMessageW(window, ref message);

@@ -1091,7 +1091,7 @@ internal sealed class AdminLaunchJournal
     { this.path = path; this.sid = sid; this.fixture = fixture; }
     internal static AdminLaunchJournal Open(BrokerPolicy policy, Peer own)
     {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper");
+        var root = InstallationLocation.Current().ProgramRoot;
         if (policy.Fixture || policy.Mode != "high" || own.Integrity != 12288 || own.User != policy.UserSid
             || !Path.GetFullPath(policy.Directory).TrimEnd('\\').Equals(Path.Combine(root, "versions", policy.Version), StringComparison.OrdinalIgnoreCase))
             throw new Boundary("program_launch_storage_role_rejected");

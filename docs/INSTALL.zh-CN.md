@@ -1,8 +1,12 @@
 # 在 Windows 安装 Flower Control
 
+> 0.1.0 正式版准备：普通用户使用[离线安装器](INSTALLER.zh-CN.md)，不需要本文的编译环境。对应 0.1.0 Release/二进制尚未发布；源码、最终匹配包和实际验收分别核对。
+
 [English](INSTALL.md)
 
-这是 **Flower Control 0.1.0-preview.3** 的完整源码预览安装路线。GitHub Release 提供源码和校验和，不提供签名的一键安装器。
+**普通用户先看[离线安装器候选](INSTALLER.zh-CN.md)**：如果你已拿到实际 Setup.exe，可直接使用，不需要编译器。候选尚未公开发布、签名或完成干净 Windows 验收。已公开 preview.3 Release 仍只有源码和校验和。
+
+以下保留经过修订的**源码开发/本机构建路线**，以含本批工具的实际 checkout 为准；它不把开发环境步骤强加给安装器用户。旧 tag 是发布时快照。已有安装先看第 8 节，不用首次安装覆盖。
 
 开发机上的构建和 Codex 插件流程已经实际使用过；这不等于干净 Windows 账号、第二台电脑和所有第三方应用都已经验收。
 
@@ -63,7 +67,7 @@ $flowerPython = Join-Path (Get-Location) '.venv\Scripts\python.exe'
 
 ```powershell
 dotnet restore .\flower_control\drivers\app_native\Flower.AppWorker.csproj --locked-mode --source https://api.nuget.org/v3/index.json
-dotnet restore .\flower_control\drivers\high_helper\Flower.HighHelper.csproj --locked-mode
+dotnet restore .\flower_control\drivers\high_helper\Flower.HighHelper.csproj --locked-mode --source https://api.nuget.org/v3/index.json
 ```
 
 在系统临时目录新建输出目录，然后构建：
@@ -86,7 +90,8 @@ New-Item -ItemType Directory -Path $flowerBuild | Out-Null
 $flowerPackage = Join-Path $env:LOCALAPPDATA ('FlowerControl\source-install\' + [guid]::NewGuid().ToString('N'))
 if ($flowerPackage -match '[^\x00-\x7f]') { throw 'Choose an accessible stable ASCII package path before continuing.' }
 & $flowerPython -B -m tools.prepare_high_broker_install `
-  --data-root "$env:LOCALAPPDATA\FlowerControl" `
+  --install-root "D:\FlowerControl" `
+  --data-root "D:\FlowerControl\Data" `
   --native-bin "$flowerBuild\native" `
   --app-bin "$flowerBuild\app" `
   --native-build-evidence "$flowerBuild\native-evidence.json" `
@@ -96,20 +101,10 @@ if ($flowerPackage -match '[^\x00-\x7f]') { throw 'Choose an accessible stable A
 
 `--data-root` 固定用户数据根，内部会使用 `state-v1` 等子目录；不要把根写成 `FlowerControl\state-v1`。这也供切换到 01/02 的普通执行器使用。已有安装要保留其原数据根，不能用新目录绕过旧状态。
 
-生成当前用户和当前源码目录专用的 Codex 插件市场：
-
-```powershell
-& $flowerPython -B -m tools.configure_local_plugin --package "$flowerPackage" --output .flower-local
-$flowerPackage | Set-Content .\.flower-local\install-package-path.txt
-```
-
-这一步只写文件，不安装助手、不注册计划任务、不写 Codex 配置，也不授予 Hook 信任。
-
 继续前先检查：
 
 ```powershell
 Get-ChildItem "$flowerPackage"
-Get-ChildItem .flower-local -Recurse
 Get-Content -Raw "$flowerPackage\preparation.json"
 ```
 
@@ -117,7 +112,7 @@ Get-Content -Raw "$flowerPackage\preparation.json"
 
 ## 5. 安装管理员助手
 
-助手安装到 `%ProgramFiles%\FlowerControl\HighHelper`，并注册当前 Windows 账号的交互式计划任务。Codex 本身不需要以管理员身份运行。助手不会关闭 Defender、防火墙或 UAC。
+上面候选示例安装到 `D:\FlowerControl\Program`，Data/Cache/Packages 同根。未指定新根时使用受保护登记或兼容旧 ProgramFiles 根；不要改 ProgramFiles 环境变量。安装器检查整条父链/ACL，拒绝可被普通用户替换的目录，不会修改整盘权限。它注册当前 Windows 账号的交互式计划任务。Codex 本身不需要以管理员身份运行。助手不会关闭 Defender、防火墙或 UAC。
 
 用一次明确的 UAC 确认启动生成的安装脚本：
 
@@ -133,6 +128,18 @@ Start-ScheduledTask -TaskName $flowerPreparation.task_name
 
 ## 6. 在 Codex 中添加插件
 
+文件安装成功后，再生成与已登记实际根匹配的源码开发插件（冻结安装器已提供完整插件与 Skill，不用这段源码分支）：
+
+生成当前用户和当前源码目录专用的 Codex 插件市场：
+
+```powershell
+& $flowerPython -B -m tools.configure_local_plugin --package "$flowerPackage" --output .flower-local
+$flowerPackage | Set-Content .\.flower-local\install-package-path.txt
+```
+
+这一步只写文件，不安装助手、不注册计划任务、不写 Codex 配置，也不授予 Hook 信任。
+
+
 ```powershell
 codex plugin marketplace add .\.flower-local
 codex plugin add flower-control@flower-control-local
@@ -146,7 +153,7 @@ codex plugin add flower-control@flower-control-local
 
 安装并启动计划任务后，任务栏右下角应有 Flower 花形托盘图标，可能收在 **^ 显示隐藏图标**中。右键它 → **设置**，在左侧实际档位按钮选择 **02 普通控制**，等“已保存档位”显示 02。档位会立即保存和切换，名单等普通编辑才需要 Ctrl+S；从普通档转 03/04 可能出现需要你确认的 Windows UAC。权限页内的 02/03/04 名单查看层不等于左侧实际档位。
 
-全新、无既有权限文件时默认是 **03 管理员窗口**，不是 02；已有机器沿用原设置，因此请实际看“已保存档位”。初次试用不用配置管理员启动名单、工作授权或可选 AI 决策服务。找不到托盘图标时先检查上述任务启动是否成功，按[排障](TROUBLESHOOTING.zh-CN.md#找不到托盘或无法恢复)处理。
+本批候选全新、无既有权限文件时默认 **02 普通控制**；已有机器保留原设置，因此仍须实际看“已保存档位”。preview.3 原发布快照的默认 03 不适用于本批候选。初次试用不用配置管理员启动名单、工作授权或可选 AI 决策服务。找不到托盘图标时先检查上述任务启动是否成功，按[排障](TROUBLESHOOTING.zh-CN.md#找不到托盘或无法恢复)处理。
 
 新建 Codex 聊天，先只做只读状态检查：
 
@@ -170,13 +177,13 @@ codex plugin add flower-control@flower-control-local
 
 ## 8. 更新已有安装
 
-如果这台机器装过 Flower，先停止首次安装流程。本公开快照尚未提供完整的在线更新路线：保留 High 连接的更新准备路径引用了未随公开包提供的 `tools.prepare_stopped_host_update`，更新后还需要重新生成和刷新绑定具体版本的本地插件入口。
+完整候选 Setup 的检测、原根保留、备份与失败接续见[安装维护指南](INSTALLER.zh-CN.md#更新或安装失败)。当前源码导出已包含 `prepare_work_authority_update`、`prepare_stopped_host_update`、`prepare_offline_continuation` 及匹配模板；不再依赖公开包外缺失的更新器。
 
-保留旧包、数据根和当前状态，在[问题页](https://github.com/fallen-blossom/flower-control/issues)提供旧版本及错误码，请维护者给出匹配版本的更新步骤。正常空闲的旧助手应由更新器有界暂停、退出；忙请求、身份变化或 Stop 冲突需要先解决。不要用首次安装的 `ApplyInstall.ps1` 覆盖已有安装，也不要删除状态或先卸载来绕过检查。
+源码开发更新先让 Codex 读取这次 checkout 的工具 `--help`、当前安装版本/真实根/暂停与未完成状态，准备准确的新包和更新计划，再由你审阅最终 UAC 阶段。旧版本缺协议时保留原安装，让维护者给匹配迁移路径。不要把首次 ApplyInstall 当升级器，不要重放已消费 operation，不要删状态或先卸载来绕过检查。新源码、文件安装、宿主加载和真实操作分别核实。
 
 ## 9. 停用或移除
 
-**本版提供停用脚本和移除插件命令，没有完整的一键卸载器。** 暂时不让 AI 操作可先选 01；想停止后台助手再执行下面的 Disable。它禁用计划任务并尝试正常停止实例，不删除程序文件、浏览器登录资料或动作数据。移除插件也不能代替停用助手。
+**完整候选安装支持系统应用列表或 Packages 维护程序卸载**，默认保留 Data、Cache 与 recovery；见[卸载指南](INSTALLER.zh-CN.md#卸载)。下面保留源码开发安装的停用方法。 暂时不让 AI 操作可先选 01；想停止后台助手再执行下面的 Disable。它禁用计划任务并尝试正常停止实例，不删除程序文件、浏览器登录资料或动作数据。移除插件也不能代替停用助手。
 
 生成的 `Disable.ps1` 在稳定的 `$flowerPackage` 目录，位置记录在 `.flower-local\install-package-path.txt`，不会复制进 `%ProgramFiles%`。用日常账号通过 Windows 的**以管理员身份运行**打开一个可见的 PowerShell，切到源码根目录，再执行下面命令。窗口保留回执，同时保存一份新日志：
 
@@ -190,7 +197,7 @@ $flowerDisableLog = Join-Path $flowerPackage ('disable-result-' + [guid]::NewGui
 
 回执的 `task_state` 应为 `disabled` 或 `absent`。`instance_stopped: true` 只表示脚本确认了那一个实例退出，不能只凭脚本退出码判断。
 
-**02/01 普通角色下，当前 Disable 脚本只能禁用自启，不能通过 High 管理接口停止普通实例**，可能返回 `instance_stopped: false`。此时在托盘选**退出**，让 Codex 按原助手的精确进程身份只读核实退出；未知就报告未知。退出助手会保留已有程序和成果。如果其他角色也未确认退出，同样先使用托盘退出并核实，不强杀或删状态。
+本批停用实现分别处理普通/High 两角色的有界正常退出。仍须读取准确回执：`instance_stopped: false` 或未知就保留状态，先用托盘退出并只读核对原进程身份，不强杀、不清账本。
 
 确认停用结果后，回到**普通 PowerShell**移除 Codex 插件：
 
@@ -198,9 +205,9 @@ $flowerDisableLog = Join-Path $flowerPackage ('disable-result-' + [guid]::NewGui
 codex plugin remove flower-control@flower-control-local
 ```
 
-这条命令只移除 Codex 插件，**不会**禁用计划任务、停止管理员助手、删除 `%ProgramFiles%\FlowerControl` 下的文件，也不会删除浏览器资料和动作数据。要真正停用 Flower，还要运行 `Disable.ps1`。需要清理数据时先确认精确本地路径，并保留仍要用的内容。
+这条命令只移除 Codex 插件，**不会**禁用计划任务、停止管理员助手、删除实际登记根下的文件，也不会删除浏览器资料和动作数据。要真正停用 Flower，还要运行 `Disable.ps1`。需要清理数据时先确认精确本地路径，并保留仍要用的内容。
 
-若要彻底移除，请先完成上述停用和插件移除，保留输出，再让 Codex 盘点已安装版本、精确任务名、稳定安装包路径及用户数据目录，由你决定是否保留资料。此教程不提供递归删除整个 FlowerControl 根目录的命令。
+源码开发安装可用 `tools.prepare_uninstall --output <新的本地计划.json>` 只读盘点并生成准确 `.ApplyUninstall.ps1`。先审文件数/大小、host 条目、保留范围和 blockers；只有你确认同一份计划后，才执行准备器给出的准确脚本。不要绕过阻塞、重放未知结果或递归删除整个根。普通资料的后续删除须另作明确决定。
 
 ## 这个预览版不承诺什么
 

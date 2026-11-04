@@ -1,15 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <Version>0.1.0</Version>
+    <FileVersion>0.1.0.0</FileVersion>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <InformationalVersion>0.1.0</InformationalVersion>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <RestoreSources>$(MSBuildThisFileDirectory)</RestoreSources>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>../../../assets/branding/tray-states-v4/05-disabled.ico</ApplicationIcon>
-    <AppHostDotNetSearch>Global</AppHostDotNetSearch>
+    <AppHostDotNetSearch Condition="'$(SelfContained)' != 'true'">Global</AppHostDotNetSearch>
+    <AppHostDotNetSearch Condition="'$(SelfContained)' == 'true'">AppLocal</AppHostDotNetSearch>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="DshZstdDecoder.cjs" LogicalName="Flower.Dsh.ZstdDecoder.cjs" />

@@ -3,4 +3,7 @@
 *.ico binary
 *.png binary
 *.zip binary
-
+# Preserve the exact reviewed manifest bytes pinned by ENCODER.json.
+tools/encoder_build/inputs.lock.json -text whitespace=cr-at-eol
+# Keep original third-party notice bytes consistent with source-manifest.json.
+licenses/third-party/** -text whitespace=cr-at-eol

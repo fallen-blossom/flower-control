@@ -391,8 +391,7 @@ internal sealed class SemanticExecution : IDisposable
     private static string BindingPath(BrokerPolicy policy, Peer own, string requestId, bool create = false)
     {
         if (policy.Fixture || own.Integrity != 12288 || own.User != policy.UserSid) throw new Boundary("program_launch_binding_role_rejected");
-        string root = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ProgramFiles),
-            "FlowerControl", "HighHelper", "execution-bindings");
+        string root = Path.Combine(InstallationLocation.Current().ProgramRoot, "execution-bindings");
         if (create) AuditFiles.EnsureDirectory(root);
         root = Path.Combine(root, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(own.User + "|" + own.Session))).ToLowerInvariant());
         if (create) AuditFiles.EnsureDirectory(root);

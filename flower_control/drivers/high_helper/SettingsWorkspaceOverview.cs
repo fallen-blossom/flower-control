@@ -4,6 +4,8 @@ internal static partial class SettingsWorkspace
 {
     private const int OverviewActivityId = 910;
     private const int OverviewRuntimeId = 911;
+    private const int OverviewChannelsId = 912, EmergencyStopId = 940, ResumeAllId = 941,
+        FirstRunGuideId = 942, ReadOnlyCheckId = 943, RepairSurfaceId = 944, ExportDiagnosticsId = 945;
     private const uint OverviewTimer = 188;
     private static string runtimeNotice = "";
     private static bool runtimeWritesStopped;
@@ -12,7 +14,8 @@ internal static partial class SettingsWorkspace
 
     private static void BuildOverviewPage()
     {
-        Label(UiText.Get("已保存档位"), 650, 270, h: 30, fontSize: 17);
+        Label(saved.Revision == "absent" ? UiText.Get("首次使用 · 推荐 02 普通控制") : UiText.Get("已保存档位"), 650, 270, 380, h: 30, fontSize: 17);
+        PageButton(FirstRunGuideId, UiText.Get("首次使用与权限说明"), 1050, 270, 390, 30);
         Label(TierDisplay(model.EffectiveTier), 650, 308, h: 62,
             emphasis: true, fontSize: 36, ink: AuthorityPresentation.Ink(model.EffectiveTier));
         Label(OverviewExecutorText(), 650, 383, h: 54, fontSize: 18,
@@ -23,21 +26,11 @@ internal static partial class SettingsWorkspace
             fontSize: 21, ink: OverviewActivityInk(), id: OverviewActivityId);
         Label(UiText.Get("只结束 Computer Use；App / Web 保持。"), 650, 560, h: 34, fontSize: 16);
 
-        Label(UiText.Get("保护与规则"), 650, 621, h: 30, fontSize: 17);
-        Label(UiText.Get("密码框自动保护 · Bitwarden 整窗保护"), 650, 661, h: 38, emphasis: true, fontSize: 21, ink: 0xC7DDC5);
-        string admin = model.EffectiveTier < 2 ? UiText.Get("High 启动关闭")
-            : saved.AdminLaunchMode == "semantic" ? UiText.Get("High 启动按工作授权") : UiText.Get("High 启动按程序名单");
-        string uac = saved.UacMode == "off" ? UiText.Get("UAC 已冻结") : UiText.Get("UAC 已冻结 · 保留旧配置");
-        Label(UiText.Format("普通禁止 {0} 条 · {1} · {2}",saved.DeniedApplications.Count(x => x.Enabled),admin,uac),
-            650, 711, h: 62, fontSize: 18);
-        if (!CompactSurface)
-        {
-            Label(UiText.Get("通道边界"), 650, 770, h: 30, emphasis: true, fontSize: 17);
-            Label(UiText.Get("High 启动：继承已运行 High 会话的管理员权限；不是重新提权，正常不弹 UAC"),
-                650, 802, h: 40, fontSize: 16);
-            Label(UiText.Get("管理员工作授权只决定是否允许；首次 High 安装才可能请求 UAC。Stop、拒绝和未知动作仍共用检查"),
-                650, 844, h: 40, fontSize: 16);
-        }
+        Label(UiText.Get("App：管理员授权 / High 启动；Computer：自由键鼠"), 650, 608, h: 30, fontSize: 16);
+        Label(OverviewChannelsText(), 650, 648, h: 108, fontSize: 16, id: OverviewChannelsId);
+        PageButton(EmergencyStopId, UiText.Get("紧急停止全部 Flower"), 650, 766, 380, 40);
+        PageButton(ResumeAllId, UiText.Get("明确继续全部写入"), 1050, 766, 390, 40);
+        RefreshProductButtons();
     }
 
     private static string OverviewExecutorText()
@@ -79,12 +72,41 @@ internal static partial class SettingsWorkspace
         if (page != 0) return;
         SetChromeText(PageHandle(OverviewRuntimeId), OverviewExecutorText());
         SetChromeText(PageHandle(OverviewActivityId), OverviewActivityText());
+        SetChromeText(PageHandle(OverviewChannelsId), OverviewChannelsText());
+        RefreshProductButtons();
         int index = pageControls.FindIndex(c => c.Id == OverviewActivityId);
         if (index >= 0 && pageControls[index].Ink != OverviewActivityInk())
         {
             pageControls[index] = pageControls[index] with { Ink = OverviewActivityInk() };
             InvalidateRect(pageControls[index].Handle, IntPtr.Zero, false);
         }
+    }
+
+    private static string OverviewChannelsText()
+    {
+        if (preview) return UiText.Get("预览：三通道与目标均为未核实状态，不读取实际连接。");
+        if (core is null) return UiText.Get("执行器未连接；宿主聊天注入、通道和目标尚未核实。");
+        var status = core.ProductStatus();
+        string activity = UiText.Format("本机连接 {0} · 当前请求 W {1} / A {2} / C {3}",
+            status.Connections, status.WebRequests, status.AppRequests, status.ComputerRequests);
+        string version = runtimeVersionState == "match" ? UiText.Get("执行器与安装版本一致；聊天版本另核。")
+            : runtimeVersionState == "mismatch" ? UiText.Get("版本不一致；请核对更新结果。") : UiText.Get("安装和执行器版本未核实。");
+        return activity + "\n" + UiText.Get("聊天注入与目标未核实；请在聊天查看 flower_status。")
+            + "\n" + version + "\n" + EmergencyHotkeyText(status);
+    }
+
+    private static string EmergencyHotkeyText(ProductRuntimeStatus? status) => status?.EmergencyHotkeyRegistered switch {
+        true => UiText.Get("全部停止 Ctrl+Alt+Shift+9 已注册；Ctrl+Alt+9 只结束 Computer。"),
+        false => UiText.Format("全部停止热键注册失败（Win32 {0}）；请使用托盘或总览停止按钮。", status.EmergencyHotkeyError?.ToString() ?? "unknown"),
+        _ => UiText.Get("全部停止热键注册状态尚未核实；托盘和总览保留停止按钮。")
+    };
+
+    private static void RefreshProductButtons()
+    {
+        EnableChromeControl(PageHandle(EmergencyStopId), preview || core is not null);
+        EnableChromeControl(PageHandle(ResumeAllId), !Busy && !preview && core?.HasRecoverableGlobalStop == true);
+        EnableChromeControl(PageHandle(ReadOnlyCheckId), !Busy);
+        EnableChromeControl(PageHandle(RepairSurfaceId), !Busy && !invalidEdit);
     }
 
     private static uint OverviewActivityInk() => runtimeWritesStopped || core?.ComputerPaused == true ? 0xA9DCEEu

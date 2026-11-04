@@ -37,7 +37,7 @@ internal sealed class UacClaimJournal
         this.readOnlyRecovery = readOnlyRecovery;
         if (policy.Fixture || policy.Schema != 1 || policy.Mode != "high" || session <= 0
             || !Hex(policy.Version, 16, 64) || !ValidSid(policy.UserSid)) throw new Boundary("uac_claim_context_rejected");
-        var versions = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "versions");
+        var versions = Path.Combine(InstallationLocation.Current().ProgramRoot, "versions");
         var versionDirectory = Path.GetFullPath(policy.Directory);
         if (!versionDirectory.Equals(Path.GetFullPath(Path.Combine(versions, policy.Version)), StringComparison.OrdinalIgnoreCase)
             || !versionDirectory.Equals(Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))

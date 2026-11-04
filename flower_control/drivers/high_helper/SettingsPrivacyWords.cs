@@ -10,7 +10,7 @@ internal static partial class UserPermissions
     // This is the already-consumed protected word list, not an arbitrary path
     // supplied by an RPC. The user's separate LocalAppData appendix is retained.
     private static string SettingsWordsPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "privacy", "sensitive-words.txt");
+        InstallationLocation.Discover().ProgramRoot, "privacy", "sensitive-words.txt");
     internal static SettingsWordSnapshot ReadSettingsWords()
     {
         try { return ReadSettingsWordsAt(SettingsWordsPath, false); }

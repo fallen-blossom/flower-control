@@ -16,7 +16,7 @@ isolation are not supported. The scope is an MCP connection: if Antigravity shar
 one connection between chats, target selection and state are shared too. Each
 channel has its own connection. Do not use this preview for concurrent chats
 that require different private-window permissions. Reselect windows after
-reconnection; query an unknown action before replaying it. Ctrl+Alt+9 ends the current Computer input without changing the saved tier.
+reconnection; query an unknown action before replaying it. Ctrl+Alt+9 stops Computer input. The current candidate adds separate Ctrl+Alt+Shift+9 for all-channel Stop; check registration status.
 
 Follow [Windows setup](INSTALL.md) for dependencies and native/app builds. Use a
 regular local source directory, disable .NET SDK telemetry before building, and

@@ -398,6 +398,11 @@ internal static class Program
             { Console.WriteLine(JsonSerializer.Serialize(RoleStateTests.Run())); return 0; }
             if (args.Length == 1 && args[0] == "--selftest-local-settings")
             { Console.WriteLine(JsonSerializer.Serialize(LocalSettingsTests.Run())); return 0; }
+            if (args.Length == 1 && args[0] == "--selftest-local-settings-entry")
+            { Console.WriteLine(JsonSerializer.Serialize(LocalSettingsEntry.SelfTest())); return 0; }
+            if (args.Length == 1 && args[0] is "--flower-local-status" or "--flower-local-settings")
+                return LocalSettingsEntry.Run(BrokerPolicy.Load(Path.Combine(AppContext.BaseDirectory, "broker.json"), false),
+                    openSettings: args[0] == "--flower-local-settings");
             if (args.Length == 1 && args[0] == "--selftest-bound-maintenance")
             { Console.WriteLine(JsonSerializer.Serialize(BoundMaintenanceWriterTests.Run())); return 0; }
             if (args.Length == 1 && args[0] == "--selftest-bound-maintenance-high")
@@ -568,7 +573,21 @@ internal static class Program
                 return ClientAdmission.LaunchFlower(BrokerPolicy.Load(Path.Combine(AppContext.BaseDirectory, "broker.json"), false), args[1], probe: true);
             if (args.Length == 1 && args[0] == "--flower-capabilities")
             { Console.WriteLine(JsonSerializer.Serialize(new { schema = 1, bound_maintenance_writer_protocol = 1,
+                bound_ordinary_maintenance_protocol = 1,
+                local_settings_protocol = 1,
+                bound_exit_maintenance_protocol = 1,
                 AssemblyDigest, AuthorityGranted = false, InputDispatched = false })); return 0; }
+            if (args.Length == 2 && args[0] == "--flower-verify-codex-cli")
+            {
+                bool official = CodexHostIdentity.IsOfficialCodexImage(args[1]);
+                Console.WriteLine(JsonSerializer.Serialize(new { schema=1, official_codex_cli=official,
+                    sha256=official ? Native.Digest(args[1]) : null, AuthorityGranted=false, InputDispatched=false }));
+                return official ? 0 : 2;
+            }
+            if (args.Length == 2 && args[0] == "--flower-validate-retained-installation")
+            { Console.WriteLine(JsonSerializer.Serialize(RetainedInstallationMetadata.Inspect(args[1]))); return 0; }
+            if (args.Length == 1 && args[0] == "--selftest-retained-installation")
+            { Console.WriteLine(JsonSerializer.Serialize(RetainedInstallationMetadata.SelfTest())); return 0; }
             if (args.Length == 2 && args[0] == "--flower-update-status")
                 return BrokerHost.Admin(BrokerPolicy.Load(Path.Combine(AppContext.BaseDirectory, "broker.json"), false),
                     "status", maintenanceOperation: args[1]);
@@ -590,6 +609,12 @@ internal static class Program
             {
                 var policy = BrokerPolicy.Load(Path.Combine(AppContext.BaseDirectory, "broker.json"), false);
                 return OrdinaryMaintenance.Client(policy, OrdinaryMaintenanceCommand.Parse(args, policy.Version));
+            }
+            if (args.Length == 4 && args[0] == "--flower-update-maintenance-ordinary")
+            {
+                var policy = BrokerPolicy.Load(Path.Combine(AppContext.BaseDirectory, "broker.json"), false);
+                var command = OrdinaryMaintenanceCommand.Parse(new[] { "--flower-maintenance-ordinary", args[2], args[3] }, policy.Version);
+                return OrdinaryMaintenance.Client(policy, command, maintenanceOperation: args[1]);
             }
             if (args.Length == 4 && args[0] == "--flower-admin")
             {

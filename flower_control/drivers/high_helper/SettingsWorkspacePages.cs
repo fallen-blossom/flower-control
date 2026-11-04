@@ -31,7 +31,7 @@ internal static partial class SettingsWorkspace
             0, 0, 1, 1, window, new IntPtr(id), instance, IntPtr.Zero);
         if (handle == IntPtr.Zero) throw new Boundary("settings_control_unavailable");
         pageControls.Add(new(id, handle, x, y, w, h, kind));
-        SetWindowTheme(handle, "DarkMode_CFD", "");
+        SetWindowTheme(handle, HighContrast() ? "" : "DarkMode_CFD", "");
         if (kind == "COMBOBOX" || kind == "BUTTON" && style == 3 || id == ModeChoiceBase || id == MaskListId)
             SetWindowSubclass(handle, ThemeProcedure, new UIntPtr(1), UIntPtr.Zero);
         if (kind == "EDIT" || kind == "LISTBOX")
@@ -105,17 +105,7 @@ internal static partial class SettingsWorkspace
                     BuildDisplayPreferenceControls();
                     break;
                 case 4:
-                    var status = preview ? UiText.Get("合成数据预览；没有读取真实权限、工作记录或 UAC。")
-                        : UiText.Get("设置进程 PID ") + Environment.ProcessId + " · " + (core is null ? UiText.Get("独立窗口（无 broker 停止入口）") : UiText.Get("已连接本机 broker"));
-                    Field(486, "EDIT", status + UiText.Get("\r\n\r\n源码程序集 ") + typeof(SettingsWorkspace).Assembly.GetName().Version
-                        + UiText.Get("\r\n权限版本 ") + saved.Revision + UiText.Get("\r\n素材 ") + ArtworkState
-                        + "\r\n\r\n" + CapabilityText()
-                        + UiText.Get("\r\n\r\n本窗口不把连接成功当实际控制验收。工作历史尚未接入此页；不据此判断为没有授权。")
-                        + UiText.Get("\r\n此页仅显示状态，不运行系统准备、校准或 UAC 输入。"),
-                        650, 270, 790, 225, 0x200000 | 4 | 0x40 | 0x800);
-                    Label(UiText.Get("UAC 已冻结"), 650, 530, 790, 32, emphasis: true, fontSize: 21);
-                    Label(AuthorityPresentation.FrozenNotice, 650, 580, 790, 110, fontSize: 17);
-                    Label(UiText.Get("已有试验与失败回执继续保留；冻结状态不代表已验收。"), 650, 716, 790, 60, fontSize: 16);
+                    BuildProductDiagnosticsPage();
                     break;
             }
         }
@@ -191,6 +181,8 @@ internal static partial class SettingsWorkspace
     private static int Selection(int id) => SendMessageW(PageHandle(id), 0x188, IntPtr.Zero, IntPtr.Zero).ToInt32();
     private static bool PageCommand(int id, int notification)
     {
+        if (ProductCommand(id, notification)) return true;
+        if (MaintenanceCommand(id, notification)) return true;
         if (id is >= 480 and <= 485 or 513 or 550 or 551)
         { notice = AuthorityPresentation.FrozenNotice; UpdateChrome(); return true; }
         if (id == HelpId) { ShowWorkspaceHelp(); return true; }

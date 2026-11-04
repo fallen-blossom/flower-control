@@ -41,7 +41,7 @@ claude --plugin-dir .flower-claude-plugin
 
 AI 专用 Brave 环境按已有规则供 agent 使用；你的个人浏览器环境需要在这个 Claude 聊天里单独批准。Codex 的个人环境授权不会自动带进来。Claude 子代理按实际 Hook 报告的 session 归属处理，不凭提示词继承其它聊天权限。登录办法见 [浏览器与登录](BROWSER_PROFILES.zh-CN.md)。
 
-Ctrl+Alt+9 结束当前 Computer 输入，不改变已保存档位；恢复和未知动作查询沿用现有机制。Jev 是同一套可选功能：启用后仍只处理获准的短目标与候选，不需要主模型逐步复核机械动作。
+Ctrl+Alt+9 只停止 Computer 输入；当前候选的 Ctrl+Alt+Shift+9 是独立全通道停止，须核快捷键注册状态；恢复和未知动作查询沿用现有机制。Jev 是同一套可选功能：启用后仍只处理获准的短目标与候选，不需要主模型逐步复核机械动作。
 
 ## 常见衔接问题
 

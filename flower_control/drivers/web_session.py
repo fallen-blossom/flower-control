@@ -872,11 +872,13 @@ class TemporaryWebSession:
             raise ControlError("browser_executable_unavailable")
         if self.persistent_profile is None:
             if self._reused_temp_profile is None:
-                self.profile_path = Path(tempfile.mkdtemp(prefix="flower-web-temp-"))
+                from flower_control.data_paths import runtime_temp_root
+                self.profile_path = Path(tempfile.mkdtemp(prefix="flower-web-temp-", dir=runtime_temp_root()))
             else:
                 from flower_control.profile_registry import direct_path
                 path = direct_path(self._reused_temp_profile)
-                if path.parent.resolve() != Path(tempfile.gettempdir()).resolve() or not path.name.startswith("flower-web-temp-"):
+                from flower_control.data_paths import runtime_temp_root
+                if path.parent.resolve() != runtime_temp_root().resolve() or not path.name.startswith("flower-web-temp-"):
                     raise ControlError("temporary_profile_identity_unverified")
                 marker_path = direct_path(path / "flower-session.json")
                 if marker_path.stat().st_size > 32768:
@@ -1533,7 +1535,8 @@ class TemporaryWebSession:
         if path is None or self.profile_path != path:
             return
         try:
-            root = Path(tempfile.gettempdir()).resolve(strict=True)
+            from flower_control.data_paths import runtime_temp_root
+            root = runtime_temp_root().resolve(strict=True)
             if (not re.fullmatch(r"flower-web-temp-[A-Za-z0-9_-]+", path.name) or
                     path.parent.resolve(strict=True) != root or
                     path.is_symlink() or os.path.isjunction(path)):

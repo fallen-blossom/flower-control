@@ -807,7 +807,7 @@ internal sealed partial class BrokerState
         var roleStop = ordinaryPolicy is not null && WriteGate is not null ? RoleHandoff.Stops(own, WriteGate) : null;
         return new {
         version = policy.Version, session_id = own.Session, pid = own.Pid, created = own.Created, maintenance_protocol = OrdinaryResident ? 2 : 1,
-        bound_maintenance_writer_protocol = OrdinaryResident ? 0 : 1,
+        bound_maintenance_writer_protocol = 1,
         policy_revision = ordinaryPolicy?.Revision, authority_tier = ordinaryPolicy is null ? (int?)null : UserPermissions.TierOf(ordinaryPolicy), role_stop = roleStop,
         connected_clients = Volatile.Read(ref Connections), active_requests = Requests.Count,
         maintenance_activities = Volatile.Read(ref maintenanceActivities),
@@ -821,11 +821,15 @@ internal sealed partial class BrokerState
         stopping, shutdown_reason = shutdownNotice?.Reason.ToString(), shutdown_audit_error = shutdownAuditError,
         release_fault = releaseFault, high_verified = !policy.Fixture && own.Integrity == 12288,
         ordinary_verified = !policy.Fixture && OrdinaryResident && own.Integrity == 8192,
+        bound_ordinary_maintenance_protocol = 1,
+        bound_exit_maintenance_protocol = 1,
         broker_role = OrdinaryResident ? "ordinary" : policy.Fixture ? "fixture" : "high", ui_access = false,
         tray_available = trayAvailable, tray_icon_state = trayIconState,
         settings_window = SettingsWorkspace.SurfaceDiagnostics,
         host_window_failure = HostWindow.CallbackDiagnostics,
         stop_hotkey = "Ctrl+Alt+9", stop_hotkey_registered = hotkeyAvailable, stop_hotkey_error = hotkeyError,
+        emergency_stop_hotkey = "Ctrl+Alt+Shift+9", emergency_stop_hotkey_registered = EmergencyHotkeyRegistered,
+        emergency_stop_hotkey_error = EmergencyHotkeyError,
         global_write_stopped = writeStatus?.Stopped,
         global_stop_epoch = writeStatus?.Epoch,
         scope = "windows-interactive-session", input_replay = false

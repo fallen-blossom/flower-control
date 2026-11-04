@@ -270,8 +270,8 @@ internal static partial class PermissionSettingsWindow
         UacSystemPipe.RequireHighParent(own, policy, own.Session);
         if (policy.Fixture || own.User != policy.UserSid || own.Integrity != 12288 || Native.UiAccess(own.Pid))
             throw new Boundary("uac_local_settings_high_required");
-        var expectedDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            "FlowerControl", "HighHelper", "versions", policy.Version);
+        var expectedDirectory = Path.Combine(InstallationLocation.Discover(policy.UserSid).ProgramRoot,
+            "versions", policy.Version);
         if (!Path.GetFullPath(policy.Directory).TrimEnd('\\').Equals(expectedDirectory, StringComparison.OrdinalIgnoreCase))
             throw new Boundary("uac_local_settings_installation_rejected");
         UacClaimJournal.CheckParent(Path.GetDirectoryName(Path.GetDirectoryName(expectedDirectory))!, false);

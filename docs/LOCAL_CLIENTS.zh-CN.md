@@ -23,7 +23,7 @@ Gemini CLI 和经 Node 启动的客户端暂不纳入。把整个 `node.exe` 或
 然后运行 `tools/configure_connection_mcp.py`，给它准备包目录、一个全新的输出目录和客户端类型：
 
 ```powershell
-python tools/configure_connection_mcp.py --package <prepared-package> --output <new-output> --client cursor
+.\.venv\Scripts\python.exe -B tools/configure_connection_mcp.py --package 'D:\FlowerPackages\prepared' --output 'D:\FlowerPackages\new-client-config' --client cursor
 ```
 
 可选类型为 `cursor`、`vscode`、`antigravity`、`opencode-v1`、`opencode-v2`。在源码仓库内运行时再加 `--source-root <repository-root>`；导出的发布目录可使用默认值。它只生成文件，不覆盖已有设置、不装插件、不启动助手。
@@ -38,7 +38,7 @@ Cursor 配置在 `.cursor/mcp.json`；VS Code 在 `.vscode/mcp.json`；Antigravi
 
 正常断连会尝试按现有关闭流程收尾这条连接拥有的 Web 会话；AI profile 数据保留。停止、关闭失败和未知结果不会被改成成功。正在等待你登录的窗口会保留，由你正常关闭；这种断连后的未完成登录需要人工收尾，不承诺自动恢复。
 
-首次检查先看 `flower_status` 和来源探针，再用测试网页或测试窗口完成一个小任务。**Ctrl+Alt+9** 结束当前 Computer 输入，但不改变已保存档位。新接入不加入遥测或远端配置；你选用的 AI 客户端仍可能把截图和回执送入自己的模型上下文。Jev 保持已有的单独启用规则。
+首次检查先看 `flower_status` 和来源探针，再用测试网页或测试窗口完成一个小任务。**Ctrl+Alt+9** 只停 Computer；当前候选用独立 **Ctrl+Alt+Shift+9** 全通道紧急停止，快捷键注册失败要看诊断。新接入不加入遥测或远端配置；你选用的 AI 客户端仍可能把截图和回执送入自己的模型上下文。Jev 保持已有的单独启用规则。
 ## 本机 Codex 可选第二入口
 
 原 Flower Control 仍是主力。`codex-compatibility` 生成一个独立的 Flower Control Compatibility 插件，三个 MCP 名称带 `-compat`，使用同一个管理员助手，不带聊天 Hook。它用于尝试连接模式，不能访问个人浏览器，也不提供按聊天隔离或跨通道接管。Dot 云端派发是否会加载本地工具仍待实际核对；换配置不能保证解决宿主的工具加载问题。

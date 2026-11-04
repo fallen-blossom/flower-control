@@ -64,7 +64,7 @@ internal static class WorkAuthority
     private static string Root(BrokerPolicy policy, Peer own)
     {
         _ = ExecutionAudit.Open(policy, own);
-        string install = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper");
+        string install = InstallationLocation.Current().ProgramRoot;
         string root = Path.Combine(install, "work-authority"); AuditFiles.EnsureDirectory(root);
         root = Path.Combine(root, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             Encoding.UTF8.GetBytes(own.User + "|" + own.Session))).ToLowerInvariant()); AuditFiles.EnsureDirectory(root); return root;

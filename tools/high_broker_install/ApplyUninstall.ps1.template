@@ -1,0 +1,210 @@
+[CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
+param([switch]$Apply,[string]$ReviewedPlanSha256='',[string]$ResultPath='',[string]$ExpectedScriptSha256='')
+$ErrorActionPreference='Stop'
+@@COMMON@@
+$planPath=@@PLAN_PATH@@
+$planHash=@@PLAN_HASH@@
+Assert-FlowerNoLinks $planPath -Shallow
+if((Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $planHash){throw 'uninstall_plan_changed'}
+$plan=Get-Content -LiteralPath $planPath -Raw -Encoding UTF8|ConvertFrom-Json
+if(!$ResultPath){$ResultPath=Join-Path ([IO.Path]::GetDirectoryName($planPath)) ('uninstall-'+$plan.operation_id+'-result.json')}
+$ResultPath=[IO.Path]::GetFullPath($ResultPath)
+Assert-FlowerNoLinks $ResultPath -Shallow
+$script:receiptWritable=!(Test-Path -LiteralPath $ResultPath)
+$script:result=[ordered]@{schema=1;operation='uninstall';operation_id=$plan.operation_id;plan_sha256=$planHash;
+    state='review';system_changed=$false;complete=$false;recycled=@();removal_observed_absent=@();host_removals=@();
+    personal_data_preserved=$true;recovery_preserved=$true;result_path=$ResultPath}
+function Save-UninstallResult {
+    if(!$script:receiptWritable){throw 'uninstall_receipt_not_owned'}
+    $script:result['utc']=[DateTime]::UtcNow.ToString('o')
+    Assert-FlowerNoLinks $ResultPath -Shallow
+    $temporary=$ResultPath+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
+    [IO.File]::WriteAllText($temporary,($script:result|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+    if(Test-Path -LiteralPath $ResultPath){[IO.File]::Replace($temporary,$ResultPath,[System.Management.Automation.Language.NullString]::Value)}else{[IO.File]::Move($temporary,$ResultPath)}
+}
+function Require-OwnedFile($row,[switch]$AllowCompleted) {
+    $path=[string]$row.path
+    if($path -cne [IO.Path]::GetFullPath($path) -or
+        (!$path.StartsWith($brokerRoot+'\',[StringComparison]::OrdinalIgnoreCase) -and !$path.StartsWith($plan.packages_root+'\',[StringComparison]::OrdinalIgnoreCase)) -or
+        $path.StartsWith((Join-Path $brokerRoot 'recovery')+'\',[StringComparison]::OrdinalIgnoreCase) -or
+        $row.sha256 -cnotmatch '^[a-f0-9]{64}$'){throw 'uninstall_file_scope_rejected'}
+    Assert-FlowerNoLinks $path -Shallow
+    if(!(Test-Path -LiteralPath $path)) {
+        if($AllowCompleted -and ($script:result.recycled -contains $path -or $script:result.removal_observed_absent -contains $path)){return}
+        if($AllowCompleted -and $script:result.pending_files -contains $path){
+            $script:result.removal_observed_absent+=@($path)
+            return
+        }
+        throw 'uninstall_file_missing_outcome_unknown'
+    }
+    if((Get-Item -LiteralPath $path -Force).PSIsContainer -or
+        (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $row.sha256){throw 'uninstall_file_changed'}
+}
+function Get-OwnedProcesses {
+    $rows=@()
+    foreach($p in Get-CimInstance Win32_Process -Filter "Name='Flower.HighHelper.exe' OR Name='flower-python.exe' OR Name='Flower.AppWorker.exe' OR Name='Flower.ComputerWgc.exe'") {
+        if(!$p.ExecutablePath){throw 'uninstall_process_image_unconfirmed'}
+        if(!$p.ExecutablePath.StartsWith($brokerRoot+'\',[StringComparison]::OrdinalIgnoreCase)){continue}
+        $owner=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid
+        if($owner.ReturnValue -ne 0 -or $owner.Sid -cne $plan.user_sid){throw 'uninstall_process_owner_unconfirmed'}
+        $rows+=@{pid=[int]$p.ProcessId;created=$p.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString();image=$p.ExecutablePath}
+    }
+    return @($rows)
+}
+function Require-OwnedTask {
+    $task=Get-FlowerTask
+    if($null -eq $task){return $null}
+    if(@($task.Actions).Count -ne 1 -or $task.Actions.Execute -ine $plan.scheduled_task.required_command -or
+        $task.Actions.Arguments -cne '--serve' -or $task.Principal.UserId -cne $plan.user_sid){throw 'uninstall_task_identity_changed'}
+    Assert-FlowerTaskSecurity
+    return $task
+}
+function Host-EntryKey($entry){return [string]$entry.host+'|'+[string]$entry.kind+'|'+[string]$entry.selector+'|'+[string]$entry.source+'|'+[string]$entry.config_path+'|'+(@($entry.key_path)-join '/')}
+function Read-CodexMarketplaces($entry) {
+    throw 'uninstall_host_cli_medium_stage_required'
+}
+function Require-HostEntry($entry) {
+    if($entry.registration_state -in @('not_registered','removed')){return}
+    throw 'uninstall_host_medium_stage_required'
+}
+function Remove-HostEntry($entry) {
+    Require-HostEntry $entry
+}
+if(!$Apply) {
+    $script:result['review'] = @{files=@($plan.files).Count;bytes=($plan.files|Measure-Object -Property bytes -Sum).Sum;
+        preserve=$plan.preserve;blockers=$plan.blockers;host_entries=$plan.host_entries}
+    $script:result|ConvertTo-Json -Depth 12
+    return
+}
+try {
+    if($ReviewedPlanSha256 -cne $planHash){throw 'uninstall_exact_review_required'}
+    if(!$PSCmdlet.ShouldProcess($brokerRoot,('Uninstall '+@($plan.files).Count+' exact files to Recycle Bin; keep personal data and recovery'))){
+        $script:result.state='cancelled';Save-UninstallResult;return
+    }
+    if(@($plan.blockers).Count -gt 0){throw 'uninstall_plan_has_review_blockers'}
+    if($plan.user_sid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value){throw 'uninstall_user_changed'}
+    Assert-FlowerInstallParent $brokerRoot
+    if(@($plan.host_entries).Count -gt 0){
+        if(!$plan.medium_host_receipt_path -or !$plan.medium_host_receipt_sha256){throw 'uninstall_host_medium_stage_required'}
+        Assert-FlowerNoLinks $plan.medium_host_receipt_path -Shallow
+        if((Get-FileHash -LiteralPath $plan.medium_host_receipt_path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $plan.medium_host_receipt_sha256){throw 'uninstall_medium_receipt_changed'}
+        $medium=Get-Content -LiteralPath $plan.medium_host_receipt_path -Raw -Encoding UTF8|ConvertFrom-Json
+        if($medium.state -cne 'complete' -or $medium.operation_id -cne $plan.operation_id -or
+            $medium.user_sid -cne $plan.user_sid -or $medium.program_root -ine $plan.program_root -or
+            $medium.input_plan_sha256 -cne $plan.medium_input_plan_sha256){throw 'uninstall_medium_receipt_rejected'}
+    }
+    $script:result.state='preflight'
+    if(Test-Path -LiteralPath $ResultPath) {
+        $previous=Get-Content -LiteralPath $ResultPath -Raw -Encoding UTF8|ConvertFrom-Json
+        if($previous.plan_sha256 -cne $planHash -or $previous.operation_id -cne $plan.operation_id -or $previous.complete){throw 'uninstall_receipt_not_resumable'}
+        $script:receiptWritable=$true
+        $script:result.recycled=@($previous.recycled|Where-Object {$_});$script:result.host_removals=@($previous.host_removals|Where-Object {$_})
+        $script:result.removal_observed_absent=@($previous.removal_observed_absent|Where-Object {$_})
+        $script:result['pending_files']=@($previous.pending_files|Where-Object {$_})
+        $ownedPaths=@($plan.files|ForEach-Object {$_.path})
+        foreach($path in @($script:result.recycled)+@($script:result.removal_observed_absent)+@($script:result.pending_files)) {
+            if($null -ne $path -and $ownedPaths -notcontains $path){throw 'uninstall_receipt_scope_changed'}
+        }
+    }
+    foreach($row in $plan.files){Require-OwnedFile $row -AllowCompleted}
+    foreach($entry in $plan.host_entries){if($script:result.host_removals -notcontains (Host-EntryKey $entry)){Require-HostEntry $entry}}
+    if($ExpectedScriptSha256){
+        $null=Write-FlowerResumeAnchor -Kind 'uninstall' -OperationId $plan.operation_id -PlanPath $planPath -PlanSha256 $planHash `
+            -ScriptPath ([IO.Path]::ChangeExtension($planPath,'.ApplyUninstall.ps1')) -ScriptSha256 $ExpectedScriptSha256 -ResultPath $ResultPath
+    }
+    $task=Require-OwnedTask
+    Save-UninstallResult
+    if($null -ne $task){
+        Disable-ScheduledTask -TaskName $taskName -TaskPath '\'|Out-Null
+        $task=Require-OwnedTask
+        if($null -eq $task -or $task.Settings.Enabled -ne $false){throw 'uninstall_task_disable_unconfirmed'}
+        $script:result.system_changed=$true
+        $script:taskDefinitionAfterDisable=[string](Export-ScheduledTask -TaskName $taskName -TaskPath '\')
+    }
+    $processes=@(Get-OwnedProcesses)
+    if($processes.Count -gt 0) {
+        $script:result['bound_exit_writer']=Initialize-FlowerExitWriter $plan.operation_id
+        $reply=Invoke-FlowerAdmin 'status'
+        if($reply.Phase -cne 'status' -or $reply.Status.pid -le 0 -or $reply.Status.created -le 0){throw 'uninstall_broker_identity_unconfirmed'}
+        $identity=@($processes|Where-Object {$_.pid -eq $reply.Status.pid -and $_.created -ceq ([string]$reply.Status.created) -and $_.image -ieq $command})
+        if($identity.Count -ne 1){throw 'uninstall_broker_process_changed'}
+        $ordinary=$reply.Status.ordinary_verified -eq $true -and !$reply.Status.high_verified
+        if(!$ordinary -and !$reply.Status.high_verified){throw 'uninstall_broker_role_unconfirmed'}
+        $paused=$reply
+        if(!$reply.Status.paused){$paused=Invoke-FlowerAdmin 'pause' $reply.Status}
+        if($paused.Status.pid -ne $reply.Status.pid -or $paused.Status.created -ne $reply.Status.created -or !$paused.Status.paused){throw 'uninstall_pause_unconfirmed'}
+        $shutdown=Invoke-FlowerAdmin 'shutdown' $paused.Status
+        if($shutdown.Phase -cne 'control' -or $shutdown.Command -cne 'shutdown' -or
+            $shutdown.Status.pid -ne $reply.Status.pid -or $shutdown.Status.created -ne $reply.Status.created){throw 'uninstall_shutdown_unconfirmed'}
+        $script:result.system_changed=$true
+        $deadline=[Diagnostics.Stopwatch]::StartNew()
+        do {$processes=@(Get-OwnedProcesses);if($processes.Count -eq 0){break};Start-Sleep -Milliseconds 200}while($deadline.ElapsedMilliseconds -lt 20000)
+        if($processes.Count -ne 0){$script:result['remaining_processes']=$processes;throw 'uninstall_owned_clients_still_running_close_host_connections'}
+    }
+    foreach($entry in $plan.host_entries){
+        $key=Host-EntryKey $entry
+        if($script:result.host_removals -contains $key){continue}
+        $script:result.state='removing_host_entry';$script:result['pending_host_entry']=$key;Save-UninstallResult
+        Remove-HostEntry $entry
+        $script:result.host_removals+=@($key);$script:result.Remove('pending_host_entry');Save-UninstallResult
+    }
+    $task=Require-OwnedTask
+    if($null -ne $task){
+        if([string](Export-ScheduledTask -TaskName $taskName -TaskPath '\') -cne $script:taskDefinitionAfterDisable){throw 'uninstall_task_definition_changed'}
+        Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false
+        if($null -ne (Get-FlowerTask)){throw 'uninstall_task_removal_unconfirmed'}
+    }
+    if($null -eq ('FlowerUninstallRecycle' -as [type])){Add-Type -TypeDefinition @'
+@@RECYCLE_TYPE@@
+'@}
+    $remaining=@($plan.files|Where-Object {$script:result.recycled -notcontains $_.path -and $script:result.removal_observed_absent -notcontains $_.path})
+    for($offset=0;$offset -lt $remaining.Count;$offset+=100){
+        $batch=@($remaining|Select-Object -Skip $offset -First 100)
+        $script:result.state='recycling_owned_files'
+        $script:result['pending_files']=@($batch|ForEach-Object {$_.path})
+        Save-UninstallResult
+        foreach($row in $batch){
+            Require-OwnedFile $row -AllowCompleted
+            if($script:result.removal_observed_absent -contains $row.path){continue}
+            [FlowerUninstallRecycle]::Recycle($row.path,$row.sha256)
+            $script:result.recycled+=@($row.path)
+        }
+        $script:result.Remove('pending_files');Save-UninstallResult
+    }
+    $script:result.Remove('pending_files');Save-UninstallResult
+    if(!$plan.legacy) {
+        $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,[Microsoft.Win32.RegistryView]::Registry64)
+        try {
+            $relative='SOFTWARE\FlowerControl\Installations\'+$plan.user_sid
+            $key=$base.OpenSubKey($relative,$false)
+            if($null -ne $key){try{$record=([string]$key.GetValue('Record'))|ConvertFrom-Json}finally{$key.Dispose()}
+                if($record.installation_id -cne $plan.installation_id -or $record.root -ine $plan.installation_root){throw 'uninstall_registration_changed'}
+                $base.DeleteSubKey($relative,$false)
+            }
+        } finally {$base.Dispose()}
+    }
+    if($plan.windows_uninstall_id) {
+        $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,[Microsoft.Win32.RegistryView]::Registry64)
+        try {
+            $uninstall='SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FlowerControl.'+$plan.windows_uninstall_id
+            $key=$base.OpenSubKey($uninstall,$false)
+            if($null -ne $key){try{$installedRoot=[string]$key.GetValue('InstallLocation');$installedId=[string]$key.GetValue('InstallationId')}finally{$key.Dispose()}
+                if($installedRoot -ine $plan.installation_root -or $installedId -cne $plan.installation_id){throw 'uninstall_windows_entry_changed'}
+                $base.DeleteSubKey($uninstall,$false)
+            }
+        } finally {$base.Dispose()}
+    }
+    $script:result.state='uninstalled_personal_data_preserved';$script:result.complete=$true;$script:result.system_changed=$true
+    Save-UninstallResult
+    if($ExpectedScriptSha256){
+        $null=Write-FlowerResumeAnchor -Kind 'uninstall' -OperationId $plan.operation_id -PlanPath $planPath -PlanSha256 $planHash `
+            -ScriptPath ([IO.Path]::ChangeExtension($planPath,'.ApplyUninstall.ps1')) -ScriptSha256 $ExpectedScriptSha256 -State 'completed' -ResultPath $ResultPath
+    }
+} catch {
+    $script:result.state=if($script:result.complete){'uninstalled_receipt_unconfirmed'}else{'incomplete'}
+    $script:result['reason']=$_.Exception.Message
+    if($script:receiptWritable){try{Save-UninstallResult}catch{$script:result['receipt_write_error']=$_.Exception.Message}}
+} finally {
+    try{Close-FlowerExitWriter}catch{$script:result['exit_writer_close_error']=$_.Exception.Message}
+}
+$script:result|ConvertTo-Json -Depth 12

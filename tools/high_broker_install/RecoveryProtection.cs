@@ -7,10 +7,16 @@ using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Text;
 
-// Installer-only metadata repair. Never touches version images or journal
-// contents. Existing protected labels and effective access must survive.
+// Installer-only protected root creation and recovery metadata repair. Never
+// touches version images or journal contents. Existing protected labels and
+// effective access must survive.
 public static class FlowerRecoveryProtection
 {
+    // Replaced only while sealing a prepared script, never from environment.
+    private const string PreparedProgramRoot = "@@PREPARED_PROGRAM_ROOT@@";
+    static string RecoveryRoot { get { return PreparedProgramRoot[0] == '@'
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "recovery")
+        : Path.Combine(PreparedProgramRoot, "recovery"); } }
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern uint GetNamedSecurityInfoW(string p, int type, uint info, out IntPtr o, out IntPtr g, out IntPtr d, out IntPtr s, out IntPtr sd);
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern uint SetNamedSecurityInfoW(string p, int type, uint info, IntPtr o, IntPtr g, IntPtr d, IntPtr s);
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string text, uint revision, out IntPtr sd, out uint size);
@@ -23,7 +29,7 @@ public static class FlowerRecoveryProtection
     public sealed class Result { public int Directories, Files, NormalizedAclFlags; public bool BytesUnchanged = true, EffectiveAccessUnchanged = true; }
     static string Root(string path)
     {
-        string expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "recovery");
+        string expected = RecoveryRoot;
         if (!String.Equals(path, expected, StringComparison.OrdinalIgnoreCase)) throw new IOException("recovery_scope_rejected");
         for (string part=path; part!=null; part=Path.GetDirectoryName(part))
             if (Directory.Exists(part) && (File.GetAttributes(part)&FileAttributes.ReparsePoint)!=0) throw new IOException("recovery_link_rejected");
@@ -121,9 +127,22 @@ public static class FlowerRecoveryProtection
         }
         var actual=Read(path); Access(actual); Label(actual,true,true);
     }
+    public static void CreateInstallRoot(string path)
+    {
+        if(PreparedProgramRoot[0]=='@' || Path.GetFileName(PreparedProgramRoot)!="Program" ||
+            path!=Path.GetFullPath(path) || !String.Equals(path,Path.GetDirectoryName(PreparedProgramRoot),StringComparison.OrdinalIgnoreCase))
+            throw new IOException("installation_root_creation_scope_rejected");
+        IntPtr sd; uint size;
+        if(!ConvertStringSecurityDescriptorToSecurityDescriptorW("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)",1,out sd,out size))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        try { var attrs=new Attributes{Length=(uint)Marshal.SizeOf(typeof(Attributes)),Descriptor=sd};
+            if(!CreateDirectoryW(path,ref attrs)) throw new Win32Exception(Marshal.GetLastWin32Error(),"installation_root_creation_failed"); }
+        finally { LocalFree(sd); }
+        Access(Read(path));
+    }
     public static void RequireProtectedFile(string path)
     {
-        string root=Root(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"FlowerControl","HighHelper","recovery"));
+        string root=Root(RecoveryRoot);
         if(!path.StartsWith(root+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) throw new IOException("recovery_receipt_path_rejected");
         for(string part=path; part!=root; part=Path.GetDirectoryName(part)) {
             if((File.GetAttributes(part)&FileAttributes.ReparsePoint)!=0) throw new IOException("recovery_link_rejected");

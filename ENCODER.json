@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "name": "FFmpeg",
+  "version": "8.1.1-flower-minimal-1",
+  "sha256": "33b7d04b8dbf004753451f4532a6b30220fe4e93607e7e80839b232e308a8a12",
+  "license": "GPL-3.0-or-later",
+  "license_file": {
+    "path": "LICENSE",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+  },
+  "notices": {
+    "path": "NOTICE.txt",
+    "sha256": "2e7b63f32e10b2f9801538ebeba9cf2fb17fa41123c024a262a536daa3fac4e7"
+  },
+  "corresponding_source": {
+    "artifact": "flower-ffmpeg-8.1.1-minimal-1-corresponding-source.zip",
+    "sha256": "63f9bee4f7caec247a36a6dadcc6bb64e8f8cb0ca6e1b4cddaf5fcaccf602d6d"
+  },
+  "inputs_lock": {
+    "path": "tools/encoder_build/inputs.lock.json",
+    "sha256": "13746b14b2e19b2f51e560758b2ec018e639ada53f567b9f52ca5a640bc5b11a"
+  },
+  "recipe": {
+    "path": "tools/encoder_build/build.sh",
+    "sha256": "ffabd128f44f11ac8a1953e94e48c6959ad1d8ac41a3b20fdd9933497fc03478"
+  },
+  "build_inputs_verified": true,
+  "corresponding_source_review": {
+    "state": "materials_verified",
+    "full_source_archives_match_compiled_tree": true,
+    "source_files": 10633,
+    "source_patches": [],
+    "runtime_dependencies": "Windows system DLLs only; MinGW/GCC runtime original notices retained",
+    "blanket_legal_compliance_assertion": false,
+    "foreground_recording_verified": false,
+    "verification_scope": "production encoding/timeline options on short synthetic frames; no size-limit/foreground claim",
+    "size_limit_behavior_verified": false
+  }
+}

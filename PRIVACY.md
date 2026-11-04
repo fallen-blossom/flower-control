@@ -8,7 +8,7 @@ This does not mean the whole agent runs offline. Your Codex host can send prompt
 
 ## Stored locally
 
-Control state is kept under `%LOCALAPPDATA%\FlowerControl\state-v1`. Managed persistent browser profiles retain their own browser data. Diagnostics may record action identifiers, errors, timings, selection outcomes, and task-relevant metadata. Files or screenshots deliberately saved during a task remain where that task placed them. These items are not automatically uploaded to Flower's maintainer.
+New installations keep control state under `<Root>\Data\state-v1`, browser profiles under the same actual Data root, and large temporary artifacts under `<Root>\Cache`. Legacy installations retain their verified DataRoot, which may be `%LOCALAPPDATA%\FlowerControl` or a previously selected location. Protected permissions, Stop, execution and recovery records remain under the actual Program root. Diagnostics may record action identifiers, errors, timings, selection outcomes, and task-relevant metadata. Files or screenshots deliberately saved during a task remain where that task placed them. These items are not automatically uploaded to Flower's maintainer.
 
 Closing a persistent profile does not erase its logins. Disabling or uninstalling the plugin does not automatically delete state or profiles. Remove only the exact data you intend to remove, after ending work and backing up anything needed. There is no advertised automatic retention or secure-erasure guarantee.
 

@@ -417,6 +417,11 @@ unsent suffix and release its input; App/Web are not stopped by this daily actio
 Do not automatically replay the suffix. A later authorized operation needs a new
 call and fresh observation. The separate tray Computer pause is persistent until
 explicit Continue; a global protected Stop also requires its own explicit resume.
+`Ctrl+Alt+Shift+9` is the separate all-channel emergency Stop in this version;
+the same action is available in the tray and overview. Check hotkey registration
+instead of assuming it succeeded. It keeps new Flower writes stopped until the
+local user explicitly resumes; it does not undo completed effects or replay an
+unknown action. The original `Ctrl+Alt+9` remains Computer-only.
 Work authority cannot clear either pause. Input-mode handling belongs to the local executor: do not blindly press
 Esc based on an old screenshot of an IME candidate window.
 

@@ -52,4 +52,4 @@ App 或 Computer 可以操作你明确选择的日常浏览器窗口，继续使
 
 ## 本地数据
 
-控制状态在 `%LOCALAPPDATA%\FlowerControl\state-v1`。专用资料路径由 Flower 在本机生成，以本次会话结果为准；不要猜一个同名文件夹就删。浏览器资料可能含 Cookie 和凭据，不要上传到 issue、聊天或发布包。
+候选新安装的控制状态在实际 `<Root>\Data\state-v1`，浏览器资料在同一 Data 根；大缓存使用 `<Root>\Cache`。无新登记的旧安装保留其受核实的原数据根，常见为 `%LOCALAPPDATA%\FlowerControl`；不会因升级自动搬家。专用资料路径由 Flower 在本机生成，以本次会话结果为准；不要猜一个同名文件夹就删。浏览器资料可能含 Cookie 和凭据，不要上传到 issue、聊天或发布包。普通设置备份不含 profiles/Cookie/live grants；跨电脑导入名单也不会授权个人资料。卸载默认保留 Data、Cache 和恢复记录，另做清理前先盘点。

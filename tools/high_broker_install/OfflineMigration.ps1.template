@@ -1,0 +1,476 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Global
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -Global
+Import-Module (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\Modules\ScheduledTasks\ScheduledTasks.psd1') -Global
+$plan = @'
+@@PLAN_JSON@@
+'@ | ConvertFrom-Json
+$package = $plan.Package; $brokerRoot = $plan.BrokerRoot
+$version = $plan.Version; $oldVersion = $plan.OldVersion; $taskName = $plan.TaskName
+$oldDir = Join-Path $brokerRoot ('versions\' + $oldVersion)
+$newDir = Join-Path $brokerRoot ('versions\' + $version)
+$oldExe = Join-Path $oldDir 'Flower.HighHelper.exe'; $newExe = Join-Path $newDir 'Flower.HighHelper.exe'
+$prefix = $plan.ProgressPrefix; $utf8 = New-Object Text.UTF8Encoding($false)
+$script:LoggingReady = $false; $guard = $null
+$stage = 'preflight'; $taskChanged = $false; $activeChanged = $false
+$originalExited = $false; $stopLatched = $false; $startAttempted = $false
+$oldXml = $null; $oldSddl = $null; $publishedTaskHash = $null
+$journalAbsent = $false; $roleFilesHash = $null; $roleAnchorHash = $null
+@@UPDATE_FUNCTIONS@@
+function RequirePreviousTask {
+    if ((HashText ([string](Export-ScheduledTask -TaskName $taskName -TaskPath '\'))) -cne $plan.OldTaskDefinitionSha256 -or
+        (HashText (Get-FlowerTaskSecurityDescriptor)) -cne $plan.OldTaskSddlSha256) { throw 'old_task_definition_changed' }
+}
+function RequireReleasedJournal([switch]$AllowMissing) {
+    $path = $plan.RecoveryJournal
+    Assert-FlowerNoLinks $path -Shallow
+    if ($null -eq ('FlowerOfflineJournalMetadata' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class FlowerOfflineJournalMetadata {
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+    static extern uint GetFileAttributesW(string path);
+    public static bool Missing(string path) {
+        uint attributes=GetFileAttributesW(path);
+        if(attributes!=uint.MaxValue) return false;
+        int error=Marshal.GetLastWin32Error();
+        if(error!=2) throw new Win32Exception(error,"offline_journal_metadata_unreadable");
+        return true;
+    }
+}
+'@
+    }
+    # Only FILE_NOT_FOUND is absence. Access denied, a missing parent,
+    # same-name directory or a partial atomic write is never an empty journal.
+    if (![FlowerOfflineJournalMetadata]::Missing($path + '.new')) { throw 'offline_partial_journal_present' }
+    if ([FlowerOfflineJournalMetadata]::Missing($path)) {
+        if (!$AllowMissing) { throw 'offline_existing_journal_required' }
+        return $null
+    }
+    if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw 'offline_journal_rejected' }
+    $file = Get-Item -LiteralPath $path
+    if ($file.Length -lt 1 -or $file.Length -gt 16777216) { throw 'offline_journal_rejected' }
+    # New native startup remains the authoritative strict decoder. Here reject
+    # any unconfirmed release; never acknowledge or erase historical results.
+    $journal = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+    if ($journal.Schema -ne 1 -or $journal.PSObject.Properties.Name -notcontains 'Pending' -or
+        $null -eq $journal.Pending -or $journal.Pending -isnot [array] -or $journal.Pending.Count -gt 4128) { throw 'offline_journal_rejected' }
+    foreach ($item in $journal.Pending) {
+        if ($item.InputRelease -cne 'released' -or $item.MutexReleased -isnot [bool] -or !$item.MutexReleased -or
+            $item.NativeCountKnown -isnot [bool] -or !$item.NativeCountKnown -or
+            $item.Acknowledged -isnot [bool] -or $item.Acknowledged -or
+            ($null -ne $item.SemanticExecutorExited -and $item.SemanticExecutorExited -isnot [bool]) -or
+            $item.PhysicalInputFree -isnot [bool] -or
+            ($item.SemanticExecutorExited -eq $false -and $item.PhysicalInputFree -ne $true)) { throw 'offline_input_release_unconfirmed' }
+    }
+    return (Hash $path)
+}
+function RequireNoActors([ValidateRange(0, 600000)][int]$WaitMilliseconds = 15000) {
+    $knownNames = @('Flower.HighHelper.exe', 'Flower.AppWorker.exe', 'flower-python.exe') +
+        @($newPolicy.WgcWorkerHashes.PSObject.Properties.Name | Where-Object { [IO.Path]::GetExtension($_) -ieq '.exe' })
+    if ($null -eq ('FlowerOfflineProcessMetadata' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class FlowerOfflineProcessMetadata {
+    [DllImport("kernel32.dll",SetLastError=true)]
+    static extern SafeProcessHandle OpenProcess(uint access,bool inherit,int pid);
+    [DllImport("kernel32.dll",SetLastError=true)]
+    static extern uint WaitForSingleObject(SafeProcessHandle process,uint milliseconds);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+    static extern bool QueryFullProcessImageNameW(SafeProcessHandle process,uint flags,StringBuilder path,ref uint length);
+    static bool Exited(SafeProcessHandle process) {
+        uint wait=WaitForSingleObject(process,0);
+        if(wait==0) return true;
+        if(wait==258) return false;
+        throw new Win32Exception(Marshal.GetLastWin32Error(),"offline_process_wait_unreadable");
+    }
+    public static string LiveImage(int pid) {
+        if(pid<=0) throw new IOException("offline_process_id_rejected");
+        using(var process=OpenProcess(0x101000,false,pid)) {
+            if(process.IsInvalid) {
+                int error=Marshal.GetLastWin32Error();
+                if(error==87) return null;
+                throw new Win32Exception(error,"offline_process_open_unreadable");
+            }
+            if(Exited(process)) return null;
+            var path=new StringBuilder(32768);uint length=(uint)path.Capacity;
+            if(!QueryFullProcessImageNameW(process,0,path,ref length)) {
+                int error=Marshal.GetLastWin32Error();
+                if(Exited(process)) return null;
+                throw new Win32Exception(error,"offline_process_image_unreadable");
+            }
+            if(Exited(process)) return null;
+            if(path.Length==0) throw new IOException("offline_process_image_empty");
+            return path.ToString();
+        }
+    }
+}
+'@
+    }
+    $versionsRoot = (Join-Path $brokerRoot 'versions') + '\'
+    $deadline = [Diagnostics.Stopwatch]::GetTimestamp() + [long]($WaitMilliseconds * [Diagnostics.Stopwatch]::Frequency / 1000.0)
+    $logged = $false
+    $unreadableLogged = [Collections.Generic.HashSet[int]]::new()
+    $pendingUnreadable = [Collections.Generic.HashSet[int]]::new()
+    $trackedActors = [Collections.Generic.HashSet[int]]::new()
+    $metadataRetried = $false
+    do {
+    $running = @(Get-ScheduledTask | Where-Object { $_.TaskName.StartsWith('FlowerControl.', [StringComparison]::Ordinal) -and [string]$_.State -eq 'Running' })
+    if ($running.Count -ne 0) { throw 'offline_flower_task_still_running' }
+    $candidates = [Collections.Generic.Dictionary[int,object]]::new()
+    foreach ($candidate in @(Get-CimInstance Win32_Process)) {
+        $known = $knownNames -icontains $candidate.Name
+        $inside = ![string]::IsNullOrWhiteSpace($candidate.ExecutablePath) -and $candidate.ExecutablePath.StartsWith($versionsRoot, [StringComparison]::OrdinalIgnoreCase)
+        if ($known -or $inside) { $candidates[[int]$candidate.ProcessId] = $candidate }
+    }
+    foreach ($pendingPid in $trackedActors) {
+        if (!$candidates.ContainsKey($pendingPid)) {
+            $candidates[$pendingPid] = [pscustomobject]@{ ProcessId = $pendingPid; Name = 'previously-unreadable'; ExecutablePath = $null }
+        }
+    }
+    $actors = @($candidates.Values | ForEach-Object {
+        $actorPid = [int]$_.ProcessId; $actorName = [string]$_.Name
+        try { $image = [FlowerOfflineProcessMetadata]::LiveImage($actorPid) }
+        catch {
+            $errorCode = $null; $cause = $_.Exception.GetBaseException()
+            if ($cause -is [ComponentModel.Win32Exception]) { $errorCode = $cause.NativeErrorCode }
+            if ($unreadableLogged.Add($actorPid)) {
+                Log 'actor_metadata_unreadable' @{ pid = $actorPid; name = $actorName.Substring(0, [Math]::Min(128, $actorName.Length)); phase = 'read_only_handle'; winerror = $errorCode }
+            }
+            # A process can lose query access during shutdown after the CIM
+            # snapshot. Do not call it absent or reuse the stale snapshot.
+            # Retry only access-denied within the original total wait budget;
+            # a persistent unreadable process still prevents publication.
+            if ($errorCode -ne 5) { throw 'offline_executor_path_unreadable' }
+            $null = $pendingUnreadable.Add($actorPid)
+            $null = $trackedActors.Add($actorPid)
+            $metadataRetried = $true
+            return
+        }
+        $null = $pendingUnreadable.Remove($actorPid)
+        if ($null -eq $image -or !$image.StartsWith($versionsRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            $null = $trackedActors.Remove($actorPid)
+            return
+        }
+        $null = $trackedActors.Add($actorPid)
+        $mode = ''
+        if ($null -ne $_.PSObject.Properties['CommandLine']) {
+            $mode = [regex]::Match([string]$_.CommandLine, '(?:^|[\s"])(--[a-z][a-z0-9-]{1,48})(?=[\s"]|$)').Groups[1].Value
+        }
+        [pscustomobject]@{ pid = $actorPid; name = $actorName; image = $image; reported_mode_from_cim = $mode }
+    })
+    if ($actors.Count -eq 0 -and $pendingUnreadable.Count -eq 0 -and $trackedActors.Count -eq 0) {
+        if ($metadataRetried) { Log 'executor_quiescence_verified_after_metadata_retry' @{ count = 0; unreadable = 0; fresh_scan = $true; input_dispatched = $false } }
+        return
+    }
+    if (!$logged) {
+        Log 'waiting_for_executor_quiescence' @{ count = $actors.Count; unreadable = $pendingUnreadable.Count; actors = @($actors | Select-Object -First 16); input_dispatched = $false }
+        $logged = $true
+    }
+    if ([Diagnostics.Stopwatch]::GetTimestamp() -ge $deadline) {
+        if ($pendingUnreadable.Count -ne 0) { throw 'offline_executor_path_unreadable' }
+        throw 'offline_independent_executor_present'
+    }
+    # Hold the original singleton/input lease and Stop while observing natural
+    # exit. No process is ignored, killed, acknowledged or resumed by this wait.
+    Start-Sleep -Milliseconds 250
+    } while ($true)
+}
+function RoleFileInventory {
+    $root = Join-Path $brokerRoot 'recovery'; $name = $plan.UserSid + '.' + $plan.SessionId
+    $paths = @((Join-Path $root ('stop\' + $name + '.json')), (Join-Path $root ('computer-pause\' + $name + '.json')))
+    foreach ($kind in @('global', 'computer')) {
+        $path = Join-Path $root ('ordinary-stop\' + $name + '.' + $kind + '.bin')
+        $paths += $path; $paths += $path + '.ack.json'
+    }
+    $rows = @()
+    foreach ($path in $paths) {
+        Assert-FlowerNoLinks $path -Shallow
+        $hash = $null
+        if (![FlowerOfflineJournalMetadata]::Missing($path)) {
+            if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw 'offline_role_record_rejected' }
+            $hash = Hash $path
+        }
+        $rows += @{ path = $path; hash = $hash }
+    }
+    return ($rows | ConvertTo-Json -Depth 8 -Compress)
+}
+function RequireRoleAnchor {
+    $current = Admin $newExe '--flower-role-policy'
+    if ($current.Phase -cne 'role_policy' -or $current.UserSid -cne $plan.UserSid -or
+        (HashText ($current | ConvertTo-Json -Depth 8 -Compress)) -cne $roleAnchorHash -or
+        (HashText (RoleFileInventory)) -cne $roleFilesHash) { throw 'offline_role_or_stop_changed' }
+    return $current
+}
+function VerifiedStopForRecovery {
+    if ($journalAbsent) {
+        if ($null -eq $roleFilesHash) { throw 'offline_recovery_absence_not_verified' }
+        $current = RequireRoleAnchor
+        if ($null -ne (RequireReleasedJournal -AllowMissing)) { throw 'offline_recovery_journal_changed' }
+        return $current.Stop.Protected
+    }
+    return (Admin $newExe '--offline-update-state').Stop
+}
+function EnsureRecoveryProtection {
+    $root = Join-Path $brokerRoot 'recovery'
+    Assert-FlowerNoLinks $root -Shallow
+    if (![IO.Directory]::Exists($root)) { throw 'offline_recovery_parent_unavailable' }
+    try { [FlowerRecoveryProtection]::Ensure($root) }
+    catch {
+        $reason = $_.Exception.GetBaseException().Message
+        if ($reason -cnotin @('recovery_high_label_missing', 'recovery_inheritance_missing')) { throw }
+        # Legacy repair is retained only for a missing inheritable root label.
+        # A modern root already has the correct protection. Its ordinary Stop
+        # append records intentionally retain their existing Medium label.
+        $repair = [FlowerRecoveryProtection]::TightenStopped($root)
+        [FlowerRecoveryProtection]::Ensure($root)
+        Log 'recovery_inheritance_repaired' $repair
+        return
+    }
+    Log 'recovery_protection_verified' @{ existing_root = $true; legacy_repair_performed = $false }
+}
+function RecoverStoppedOriginal {
+    # Before the old process exits, leave its exact installation in place.
+    # A copied subset may be reused only after a fresh byte/ACL inventory.
+    if (!$originalExited) { return 'original_not_replaced_payload_reusable' }
+    # Start-ScheduledTask can time out after committing. Do not switch metadata
+    # underneath a possibly running new process; the real host must inspect it.
+    if ($startAttempted) { return 'new_start_outcome_requires_live_status' }
+    if (!$stopLatched -or $null -eq $guard) { throw 'offline_recovery_stop_or_lease_missing' }
+    $stop = VerifiedStopForRecovery
+    if (!$stop.Stopped -or $stop.UserSid -cne $plan.UserSid -or $stop.Session -ne $plan.SessionId) { throw 'offline_recovery_stop_changed' }
+    $currentTaskHash = HashText ([string](Export-ScheduledTask -TaskName $taskName -TaskPath '\'))
+    if ((HashText (Get-FlowerTaskSecurityDescriptor)) -cne $plan.OldTaskSddlSha256) { throw 'offline_recovery_task_changed' }
+    if ($currentTaskHash -cne $plan.OldTaskDefinitionSha256) {
+        if (!$taskChanged -or $null -eq $publishedTaskHash -or $currentTaskHash -cne $publishedTaskHash) { throw 'offline_recovery_task_changed' }
+    }
+    $activeHash = Hash (Join-Path $brokerRoot 'active.json')
+    if ($activeHash -cne $plan.OldActiveSha256) {
+        if (!$activeChanged -or $activeHash -cne $plan.ActiveSha256) { throw 'offline_recovery_active_changed' }
+    }
+    # Validate both components before changing either one.
+    if ($currentTaskHash -cne $plan.OldTaskDefinitionSha256) { RegisterTask $oldXml $oldSddl }
+    if ($activeHash -cne $plan.OldActiveSha256) {
+        ReplaceActive (Join-Path $oldDir 'installation.json') $plan.OldActiveSha256 $plan.ActiveSha256
+    }
+    RequirePreviousTask
+    if ((Hash (Join-Path $brokerRoot 'active.json')) -cne $plan.OldActiveSha256) { throw 'offline_recovery_active_unconfirmed' }
+    $stop = VerifiedStopForRecovery
+    if (!$stop.Stopped -or $stop.UserSid -cne $plan.UserSid -or $stop.Session -ne $plan.SessionId) { throw 'offline_recovery_stop_changed' }
+    $guard.Dispose(); $script:guard = $null
+    Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+    return 'original_metadata_restored_stopped_start_submitted'
+}
+function ShowOfflineMigrationResult([bool]$Succeeded, [bool]$CleanupFailed = $false) {
+    if($CleanupFailed) {
+        $title='Flower Control：安装状态需要检查'
+        $message='安装已进入收尾阶段，但资源释放发生错误。已有安装回执保留，请重新打开 Codex 核对实际版本与资源状态；不要重跑入口或恢复控制。'
+        $icon=[System.Windows.Forms.MessageBoxIcon]::Error
+    } elseif($Succeeded) {
+        $title='Flower Control：安装换版完成'
+        $message='安装换版完成。现在可以重新打开 Codex，回原聊天核对实际服务和插件。Flower 保持停止状态；安装完成不代表功能测试已通过。'
+        $icon=[System.Windows.Forms.MessageBoxIcon]::Information
+    } else {
+        $title='Flower Control：安装未完成'
+        $message='安装未完成。现在可以重新打开 Codex，回原聊天检查本次错误。不要重跑这个入口，也不要手动恢复控制权限。'
+        $icon=[System.Windows.Forms.MessageBoxIcon]::Error
+    }
+    [System.Windows.Forms.MessageBox]::Show($message,$title,[System.Windows.Forms.MessageBoxButtons]::OK,$icon) | Out-Null
+}
+
+$completedSuccessfully = $false
+$cleanupErrors = [Collections.Generic.List[string]]::new()
+try {
+    Add-Type -TypeDefinition @'
+@@PINNED_DELIVERY_TYPE@@
+'@
+    Add-Type -TypeDefinition @'
+@@OFFLINE_GUARD_TYPE@@
+'@
+    Add-Type -TypeDefinition @'
+@@RECOVERY_PROTECTION_TYPE@@
+'@
+    $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'elevation_required' }
+    if ((Hash (Join-Path $brokerRoot 'active.json')) -cne $plan.OldActiveSha256 -or
+        (Hash (Join-Path $oldDir 'broker.json')) -cne $plan.OldPolicySha256 -or
+        (Hash $oldExe) -cne $plan.OldExeSha256 -or
+        (Hash (Join-Path $oldDir 'Flower.HighHelper.dll')) -cne $plan.OldDllSha256) { throw 'offline_original_installation_changed' }
+    $guard = [FlowerOfflineGuard]::new([int]$plan.OldPid, [long]$plan.OldCreated, $oldExe,
+        $plan.UserSid, [int]$plan.SessionId, $plan.LogonSid)
+    [FlowerPinnedDelivery]::HoldWriteGate($plan.UserSid)
+    $logDirectory = [FlowerPinnedDelivery]::CreateLogDirectory($plan.OperationId, $plan.UserSid)
+    if ($logDirectory -ine [IO.Path]::GetDirectoryName($prefix)) { throw 'delivery_log_path_changed' }
+    $script:LoggingReady = $true
+    Log 'original_live_handle_bound' @{ pid = $plan.OldPid; created = $plan.OldCreated; version = $oldVersion }
+    $newActive = ([FlowerPinnedDelivery]::ReadText((Join-Path $package 'active.json'), $plan.ActiveSha256)) | ConvertFrom-Json
+    $sourceDir = Join-Path $package ('versions\' + $version)
+    $newPolicy = ([FlowerPinnedDelivery]::ReadText((Join-Path $sourceDir 'broker.json'), $newActive.hashes.'broker.json')) | ConvertFrom-Json
+    $newXml = [FlowerPinnedDelivery]::ReadText((Join-Path $package 'task.xml'), $plan.TaskXmlSha256)
+    $common = [FlowerPinnedDelivery]::ReadText((Join-Path $package 'InstallCommon.ps1'), $plan.CommonSha256)
+    . ([scriptblock]::Create($common))
+    # Check only the fixed parents and versions used by this operation. Old
+    # unrelated version trees are not installation inputs.
+    Assert-FlowerNoLinks $brokerRoot -Shallow
+    Assert-FlowerNoLinks (Join-Path $brokerRoot 'versions') -Shallow
+    Assert-FlowerNoLinks $oldDir -Shallow
+    foreach ($path in @($oldExe, (Join-Path $oldDir 'Flower.HighHelper.dll'), (Join-Path $oldDir 'broker.json'), (Join-Path $brokerRoot 'active.json'))) {
+        Assert-FlowerNoLinks $path -Shallow
+    }
+    Assert-FlowerSource; Assert-FlowerVersion $sourceDir
+    RequirePreviousTask; Assert-FlowerTaskSecurity
+    $task = Get-FlowerTask
+    if (@($task.Actions).Count -ne 1 -or $task.Actions.Execute -ine $oldExe -or $task.Actions.Arguments -cne '--serve') { throw 'old_task_changed' }
+    $oldXml = [string](Export-ScheduledTask -TaskName $taskName -TaskPath '\'); $oldSddl = Get-FlowerTaskSecurityDescriptor
+    if ((HashText $oldXml) -cne $plan.OldTaskDefinitionSha256 -or (HashText $oldSddl) -cne $plan.OldTaskSddlSha256) { throw 'old_task_definition_changed' }
+    [IO.File]::WriteAllText(($prefix + '-previous-task.xml'), $oldXml, [Text.Encoding]::Unicode)
+    [IO.File]::WriteAllText(($prefix + '-previous-task-sddl.txt'), $oldSddl, $utf8)
+    $stage = 'copying_payload'
+    $existingPayload = Test-Path -LiteralPath $newDir
+    if ($existingPayload) { Assert-FlowerAcl $newDir }
+    else { [IO.Directory]::CreateDirectory($newDir) | Out-Null; Set-FlowerProtection $newDir }
+    [FlowerPinnedDelivery]::PinDirectory($newDir)
+    $hashes = @{}
+    foreach ($item in $newActive.hashes.PSObject.Properties) { $hashes.Add($item.Name, [string]$item.Value) }
+    foreach ($item in $newActive.runtime_hashes.PSObject.Properties) { $hashes.Add($item.Name.Replace('/', '\'), [string]$item.Value) }
+    foreach ($item in $newPolicy.AppWorkerHashes.PSObject.Properties) { $hashes.Add(('app\' + $item.Name), [string]$item.Value) }
+    foreach ($item in $newPolicy.WgcWorkerHashes.PSObject.Properties) { $hashes.Add(('wgc\' + $item.Name), [string]$item.Value) }
+    $hashes.Add('installation.json', $plan.ActiveSha256)
+    # Never overwrite or erase an existing file. A partially copied, protected
+    # payload is reusable only when every present file is an exact expected one.
+    if ($existingPayload) {
+        foreach ($item in Get-ChildItem -LiteralPath $newDir -Recurse -Force) {
+            Assert-FlowerAcl $item.FullName
+            if (!$item.PSIsContainer) {
+                $relative = $item.FullName.Substring($newDir.Length + 1)
+                if (!$hashes.ContainsKey($relative) -or (Hash $item.FullName) -cne $hashes[$relative]) { throw 'offline_partial_payload_changed' }
+            }
+        }
+    }
+    foreach ($relative in @($hashes.Keys | Sort-Object)) {
+        if ([IO.Path]::IsPathRooted($relative) -or $relative.Contains(':') -or @($relative.Split('\') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) { throw 'payload_relative_path_rejected' }
+        $destination = Join-Path $newDir $relative; $parent = [IO.Path]::GetDirectoryName($destination)
+        if (Test-Path -LiteralPath $destination) { continue }
+        $missing = New-Object 'System.Collections.Generic.Stack[string]'
+        for ($part = $parent; !(Test-Path -LiteralPath $part); $part = [IO.Path]::GetDirectoryName($part)) { $missing.Push($part) }
+        while ($missing.Count -gt 0) { $part = $missing.Pop(); [IO.Directory]::CreateDirectory($part) | Out-Null; Set-FlowerProtection $part }
+        [FlowerPinnedDelivery]::CopyFile((Join-Path $sourceDir $relative), $destination, $hashes[$relative]); Set-FlowerProtection $destination
+    }
+    Assert-FlowerVersion $newDir; Assert-FlowerSource $newDir; Assert-FlowerAcl $newDir
+    Log 'payload_verified_original_still_bound' @{ files = $hashes.Count; version = $version }
+    $stage = 'latching_stop'
+    $roleBeforeLatch = Admin $newExe '--flower-role-policy'
+    $closed = Admin $newExe '--latch-offline-update-stop'
+    if ($closed.version -cne $version -or !$closed.Stop.Stopped -or !$closed.Shared.Stopped -or
+        $closed.Stop.UserSid -cne $plan.UserSid -or $closed.Stop.Session -ne $plan.SessionId -or $closed.resumed -ne $false) { throw 'offline_stop_unconfirmed' }
+    $stopLatched = $true
+    Log 'offline_stop_latched_no_resume' $closed
+    $roleAnchor = Admin $newExe '--flower-role-policy'
+    if ($roleAnchor.Phase -cne 'role_policy' -or $roleAnchor.UserSid -cne $plan.UserSid -or
+        $roleAnchor.Tier -ne $roleBeforeLatch.Tier -or $roleAnchor.Revision -cne $roleBeforeLatch.Revision -or
+        (HashText ($roleAnchor.Stop.Protected | ConvertTo-Json -Depth 8 -Compress)) -cne (HashText ($closed.Stop | ConvertTo-Json -Depth 8 -Compress)) -or
+        (HashText ($roleAnchor.Stop.Computer | ConvertTo-Json -Depth 8 -Compress)) -cne (HashText ($closed.Computer | ConvertTo-Json -Depth 8 -Compress)) -or
+        (HashText ($roleAnchor.Stop.Ordinary | ConvertTo-Json -Depth 8 -Compress)) -cne (HashText ($roleBeforeLatch.Stop.Ordinary | ConvertTo-Json -Depth 8 -Compress)) -or
+        (HashText ($roleAnchor.Stop.OrdinaryComputer | ConvertTo-Json -Depth 8 -Compress)) -cne (HashText ($roleBeforeLatch.Stop.OrdinaryComputer | ConvertTo-Json -Depth 8 -Compress))) { throw 'offline_role_or_stop_changed' }
+    $roleAnchorHash = HashText ($roleAnchor | ConvertTo-Json -Depth 8 -Compress)
+    $stage = 'waiting_for_normal_tray_exit'
+    Write-Host '新版文件已核验。请从 Flower Control 托盘正常退出，并完整退出 Codex 及其他仍连接 Flower 的宿主；等待安装结果对话框后再打开。托盘退出与宿主连接退出两个阶段各最多等待十分钟。'
+    $guard.WaitForNormalExit(600000)
+    $originalExited = $true
+    $guard.HoldInputResource()
+    Log 'original_exit_zero_singleton_held' @{ pid = $plan.OldPid; release_scope = 'original_broker_handlers' }
+    $stage = 'offline_checks'
+    RequirePreviousTask
+    if ((Hash (Join-Path $brokerRoot 'active.json')) -cne $plan.OldActiveSha256) { throw 'offline_active_changed' }
+    # Host-owned MCP connections remain alive after the tray exits. Wait for
+    # normal host closure; every scan still requires zero actors, with no exemptions.
+    RequireNoActors -WaitMilliseconds 600000
+    $journalHash = RequireReleasedJournal -AllowMissing
+    $journalAbsent = $null -eq $journalHash
+    EnsureRecoveryProtection
+    $currentRole = Admin $newExe '--flower-role-policy'
+    if ((HashText ($currentRole | ConvertTo-Json -Depth 8 -Compress)) -cne $roleAnchorHash) { throw 'offline_role_or_stop_changed' }
+    $roleFilesHash = HashText (RoleFileInventory)
+    if ($journalAbsent) {
+        # This is installer evidence of absence, not a synthesized native
+        # offline-state reply and not an assertion that unknowns were cleared.
+        Log 'journal_absent_after_original_exit' @{ path = $plan.RecoveryJournal; state = 'absent'; hash = $null; native_pending_read = $false }
+    } else {
+        $state = Admin $newExe '--offline-update-state'
+        if (!$state.Stop.Stopped -or $state.Stop.UserSid -cne $plan.UserSid -or $state.Stop.Session -ne $plan.SessionId -or
+            $state.JournalSha256 -cne $journalHash) { throw 'offline_stop_or_journal_changed' }
+    }
+    RequireNoActors
+    $null = RequireRoleAnchor
+    if ((RequireReleasedJournal -AllowMissing) -cne $journalHash) { throw 'offline_stop_or_journal_changed' }
+    RequirePreviousTask
+    if ((Hash (Join-Path $brokerRoot 'active.json')) -cne $plan.OldActiveSha256) { throw 'offline_active_changed' }
+    $stage = 'publishing'
+    $taskChanged = $true; RegisterTask $newXml $oldSddl
+    $publishedTaskHash = HashText ([string](Export-ScheduledTask -TaskName $taskName -TaskPath '\'))
+    Assert-FlowerTaskSecurity
+    if ((HashText (Get-FlowerTaskSecurityDescriptor)) -cne $plan.OldTaskSddlSha256) { throw 'offline_new_task_sddl_changed' }
+    $published = Get-FlowerTask
+    if (@($published.Actions).Count -ne 1 -or $published.Actions.Execute -ine $newExe -or $published.Actions.Arguments -cne '--serve' -or
+        $published.Actions.WorkingDirectory -ine $newDir -or [string]$published.Principal.RunLevel -notin @('Highest','HighestAvailable') -or
+        [string]$published.Principal.LogonType -notin @('Interactive','InteractiveToken')) { throw 'offline_new_task_unconfirmed' }
+    $activeChanged = $true; ReplaceActive (Join-Path $package 'active.json') $plan.ActiveSha256 $plan.OldActiveSha256
+    $null = RequireRoleAnchor
+    if ((RequireReleasedJournal -AllowMissing) -cne $journalHash) { throw 'offline_stop_or_journal_changed' }
+    [FlowerPinnedDelivery]::CloseInputs()
+    $guard.Dispose(); $guard = $null
+    $stage = 'starting_paused'
+    $startAttempted = $true
+    Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+    # Broker RPC is checked separately from the real Codex connection. A local
+    # human installer is not silently granted an AI-host identity for status.
+    Log 'installed_paused_status_pending' @{ version = $version; journal_sha256 = $journalHash; stop = $closed }
+    [IO.File]::WriteAllText(($prefix + '-result.json'), (@{ schema = 1; state = 'installed_paused_status_pending'; version = $version;
+        operation = $plan.OperationId; resumed = $false; original_exit_code = 0; journal_sha256 = $journalHash } | ConvertTo-Json -Depth 8), $utf8)
+    Write-Host '已换版并提交暂停启动。请回到 Codex 告知安装器已结束；接下来核对真实新服务和插件，不要手动恢复权限。'
+    $completedSuccessfully = $true
+} catch {
+    $reason = $_.Exception.Message
+    $recovery = 'inspection_required'
+    try { $recovery = RecoverStoppedOriginal } catch { $recovery = 'recovery_unconfirmed:' + $_.Exception.Message }
+    $completedSuccessfully = $false
+    try { Log 'offline_migration_failed_no_resume' @{ reason = $reason; stage = $stage; task_changed = $taskChanged; active_changed = $activeChanged; recovery = $recovery } }
+    catch { Write-Warning ('无法写入失败日志：' + $prefix) }
+    if ($script:LoggingReady) {
+      try {
+        [IO.File]::WriteAllText(($prefix + '-result.json'), (@{ schema = 1; state = 'failed'; reason = $reason; stage = $stage;
+            version = $version; operation = $plan.OperationId; task_changed = $taskChanged; active_changed = $activeChanged;
+            resumed = $false; recovery = $recovery } | ConvertTo-Json -Depth 8), $utf8)
+      } catch { Write-Warning ('无法写入失败回执：' + $prefix) }
+    }
+    Write-Error ('迁移未完成，保持现场，不要重放安装器：' + $reason) -ErrorAction Continue
+    $completedSuccessfully = $false
+} finally {
+    try { if ($null -ne $guard) { $guard.Dispose() } }
+    catch { $completedSuccessfully = $false; $cleanupErrors.Add('guard_dispose_failed'); Write-Warning '安装资源释放失败，请保留现场检查。' }
+    try { if ('FlowerPinnedDelivery' -as [type]) { [FlowerPinnedDelivery]::Close() } }
+    catch { $completedSuccessfully = $false; $cleanupErrors.Add('pinned_handles_close_failed'); Write-Warning '安装文件句柄释放失败，请保留现场检查。' }
+}
+
+# Preserve the installation result: cleanup failure is a separate fact.
+if ($cleanupErrors.Count -gt 0) {
+    $cleanup = @{ schema = 1; operation = $plan.OperationId; version = $version;
+        state = 'cleanup_failed'; installation_result_preserved = $true; errors = @($cleanupErrors.ToArray()) }
+    try { Log 'installation_cleanup_failed' $cleanup } catch { Write-Warning '无法记录资源释放错误日志。' }
+    if ($script:LoggingReady) {
+        try { [IO.File]::WriteAllText(($prefix + '-cleanup.json'), ($cleanup | ConvertTo-Json -Depth 4), $utf8) }
+        catch { Write-Warning '无法写入单独的资源释放错误回执，请保留此窗口。' }
+    }
+}
+# Release guarded resources before a person reads the completion dialog.
+try { Add-Type -AssemblyName System.Windows.Forms; ShowOfflineMigrationResult $completedSuccessfully ($cleanupErrors.Count -gt 0) }
+catch { Write-Warning ('安装结果对话框不可用；请保留此窗口核对错误和已有回执（早期失败可能尚无回执）：' + $prefix) }
+if ($completedSuccessfully) { exit 0 } else { exit 1 }

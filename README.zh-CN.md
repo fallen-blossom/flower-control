@@ -2,90 +2,58 @@
 
 [English](README.md)
 
-**Windows 11 x64 源码预览版 · 0.1.0-preview.3**
+**Windows 11 x64 · 0.1.0 正式发行准备**
 
-Flower Control 让 Codex 操作 Windows 网页和桌面应用。安装后，Codex 会获得三个本地 MCP 通道：
+Flower Control 让 Codex 操作网页和 Windows 应用。你在聊天里描述任务，Flower 在本机绑定目标、检查权限、执行动作并读回结果。
 
-| 通道 | 作用 | 适合的场景 |
-| --- | --- | --- |
-| **Web** | 读取页面结构，操作网页元素 | 填表、搜索、网页编辑器、上传下载、临时浏览器 |
-| **App** | 读取 Windows 应用暴露的控件 | 按钮、输入框、列表、菜单、设置页、对话框 |
-| **Computer** | 截取指定窗口并按坐标发送鼠标键盘 | 画布、拖拽、快捷键、控件信息不足的界面 |
+| 通道 | 适合做什么 |
+| --- | --- |
+| Web | 受管 Brave、Edge、Chrome 中的网页元素、表单、标签页和文件传输 |
+| App | Windows 可访问控件、菜单、列表和对话框 |
+| Computer | 指定窗口内的键鼠输入、画布和拖拽 |
 
-三个通道都由 Codex 规划，Flower 负责本地目标绑定、权限检查、输入释放和结果读回。你可以直接用自然语言交代任务，不需要在聊天里手动调用每个工具。
+## 安装
 
-## 先看这三件事
+**0.1.0 Setup 与发行资产尚未发布。** 当前 preview.3 下载仍是源码快照。请查看[官方 Releases](https://github.com/fallen-blossom/flower-control/releases)的实际可用版本，不把旧源码 ZIP 当安装器。
 
-1. **安装流程**：[安装教程](docs/INSTALL.zh-CN.md)。需要 Windows 11、Codex 桌面版、CPython 3.14、.NET 10 SDK 和 Visual Studio C++ Build Tools。
-2. **权限档位**：[权限与设置](docs/PERMISSIONS.zh-CN.md)。当前界面有四档：01 完全停止、02 普通控制、03 管理员窗口、04 管理员执行。
-3. **实际使用**：[使用说明](docs/USAGE.zh-CN.md)。包括 Web、App、Computer、窗口选择、暂停、停止和常见错误。
+0.1.0 发布后，普通安装顺序是：
 
-**第一次装到另一台电脑？** 用[取源码命令和给 Codex 的安装提示词](docs/INSTALL_WITH_CODEX.zh-CN.md)。已经装好，直接从[第一次使用](docs/USAGE.zh-CN.md#安装后第一次使用)做一遍“选 02 → 空白记事本 → 公开网页 → 收尾”。
+1. 从对应 Release 下载 `FlowerControl-Setup.exe` 与 `SHA256SUMS.txt`，用 `Get-FileHash -Algorithm SHA256` 核对文件。
+2. 以日常 Windows 账号运行 Setup。新安装可选一个尚不存在的专用根，例如 `D:\FlowerControl`；Program、Data、Cache、Packages 都在根下。Windows 登记、临时解包和宿主缓存仍可能使用系统盘。
+3. 审阅计划，自己确认 Windows UAC。安装器包含 Python 和 .NET，普通用户无需编译器；Codex 和受支持浏览器需要已安装。
+4. 在 Codex 中安装、启用生成的本地插件，并确认宿主要求的 Hook 信任。市场登记、聊天加载和实际控制会分别核实。
 
-这是一份**源码预览版**。仓库提供源码和可重复的本地构建步骤，不提供签名 exe，也不会自动更新。GitHub Release 页面只是给某个版本附加源码包和校验和；它不是安装器，不会替你构建或安装管理员助手。
+本版选择未签名发行。Windows 可能显示未知发布者；请结合官方资产 SHA、匹配源码与构建输入判断是否运行。Flower 不添加信任根，也不要求关闭 Windows 保护。
 
-## 当前版本能做什么
+完整步骤见[安装器指南](docs/INSTALLER.zh-CN.md)；需要 Codex 协助时用[安装提示词](docs/INSTALL_WITH_CODEX.zh-CN.md)。开发者另走[源码路线](docs/INSTALL.zh-CN.md)。
 
-- Web 支持受管的 Brave、Edge、Chrome 浏览器环境，以及临时、AI、个人登录资料。
-- App 支持 Windows UI Automation，能读取控件、执行按钮/输入/列表操作，也能截取指定窗口。
-- Computer 支持指定窗口截图、点击、输入、拖拽、滚动、快捷键和有限的短序列。
-- 支持托盘设置、权限档位、黑名单、隐私遮挡、Stop、Computer 暂停与恢复。
-- 支持本地 Codex 插件接入；DSH/Claude/本地客户端适配器随源码保留，但不属于本预览版的主要验收路径。
+## 第一次使用
 
-## 四档权限先记住
+1. 打开花形托盘图标 → **设置**。新安装默认 **02 普通控制**，更新保留原档位。档位按钮立即生效；名单等普通编辑需要 **Ctrl+S**。
+2. 新建 Codex 聊天和一份独立的空白记事本文档，发送：
 
-| 档位 | 名称 | 普通窗口 | 管理员窗口 | 管理员启动 | 当前说明 |
-| --- | --- | --- | --- | --- | --- |
-| 01 | 完全停止 | 否 | 否 | 否 | 三个控制通道都停止派发；托盘和 Stop 仍可用 |
-| 02 | 普通控制 | 是 | 否 | 否 | 日常窗口控制，不碰管理员权限 |
-| 03 | 管理员窗口 | 是 | 是 | 否 | 可读/操作管理员窗口，不启动管理员进程 |
-| 04 | 管理员执行 | 是 | 是 | 是，按本地名单 | 可发起管理员程序启动；UAC 安全桌面和旧系统接管当前冻结 |
+> 检查 Flower 的 Web、App、Computer 状态。列出记事本窗口，让我辨认刚新建的空白文档。绑定后输入“Flower 测试成功”并读回。先不保存或关闭文档；完成后结束控制，释放输入并保留文字。
 
-权限是本地设置，聊天里的 AI 不能直接写入权限文件。黑名单优先于允许名单；每次选择目标、启动程序或执行动作仍会重新检查当前档位、目标身份和 Stop 状态。
-
-## 第一次试用
-
-安装并信任 Hook 后，在花形托盘图标的设置中用左侧实际档位按钮选 **02 普通控制**，等待切换成功。档位立即生效，名单等普通编辑才需要 Ctrl+S。新建一个 Codex 聊天和一份空白记事本文档，发送：
-
-> 用 Flower 检查三个通道是否可用。列出记事本窗口让我辨认新建的空白文档，绑定后输入“Flower 测试成功”并读回。先不保存或关闭文档；完成后结束控制，保留文字。
+3. 再试公开网页：
 
 > 用 Flower 临时浏览器打开 https://example.com，读取标题，完成后只关闭本次临时会话。
 
-先用测试窗口或公开页面，不要把密码、验证码、支付信息和私人浏览器资料交给 AI。
+接着阅读[使用说明](docs/USAGE.zh-CN.md)、[权限](docs/PERMISSIONS.zh-CN.md)和[浏览器资料](docs/BROWSER_PROFILES.zh-CN.md)。先用普通窗口；03 开放管理员窗口，04 另外开放本地名单中的管理员启动。UAC 安全桌面和跨用户提权不属于支持的控制路径。
 
-## 浏览器和登录资料
+## 停止与维护
 
-- **临时浏览器**：任务结束后可以回收，适合公开网页和一次性操作。
-- **AI 浏览器资料**：给普通代理任务使用的独立资料。
-- **个人资料（Luohua）**：需要你在当前聊天里明确授权，且每个浏览器分别授权。
+- **Ctrl+Alt+Shift+9** 或托盘/设置中的紧急停止按钮：阻止全部 Flower 通道的新写入，直到你在本机明确恢复。热键注册失败会显示提示，按钮仍可用。
+- **Ctrl+Alt+9**、HUD Stop 和 Computer 暂停只影响 Computer 输入；App/Web 保留各自权限边界。
+- 停止或遇到未知结果后，先重新观察目标；未知动作不自动重放。
 
-Flower 不会导入你日常浏览器的 Cookie。浏览器资料、页面登录和授权判断分别处理；登录状态过期不等于工具失效。详见[浏览器资料与登录](docs/BROWSER_PROFILES.zh-CN.md)。
+更新使用 Setup/维护入口，保留实际登记根和原恢复材料。设置提供普通偏好备份/草稿导入、脱敏诊断和空间审阅。卸载从 **Windows 设置 → 应用 → Flower Control → 卸载** 开始，先核准确范围，默认保留个人资料、缓存和受保护恢复状态。完成卸载后，Data/Cache 需要另行审阅确认才回收。详见[维护与卸载](docs/INSTALLER.zh-CN.md)。
 
-## 停止、暂停和恢复
+## 隐私、验证与许可
 
-- **Ctrl+Alt+9**：结束当前 Computer 输入并释放按键；不会改变已保存档位，也不会创建全局全部写入 Stop。
-- **HUD Stop**：停止当前 Computer 周期。
-- **托盘“停止 Computer Use”**：结束当前电脑操作；App/Web 的独立能力不会因为 Computer Stop 自动获得新权限。
-- **Computer 暂停**：只暂停 Computer 鼠标键盘，App/Web 可以继续。
-- **恢复**：必须重新观察当前目标；不要自动重放未知动作。
+Flower 不加入遥测、崩溃上传、远端配置或自动更新。个人浏览器资料需要当前聊天明确授权，不导入日常浏览器 Cookie。可选决策服务需要在本机启用；密钥在设置中输入，不交给聊天。
 
-## 隐私和安全
+[验证说明](docs/VALIDATION.zh-CN.md)区分源码/隔离检查、编码器测试与最终安装器验收。最终 0.1.0 的安装、真实 High 控制、宿主信任/加载、升级恢复与卸载尚未验证。[版本说明](docs/RELEASE_NOTES.zh-CN.md)介绍本版；历史预览结果保留原版本范围。
 
-Flower 自身不加入遥测、崩溃上传、远端配置或自动更新。浏览器会访问你指定的网站；Codex 仍会使用它配置的模型服务；Jev、Perplexity 或自定义决策服务是可选外联服务，只有在你主动启用并保存后才使用。
+普通问题见[排障](docs/TROUBLESHOOTING.zh-CN.md)，安全缺陷使用[私密漏洞报告](https://github.com/fallen-blossom/flower-control/security/advisories/new)。公开报告不要附凭据、浏览器资料或私人截图。
 
-设置中的密钥只在本机输入，不要通过聊天或命令行参数传递。管理员助手运行在当前 Windows 账号下，不会自动关闭 Defender、防火墙或 UAC。
-
-## 当前边界
-
-- 不是任意浏览器自动化；Web 只使用受支持的 Chromium 内核浏览器和受管资料。
-- 不是桌面全屏控制；Computer 只操作当前绑定的窗口。
-- UAC 安全桌面、密码输入、跨用户提权、后台静默更新和无限持键不属于本版承诺。
-- 源码和权限配置的修改会在下一次任务前重新核验；不确定的动作不会自动重放。
-
-## 发布和验证状态
-
-B46-r6 已完成开发机上的安装、Codex 三通道加载和本地发布记录。源码包会逐文件生成 SHA-256 清单。全新 Windows 账号、干净 PC 的一键安装、全部真实网站、所有第三方应用和所有管理员场景不应由一个源码预览版自动推断为已验证；遇到问题请按[排障](docs/TROUBLESHOOTING.zh-CN.md)提供版本、status、错误码和最小复现。
-
-## 许可
-
-Flower 自身代码采用 [MIT License](LICENSE)。MCP、Playwright、FlaUI、Pillow 及其他依赖保留各自许可证，详见[第三方声明](THIRD_PARTY_NOTICES.md)和[依赖清单](dependency-inventory.json)。
+Flower 自有代码采用 [MIT License](LICENSE)。依赖保留各自许可，见[第三方声明](THIRD_PARTY_NOTICES.md)和[依赖清单](dependency-inventory.json)。最小 FFmpeg 录屏编码器附有匹配源码材料与声明，其 GPL 许可不会变成 MIT。

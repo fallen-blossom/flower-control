@@ -9,7 +9,7 @@ internal static class UacStateStorage
 {
     internal static string Directory(BrokerPolicy policy, bool create = false)
     {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper");
+        var root = InstallationLocation.Current().ProgramRoot;
         if (policy.Fixture || !Regex.IsMatch(policy.Version, "\\A[a-f0-9]{16,64}\\z")
             || !Path.GetFullPath(policy.Directory).TrimEnd('\\').Equals(Path.Combine(root, "versions", policy.Version), StringComparison.OrdinalIgnoreCase))
             throw new Boundary("uac_state_installation_rejected");

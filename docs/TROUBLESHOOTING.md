@@ -8,6 +8,21 @@ Start with a read-only status check in a new chat:
 
 Do not attach credentials, cookies, browser profiles, private screenshots, or a complete home-directory dump to an issue.
 
+## Local status before host integration
+
+The candidate provides local read-only status and a settings-open request without first admitting a Codex MCP origin. Use the **actual installed version from Setup's receipt**, replacing the placeholder in ordinary PowerShell:
+
+```powershell
+& 'D:\FlowerControl\Program\versions\<actual-version>\Flower.HighHelper.exe' --flower-local-status
+& 'D:\FlowerControl\Program\versions\<actual-version>\Flower.HighHelper.exe' --flower-local-settings
+```
+
+These only report the real ordinary/High executor or request its settings window. They dispatch no business input, clear no Stop and approve no chat/work. A local connection is not host-loading proof. Preserve an unverifiable executor error rather than copying executables or editing registration/permissions to force access.
+
+Keep the same plan, receipt and recovery directory after install/update/uninstall failure. Diagnostics offers explicit full integrity checks, redacted export and bounded repair of the current settings window, without repairing authority, clearing unknown results or admitting pending messages.
+
+The diagnostic timeline retains the latest 256 metadata snapshots from this helper process, displaying the latest 12. It is not a complete persistent step-by-step task history and does not record the screen. Existing execution/recovery journals remain separate.
+
 ## Is the plugin loaded?
 
 Check that the plugin is installed and enabled for the current host:
@@ -16,7 +31,7 @@ Check that the plugin is installed and enabled for the current host:
 codex plugin list
 ```
 
-The expected local identity is `flower-control@flower-control-local`. A count such as “16 configured plugins” is not the current thread's tool list. The thread must receive the tools from all three Flower MCP channels. The local generator does not copy or register the repository Skill; a missing Skill alone is not an installation failure.
+The expected local identity is `flower-control@flower-control-local`. A configured count is not the current chat's tool list: it must receive all three channels. The old source-development generator supplies basic wiring; the frozen candidate includes its full Skill/Hook/icon set. Check the actual route and do not mix plugin directories.
 
 ## Missing tray or recovery
 
@@ -24,7 +39,9 @@ The expected local identity is `flower-control@flower-control-local`. A count su
 2. If absent, inspect the installer exit code and scheduled-task start from step 5. Ask Codex for read-only diagnosis; do not rerun the first-install script over it.
 3. In tier 01, open Settings and choose actual tier 02 on the left; wait for the saved tier to update.
 4. For Computer pause, choose **Continue Computer Use / 继续使用 Computer Use**, then request a fresh observation.
-5. For all-writes Stop, use **Resume all writes / 继续全部写入** only when offered. If protection is unrecoverable or no recovery row exists, stay stopped and [report](https://github.com/fallen-blossom/flower-control/issues) the version, error code, and nonprivate status. This preview has no universal one-click repair.
+5. For all-writes Stop, use **Resume all writes / 继续全部写入** only when offered. Otherwise stay stopped and [report](https://github.com/fallen-blossom/flower-control/issues) the version, error and redacted status. Rebuilding the settings window is not universal authority repair.
+
+Ctrl+Alt+9 remains Computer-only; Ctrl+Alt+Shift+9 or Emergency stop all Flower is the separate global Stop. Check diagnostics if another application owns a hotkey or registration fails.
 
 If the plugin is installed but a new chat has no Flower tools:
 
@@ -67,7 +84,7 @@ A working `wait` tool does not prove that every tool uses the same router. Test 
 
 Flower installation writes a local Hook through `tools/configure_local_plugin.py`. Installation does not grant trust. Enter `/hooks` in Codex, review the exact command, and trust it before target work. The new chat can reject every Flower call until a matching review is accepted.
 
-Check that the Hook path points to the source checkout and its `.venv`, and that the extension is enabled for the current host. Do not bypass a denial by changing the Hook or permission router, switching shells, or reusing a stale grant.
+Source-development Hooks use the exact checkout and `.venv`; frozen candidate Hooks use the actual `<Root>\Program\versions\<version>` runtime/bootstrap. Check the generated route and host enablement/trust. Do not bypass a denial by changing the Hook or permission router, switching shells, or reusing a stale grant.
 
 ## Permission or Stop blocks the call
 

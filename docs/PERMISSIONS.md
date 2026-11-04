@@ -6,11 +6,11 @@ Flower has four selectable permission tiers. They are local settings and are che
 
 ## Open settings
 
-Right-click the Flower tray icon and choose **Settings**. The current native helper UI is Chinese-first.
+Right-click the Flower tray icon and choose **Settings**. The candidate UI supports Simplified Chinese and English; language is saved separately.
 
 **Actual tier buttons on the left save and switch immediately.** Watch the saved-tier display and result notice. Moving from an ordinary role to 03/04 may request Windows UAC; cancellation retains the old role. The Permissions-page list-layer tabs only change the view.
 
-Lists, masks, and other ordinary edits enter a shared draft. Navigation preserves it; **Ctrl+S** or **Save permissions and action preferences** applies it. Closing with unsaved edits offers save, discard, or return. Supported role handoffs preserve drafts, but ordinary crash/restart recovery is not guaranteed. **Ctrl+C** in a detail dialog only copies information.
+Lists, masks, and other ordinary edits enter a shared draft. Navigation preserves it; **Ctrl+S** or **Save permissions and action preferences** applies it. Closing with unsaved edits offers save, discard, or return. Supported role handoffs preserve drafts, but ordinary crash/restart recovery is not guaranteed. **Ctrl+C** in a detail dialog only copies information. Diagnostics settings import enters this draft too: imported allow rules are disabled and execution arguments cleared, then reviewed before Ctrl+S. Tier, Stop, work grants, and unknown results are never restored from a backup. Browser/language use a separate immediate-save confirmation.
 
 Some actions are immediate rather than ordinary draft edits: Stop, Computer pause, opening a browser profile, and certain UAC/preparation maintenance actions say so explicitly. Do not assume every button on the settings page is deferred until Ctrl+S.
 
@@ -61,7 +61,7 @@ The chat agent cannot write the protected permission file. Do not ask Codex to e
 ## Stop, pause, and tier 01
 
 - **Tier 01 fully stopped** stops dispatch for Web, App, and Computer. The tray, settings, and Stop controls remain available.
-- **Global all-writes Stop** is a separate local stop state, not something Ctrl+Alt+9 creates. If it is present and recoverable, the tray adds **Resume all writes**. If that row is absent, follow [recovery troubleshooting](TROUBLESHOOTING.md#missing-tray-or-recovery).
+- **Global all-writes Stop** uses **Emergency stop all Flower** in settings/tray or the separate **Ctrl+Alt+Shift+9** hotkey. Registration failure is reported in overview/diagnostics. Ctrl+Alt+9 does not create it. If it is present and recoverable, the tray adds **Resume all writes**. If that row is absent, follow [recovery troubleshooting](TROUBLESHOOTING.md#missing-tray-or-recovery).
 - **Computer pause** blocks new Computer mouse/keyboard work while App and Web may continue. Toggle it with the tray row **Pause Computer Use / Continue Computer Use**.
 - **Ctrl+Alt+9**, the HUD Stop, and the tray **Stop Computer Use** end the current Computer operation and release held input. They do not change the saved tier or create a global all-writes Stop.
 - **Continue** after a Computer Stop means a fresh target observation and a new action. It does not replay the last observation or an uncertain action.
@@ -82,7 +82,7 @@ The six legacy filenames are not tier numbers. The actual mapping is:
 | 04 Administrator execution, available | Red | `04-system-uac` |
 | Paused, unavailable, or faulted | Fault artwork | `06-fault` |
 
-04 reuses red artwork only; it does **not** enable UAC secure desktop. `01-normal` is a retained resource. Read the tray text to distinguish pause from a fault. A fresh policy defaults to 03; explicitly choose 02 for an ordinary first trial.
+04 reuses red artwork only; it does **not** enable UAC secure desktop. `01-normal` is a retained resource. Read the tray text to distinguish pause from a fault. A fresh candidate policy defaults to **02 Ordinary control**; existing policies are retained. The original preview.3 default of 03 is historical. Check the actual saved tier before the first task.
 
 ## Current safety boundaries
 

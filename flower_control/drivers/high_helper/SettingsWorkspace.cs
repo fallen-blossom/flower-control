@@ -232,6 +232,7 @@ internal static partial class SettingsWorkspace
         ShowChromeControl(GetDlgItem(window, HelpId), true);
         if (page != 0 && GetFocus() == GetDlgItem(window, StopId)) SetFocus(GetDlgItem(window, NavBase + page));
         ShowChromeControl(GetDlgItem(window, StopId), page == 0);
+        RefreshProductButtons();
         RefreshOverview();
         UpdateTierAccessibleText();
         RefreshSemanticDelegationControl();
@@ -315,6 +316,8 @@ internal static partial class SettingsWorkspace
         if (message is 0x1A or 0x31A)
         {
             ApplyWindowMaterial(); RefreshPageFont(); chromeLayoutDirty = true; UpdateChrome();
+            foreach (var control in pageControls)
+                SetWindowTheme(control.Handle, HighContrast() ? "" : "DarkMode_CFD", "");
             InvalidateRect(hwnd, IntPtr.Zero, true);
             EnumChildWindows(hwnd, (child, _) =>
             { InvalidateRect(child, IntPtr.Zero, true); return true; }, IntPtr.Zero);
@@ -697,6 +700,13 @@ internal static partial class SettingsWorkspace
             SoftSurface(item.Dc, bounds, 0x826956, 90, 9);
         if (!contrast && id == SemanticEnableId)
             SoftSurface(item.Dc, bounds, 0x826956, (byte)((item.State & 4) == 0 ? 90 : 24), 9);
+        if (!contrast && id is >= EmergencyStopId and <= ExportDiagnosticsId)
+        {
+            bool danger = id == EmergencyStopId;
+            SoftSurface(item.Dc, bounds, danger ? 0x4A1F2Au : 0x826956u,
+                (byte)((item.State & 4) == 0 ? danger ? 220 : 70 : 20), 9);
+            if (danger && (item.State & 4) == 0) color = 0xF7D6DC;
+        }
         if (!contrast && id is HelpId or RuleHelpId)
             SoftSurface(item.Dc, bounds, 0x826956, (byte)((item.State & 4) == 0 ? 68 : 20), 9);
         if (!contrast && (id is MaskToggleId or MaskRemoveId || id is >= 480 and <= 485 && (item.State & 4) == 0))
@@ -824,7 +834,7 @@ internal static partial class SettingsWorkspace
 
     private static int Px(int value) => (int)Math.Round(value * scale);
 
-    private static bool HighContrast()
+    internal static bool HighContrast()
     {
         var contrast = new Contrast { Size = (uint)Marshal.SizeOf<Contrast>() };
         return SystemParametersInfoContrast(0x0042, contrast.Size, ref contrast, 0) && (contrast.Flags & 1) != 0;

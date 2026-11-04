@@ -131,7 +131,8 @@ internal static class BrokerHost
         {
             if (!Native.GetNamedPipeClientProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out var pid))
                 throw new Boundary("client_identity_unavailable");
-            var physicalCaller = Native.Process((int)pid).Identity;
+            var physical = Native.Process((int)pid);
+            var physicalCaller = physical.Identity;
             bool localUiOnly = !policy.Fixture && (RoleHandoff.ExpectedPeer(physicalCaller, core) || LocalUiWriter.ExpectedPeer(physicalCaller, core));
             // A runas/Explorer child has no Codex ancestry. Admit only its
             // already-bound exact Peer to the narrow in-memory UI transaction,
@@ -139,6 +140,12 @@ internal static class BrokerHost
             using var first = Protocol.Read(pipe, 3000, core.Shutdown.Token);
             if (first is null) return;
             var hello = Protocol.Decode<ClientHello>(first);
+            if (hello.Channel == LocalSettingsEntry.Channel)
+            {
+                LocalSettingsEntry.Serve(pipe, policy, own, core, physicalCaller, physical.Image,
+                    hello.Phase, hello.Parent, hello.MaintenanceOperation);
+                return;
+            }
             bool boundWriter = !policy.Fixture && !localUiOnly && hello.Channel == "flower-admin"
                 && hello.MaintenanceOperation is not null;
             if (hello.MaintenanceOperation is not null && !boundWriter) throw new Boundary("maintenance_writer_channel_rejected");
@@ -195,8 +202,9 @@ internal static class BrokerHost
                     throw new Boundary("client_identity_changed");
                 if (boundWriter)
                 {
-                    BoundMaintenanceWriter.Verify(admission.Peer.Pid, hello.MaintenanceOperation!, policy, own);
-                    BoundMaintenanceWriter.RequirePhase(UacOutcomeEvidence.Text(message.RootElement, "Phase"));
+                    var currentWriter = BoundMaintenanceWriter.Verify(admission.Peer.Pid, hello.MaintenanceOperation!, policy, own);
+                    BoundMaintenanceWriter.RequirePhase(UacOutcomeEvidence.Text(message.RootElement, "Phase"), core.OrdinaryResident);
+                    BoundMaintenanceWriter.RequireMessage(currentWriter, message.RootElement);
                 }
                 if (localUiOnly)
                 {
@@ -383,7 +391,8 @@ internal static class BrokerHost
                         throw new Boundary("maintenance_local_high_required");
                     NativeRoleIdentity.Require(admission.Peer, policy, 12288);
                     var command = OrdinaryMaintenanceCommand.Decode(message);
-                    var status = core.MaintainOrdinary(command.Command, command.Expected, policy, own, pipe);
+                    var status = core.MaintainOrdinary(command.Command, command.Expected, policy, own, pipe,
+                        boundWriter ? hello.MaintenanceOperation : null);
                     if (command.Command == "shutdown")
                     {
                         try { Protocol.Write(pipe, new { Phase = "control", Command = command.Command, Status = status }); }

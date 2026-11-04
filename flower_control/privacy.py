@@ -296,9 +296,8 @@ def sensitive_word_paths():
         paths.append(production_path().parent.parent / "privacy" / "sensitive-words.txt")
     except Exception:
         pass
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        paths.append(Path(local) / "FlowerControl" / "privacy" / "sensitive-words.txt")
+    from flower_control.data_paths import resolve_data_root
+    paths.append(resolve_data_root() / "privacy" / "sensitive-words.txt")
     return tuple(paths)
 
 

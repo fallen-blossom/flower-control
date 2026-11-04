@@ -26,8 +26,9 @@ def is_capacity_error(error):
 
 @contextmanager
 def recording_workspace(*, prefix):
+    from flower_control.data_paths import runtime_temp_root
     with recording_write_errors():
-        directory = tempfile.TemporaryDirectory(prefix=prefix)
+        directory = tempfile.TemporaryDirectory(prefix=prefix, dir=runtime_temp_root())
     try:
         yield directory.name
     finally:

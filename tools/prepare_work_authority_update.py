@@ -16,6 +16,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from tools.prepare_high_broker_install import system_powershell_path
 
 
 def digest(path):
@@ -35,15 +36,15 @@ def hidden_bootstrap_source(powershell: Path, encoded: str) -> str:
             + 'WScript.Quit code\r\n')
 
 
-def candidate_maintenance_protocol(executable: Path, expected_sha256: str) -> int:
-    if digest(executable) != expected_sha256:
+def helper_capabilities(executable: Path, expected_sha256: str | None = None) -> dict:
+    if expected_sha256 is not None and digest(executable) != expected_sha256:
         raise ValueError('candidate_helper_changed')
     result = subprocess.run([str(executable), '--flower-capabilities'], capture_output=True,
                             timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
     if result.returncode == 2:
         reply = json.loads(result.stderr or result.stdout)
         if reply.get('reason') == 'arguments_rejected':
-            return 0  # Older reviewed packages have no standalone capability API.
+            return {'bound_maintenance_writer_protocol':0,'bound_ordinary_maintenance_protocol':0,'local_settings_protocol':0}
     if result.returncode:
         raise ValueError('candidate_capabilities_unavailable')
     value = json.loads(result.stdout)
@@ -52,19 +53,32 @@ def candidate_maintenance_protocol(executable: Path, expected_sha256: str) -> in
             or type(value.get('bound_maintenance_writer_protocol')) is not int
             or value['bound_maintenance_writer_protocol'] not in (0, 1)):
         raise ValueError('candidate_capabilities_rejected')
-    return value['bound_maintenance_writer_protocol']
+    for name in ('bound_ordinary_maintenance_protocol','local_settings_protocol'):
+        capability=value.get(name,0)
+        if type(capability) is not int or capability not in (0,1):
+            raise ValueError('candidate_capabilities_rejected')
+        value[name]=capability
+    return value
 
 
-def requires_host_native_elevation(old_protocol, new_protocol, old_role, new_role):
+def candidate_maintenance_protocol(executable: Path, expected_sha256: str) -> int:
+    return helper_capabilities(executable,expected_sha256)['bound_maintenance_writer_protocol']
+
+
+def requires_host_native_elevation(old_protocol, new_protocol, old_role, new_role, old_ordinary_protocol=0, new_ordinary_protocol=0):
     return (type(old_protocol) is not int or old_protocol != 1
             or type(new_protocol) is not int or new_protocol != 1
-            or old_role != 'high' or new_role != 'high')
+            or old_role not in ('high','ordinary') or new_role not in ('high','ordinary')
+            or old_role == 'ordinary' and old_ordinary_protocol != 1
+            or new_role == 'ordinary' and new_ordinary_protocol != 1)
 
 
-def previous_broker_status(executable: Path):
+def previous_broker_status(executable: Path, *, capabilities=None):
     """One original read-only query; never retry or substitute another helper."""
     try:
-        reply = subprocess.run([str(executable), '--flower-admin', 'status'], capture_output=True,
+        capabilities=helper_capabilities(executable) if capabilities is None else capabilities
+        arguments=['--flower-local-status'] if capabilities.get('local_settings_protocol')==1 else ['--flower-admin','status']
+        reply = subprocess.run([str(executable), *arguments], capture_output=True,
                                timeout=20, creationflags=subprocess.CREATE_NO_WINDOW, check=False)
     except subprocess.TimeoutExpired:
         raise RuntimeError('previous_broker_status_rejected:status_timeout') from None
@@ -451,7 +465,8 @@ def prepare(package: Path, output: Path, *, recovery_plan: Path | None = None, r
     active = json.loads((package / 'active.json').read_bytes())
     prep = json.loads((package / 'preparation.json').read_bytes())
     version = active['version']
-    production = Path(os.environ['ProgramFiles']) / 'FlowerControl/HighHelper'
+    from flower_control.install_location import program_root
+    production = program_root()
     old = json.loads((production / 'active.json').read_bytes())
     if type(version) is not str or not re.fullmatch('[a-f0-9]{32}', version):
         raise ValueError('fixed_new_update_required')
@@ -499,11 +514,13 @@ def prepare(package: Path, output: Path, *, recovery_plan: Path | None = None, r
     old_policy = json.loads((production / 'versions' / old['version'] / 'broker.json').read_bytes())
     require_unchanged_host_boundary(policy, old_policy)
     old_exe = production / 'versions' / old['version'] / 'Flower.HighHelper.exe'
-    status = previous_broker_status(old_exe)
+    old_capabilities=helper_capabilities(old_exe)
+    status = previous_broker_status(old_exe,capabilities=old_capabilities)
     # Retaining clients is a transport choice, independent of the final Stop
     # state. Ordinary-role and recovery updates keep their established route.
-    retain_clients = leave_paused or (not recovery and require_execution_role(status) == 'high')
-    require_previous_idle(status, old['version'], recovery=bool(recovery), allow_paused=retain_clients)
+    old_role = require_execution_role(status)
+    retain_clients = old_role == 'high' and (leave_paused or not recovery)
+    require_previous_idle(status, old['version'], recovery=bool(recovery), allow_paused=retain_clients or old_role == 'ordinary')
     require_maintenance_support(status)
     retained_session, shared_resume = require_retained_high_status(status) if retain_clients else (None, None)
     sid = policy['UserSid']
@@ -542,7 +559,7 @@ try {$scheduler.Connect();$folder=$scheduler.GetFolder('\');$registered=$folder.
 finally {if($null -ne $registered){[Runtime.InteropServices.Marshal]::ReleaseComObject($registered)|Out-Null};if($null -ne $folder){[Runtime.InteropServices.Marshal]::ReleaseComObject($folder)|Out-Null};[Runtime.InteropServices.Marshal]::ReleaseComObject($scheduler)|Out-Null}
 @{xml=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($xml));sddl=$sddl}|ConvertTo-Json -Compress
 """.replace('__TASK__', task)
-    powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    powershell = system_powershell_path()
     capture = subprocess.run([str(powershell), '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
                               base64.b64encode(script.encode('utf-16-le')).decode('ascii')], capture_output=True,
                              timeout=30, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
@@ -551,6 +568,7 @@ finally {if($null -ne $registered){[Runtime.InteropServices.Marshal]::ReleaseCom
     operation = uuid.uuid4().hex
     log_root = production / 'recovery' / ('installation-' + operation)
     plan = {'Schema': 1, 'OperationId': operation, 'Package': str(package), 'BrokerRoot': str(production),
+            'KeepPaused': bool(leave_paused or status['paused']), 'OriginalPaused': status['paused'],
             'Version': version, 'OldVersion': old['version'], 'UserSid': sid, 'TaskName': task,
             'OldPid': status['pid'], 'OldCreated': str(status['created']),
             'OldSharedEpoch': status['global_stop_epoch'], 'OldProtectedEpoch': status['protected_stop_epoch'],
@@ -593,14 +611,17 @@ finally {if($null -ne $registered){[Runtime.InteropServices.Marshal]::ReleaseCom
     template_root = ROOT / 'tools/high_broker_install'
     old_writer_protocol = status.get('bound_maintenance_writer_protocol', 0)
     plan['OldBoundMaintenanceWriterProtocol'] = 1 if type(old_writer_protocol) is int and old_writer_protocol == 1 else 0
-    plan['NewBoundMaintenanceWriterProtocol'] = candidate_maintenance_protocol(
-        package/'versions'/version/'Flower.HighHelper.exe', active['hashes']['Flower.HighHelper.exe'])
+    new_capabilities=helper_capabilities(package/'versions'/version/'Flower.HighHelper.exe', active['hashes']['Flower.HighHelper.exe'])
+    plan['NewBoundMaintenanceWriterProtocol'] = new_capabilities['bound_maintenance_writer_protocol']
+    plan['OldBoundOrdinaryMaintenanceProtocol']=old_capabilities['bound_ordinary_maintenance_protocol']
+    plan['NewBoundOrdinaryMaintenanceProtocol']=new_capabilities['bound_ordinary_maintenance_protocol']
     plan['RequiresHostNativeElevation'] = requires_host_native_elevation(
         plan['OldBoundMaintenanceWriterProtocol'], plan['NewBoundMaintenanceWriterProtocol'],
-        plan['OldBrokerRole'], plan['NewBrokerRole'])
+        plan['OldBrokerRole'], plan['NewBrokerRole'],plan['OldBoundOrdinaryMaintenanceProtocol'],plan['NewBoundOrdinaryMaintenanceProtocol'])
     body = (template_root / 'UpdateWorkAuthority20261018.ps1.template').read_text(encoding='utf-8')
     body = body.replace('@@PLAN_JSON@@', json.dumps(plan, ensure_ascii=False, indent=2))
-    body = body.replace('@@PINNED_DELIVERY_TYPE@@', (template_root / 'PinnedDelivery.cs').read_text(encoding='utf-8'))
+    from tools.prepare_high_broker_install import render_installer_type
+    body = body.replace('@@PINNED_DELIVERY_TYPE@@', render_installer_type('PinnedDelivery.cs', production))
     if '@@' in body:
         raise ValueError('update_template_unresolved')
     if not retain_clients:
@@ -621,7 +642,7 @@ finally {if($null -ne $registered){[Runtime.InteropServices.Marshal]::ReleaseCom
     record = {**plan, 'UpdateScript': str(script_path), 'UpdateScriptSha256': script_hash,
               'BootstrapSha256': hashlib.sha256(bootstrap.encode('utf-16-le')).hexdigest(),
               'Powershell': str(powershell), 'EncodedBootstrap': encoded, 'Installed': False, 'Elevated': False}
-    hidden_launcher = Path(os.environ['SystemRoot']) / 'System32/wscript.exe'
+    hidden_launcher = system_powershell_path().parents[2] / 'wscript.exe'
     if hidden_launcher.is_file():
         hidden_path = output / 'LaunchHidden.vbs'
         hidden_path.write_text(hidden_bootstrap_source(powershell, encoded), encoding='utf-16')

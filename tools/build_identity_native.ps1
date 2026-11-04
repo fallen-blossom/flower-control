@@ -51,7 +51,7 @@ where cl.exe > compiler-path.txt
 if errorlevel 1 exit /b 1
 where link.exe > linker-path.txt
 if errorlevel 1 exit /b 1
-cl /nologo /std:c++20 /EHsc /W4 /WX /guard:cf /sdl /utf-8 /DUNICODE /D_UNICODE /LD "$sourcePath" /Fo:identity.obj /Fe:Flower.UacNative.dll /link /DYNAMICBASE /NXCOMPAT advapi32.lib wintrust.lib crypt32.lib bcrypt.lib
+cl /nologo /std:c++20 /EHsc /W4 /WX /guard:cf /sdl /utf-8 /DUNICODE /D_UNICODE /LD "$sourcePath" /Fo:identity.obj /Fe:Flower.UacNative.dll /link /Brepro /DYNAMICBASE /NXCOMPAT advapi32.lib wintrust.lib crypt32.lib bcrypt.lib
 exit /b %errorlevel%
 "@
 [IO.File]::WriteAllText($cmdPath, $body, [Text.Encoding]::ASCII)

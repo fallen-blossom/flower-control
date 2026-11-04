@@ -2,86 +2,58 @@
 
 [简体中文](README.zh-CN.md)
 
-**Windows 11 x64 source preview · 0.1.0-preview.3**
+**Windows 11 x64 · 0.1.0 release preparation**
 
-Flower Control gives Codex three local MCP channels for operating Windows and the web:
+Flower Control gives Codex local tools for websites and Windows applications. Describe the task in chat; Flower binds the selected target, checks local permissions, performs the action and reads back the result.
 
-| Channel | What it does | Good for |
-| --- | --- | --- |
-| **Web** | Reads page structure and acts on page elements | Forms, search, web editors, uploads/downloads, temporary browsers |
-| **App** | Reads controls exposed by Windows applications | Buttons, fields, lists, menus, settings pages, dialogs |
-| **Computer** | Captures one selected window and sends pointer/keyboard input | Canvas, drag and drop, shortcuts, interfaces with weak accessibility |
+| Channel | Use it for |
+| --- | --- |
+| Web | Page elements, forms, tabs and transfers in managed Brave, Edge or Chrome profiles |
+| App | Accessible Windows controls, menus, lists and dialogs |
+| Computer | Pointer/keyboard input, canvas work and dragging inside a selected window |
 
-Codex plans the task. Flower handles local target binding, permission checks, input release, and result readback. You do not have to call every tool by hand; describe the task in normal language.
+## Install
 
-## Read these first
+**0.1.0 Setup and its release assets are not published yet.** The existing preview.3 download is a source snapshot. Check [official Releases](https://github.com/fallen-blossom/flower-control/releases) for availability; do not treat an old source ZIP as an installer.
 
-1. [Install](docs/INSTALL.md): Windows 11, Codex desktop, CPython 3.14, .NET 10 SDK, and Visual Studio C++ Build Tools.
-2. [Permissions and settings](docs/PERMISSIONS.md): the four tiers are **01 fully stopped**, **02 ordinary control**, **03 administrator windows**, and **04 administrator execution**.
-3. [Usage](docs/USAGE.md): Web, App, Computer, target selection, pause, Stop, and common recovery paths.
+Once 0.1.0 is published:
 
-**Setting up another PC?** Use [the clone commands and Codex installation prompt](docs/INSTALL_WITH_CODEX.md). Already installed? Follow [first use](docs/USAGE.md#first-use-after-installation): choose 02, try a blank Notepad document and public page, then finish control.
+1. Download `FlowerControl-Setup.exe` and `SHA256SUMS.txt` from its Release. Compare the executable with `Get-FileHash -Algorithm SHA256`.
+2. Run Setup under your everyday Windows account. A new installation can use a new dedicated root such as `D:\FlowerControl`; Program, Data, Cache and Packages stay beneath it. Windows registration, temporary extraction and host caches can still use the system drive.
+3. Review the plan and approve Windows UAC yourself. Setup includes Python and .NET; ordinary users need no compiler. Codex and a supported browser must already be installed.
+4. In Codex, install/enable the generated local plugin and confirm the requested Hook trust. Setup registration, chat loading and successful control are separate results.
 
-This is a **source preview**. The repository contains source and a reproducible local build; it does not contain a signed executable and does not auto-update. A GitHub Release is a version page with source archives and checksums, not an installer and not a portable helper.
+The release will be unsigned. Windows may show an unknown publisher; compare the official asset SHA and matching source/build inputs before deciding to run it. Flower does not add a trust root or ask you to disable Windows protection.
 
-## What is included
+See [the installer guide](docs/INSTALLER.md) for the full path, [Codex setup prompts](docs/INSTALL_WITH_CODEX.md) for assistance, or [source development](docs/INSTALL.md) to build it yourself.
 
-- Managed Brave, Edge, and Chrome profiles for Web, with temporary, AI, and personal login profiles.
-- App control through Windows UI Automation, including buttons, fields, lists, menus, screenshots, and short recordings.
-- Computer control through a selected-window screenshot, pointer/keyboard input, drag, scroll, keys, and bounded short sequences.
-- Tray settings, permission tiers, deny lists, privacy masks, Stop, and Computer pause/resume.
-- A local Codex plugin integration. Source adapters for DSH, Claude, and local clients are retained, but are not the primary acceptance path for this preview.
+## First use
 
-## Permission tiers
+1. Open the flower tray icon → **Settings / 设置**. A new installation defaults to **02 Ordinary control**; updates retain the existing tier. Tier buttons apply immediately; ordinary list edits require **Ctrl+S**.
+2. Open a new Codex chat and a separate blank Notepad document. Ask:
 
-| Tier | Name | Ordinary windows | Administrator windows | Administrator launch | Notes |
-| --- | --- | --- | --- | --- | --- |
-| 01 | Fully stopped | No | No | No | Stops all three channels; tray and Stop remain available |
-| 02 | Ordinary control | Yes | No | No | Everyday windows without administrator permission |
-| 03 | Administrator windows | Yes | Yes | No | Read/control elevated windows, but do not start an elevated process |
-| 04 | Administrator execution | Yes | Yes | Yes, through the local list | Starts administrator programs through the local list; UAC secure desktop and the legacy system takeover are frozen |
+> Check Flower's Web, App and Computer status. List Notepad windows so I can identify my new blank document. Bind that document, type “Flower test passed” and read it back. Do not save or close it. Finish control afterwards, releasing input and preserving the text.
 
-Permissions are local settings. The chat agent cannot write the protected permission file. Deny lists win over allow lists. Every target, launch, and action is checked again against the current tier and Stop state.
+3. Try a public page:
 
-## First trial
+> Open https://example.com in a temporary Flower browser, read its title, then close only this temporary session.
 
-After installation and Hook trust, choose actual tier **02 Ordinary control** in tray Settings and wait for the saved tier to update. Tier changes apply immediately; ordinary list drafts use Ctrl+S. Open a new Codex chat and a blank Notepad document, then send:
+Continue with [usage](docs/USAGE.md), [permissions](docs/PERMISSIONS.md), then [browser profiles](docs/BROWSER_PROFILES.md). Start with ordinary windows; 03 permits administrator windows, and 04 additionally permits listed administrator launches. UAC secure desktop and cross-user elevation remain outside the supported control path.
 
-> Check Flower's three channels. List Notepad windows so I can identify my new blank document, bind it, type “Flower test passed”, and read it back. Do not save or close it. Finish control afterwards, preserving the text.
+## Stop and maintenance
 
-> Open https://example.com in a temporary Flower browser, read its title, then close only that temporary session.
+- **Ctrl+Alt+Shift+9** or the tray/settings emergency button blocks new writes across all Flower channels until explicit local resume. Hotkey registration failures are shown; the buttons remain available.
+- **Ctrl+Alt+9**, HUD Stop and Computer pause affect Computer input. App/Web retain their independent permissions.
+- After Stop or an uncertain result, observe the target again before further action. Unknown actions are not replayed automatically.
 
-Use a test window or a public page first. Do not give the agent passwords, verification codes, payment information, or private browser profiles.
+Use Setup/maintenance for updates; keep the registered root and original recovery materials. Settings offers ordinary-preference backup/draft import, redacted diagnostics and storage review. Windows **Settings → Apps → Flower Control → Uninstall** reviews the exact scope and retains personal data, cache and protected recovery state by default. Data/Cache recycling requires a separate review and confirmation after a completed uninstall. See [maintenance and uninstall](docs/INSTALLER.md).
 
-## Browser profiles and privacy
+## Privacy, validation and license
 
-Temporary browsers are disposable. The AI profile is an independent profile for ordinary agent work. The personal profile, Luohua, requires an explicit per-chat grant and a separate grant for each browser. Flower does not import your everyday browser cookies. See [browser profiles](docs/BROWSER_PROFILES.md).
+Flower adds no telemetry, crash uploads, remote configuration or automatic updates. Personal browser profiles need explicit per-chat permission; everyday browser cookies are not imported. Optional decision services remain off until locally enabled. Enter keys in Settings, not in chat.
 
-## Stop, pause, and recovery
+[Validation](docs/VALIDATION.md) separates source/isolated checks and encoder tests from final-installer acceptance. Final 0.1.0 installation, real High control, host trust/loading, update recovery and uninstall are still unverified. [Release notes](docs/RELEASE_NOTES.md) describe this version; historical preview results retain their original scope.
 
-- **Ctrl+Alt+9** ends the current Computer input and releases held keys. It does not change the saved tier or create a global all-writes Stop.
-- **HUD Stop** stops the current Computer cycle.
-- **Tray Stop Computer Use** ends the current computer operation; App/Web do not inherit a new permission from that Stop.
-- **Computer pause** stops Computer mouse/keyboard input while App/Web can continue.
-- **Resume** requires a fresh observation. Never replay an uncertain action automatically.
+Use [troubleshooting](docs/TROUBLESHOOTING.md) for ordinary problems and [private vulnerability reporting](https://github.com/fallen-blossom/flower-control/security/advisories/new) for security flaws. Keep credentials, profiles and private screenshots out of public reports.
 
-## Privacy and security
-
-Flower does not add telemetry, crash uploads, remote configuration, or automatic updates. Browsing reaches the sites you request; Codex still uses its configured model service. Jev, Perplexity, and compatible decision providers are optional external services and only run after local enablement. Keys enter locally in Settings, never through chat or command-line arguments.
-
-The administrator helper runs under the current Windows account. It does not disable Defender, the firewall, or UAC.
-
-## Current limits
-
-- Web is not arbitrary browser automation; it uses supported Chromium-family browsers and managed profiles.
-- Computer is not desktop-wide control; it operates the bound window.
-- UAC secure desktop, password entry, cross-user elevation, silent updates, and indefinite key holds are outside this preview's promise.
-- Permission and source changes are rechecked before later work; uncertain actions are not replayed automatically.
-
-## Release status
-
-The B46-r6 line has an installation, a local Codex publication, and three-channel load evidence on the development machine. The source archive records a per-file SHA-256 manifest. A clean-PC one-click installation, every website, every third-party app, and every administrator scenario are not implied by that record. For an issue, include the version, status, error code, and a minimal reproduction; see [troubleshooting](docs/TROUBLESHOOTING.md).
-
-## License
-
-Flower's own code is under the [MIT License](LICENSE). MCP, Playwright, FlaUI, Pillow, and other dependencies retain their licenses; see [third-party notices](THIRD_PARTY_NOTICES.md) and [dependency inventory](dependency-inventory.json).
+Flower code uses the [MIT License](LICENSE). Dependencies retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md) and the [dependency inventory](dependency-inventory.json). The minimal FFmpeg recording encoder has matching source materials and notices; its GPL license does not become MIT.

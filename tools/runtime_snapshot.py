@@ -73,11 +73,16 @@ def inventory_runtime(repository, runtime, site):
         rows["python-source/assets/branding/flower-control-icon.ico"] = {
             "path": icon, "sha256": digest(icon), "size": icon.stat().st_size}
     for name in ("skills/flower-control/SKILL.md", ".codex-plugin/plugin.json",
-                 "assets/branding/flower-control-icon.png", "tools/open_flower_browser.py"):
+                 "assets/branding/flower-control-icon.png"):
         path = repository / name
         reject_links(path)
         if not path.is_file():
             raise ValueError("runtime_plugin_presentation_missing")
+        rows["python-source/" + name] = {"path": path, "sha256": digest(path), "size": path.stat().st_size}
+    from flower_control.source_contract import tool_entry_sources
+    for name in tool_entry_sources(repository):
+        path = repository / name
+        reject_links(path)
         rows["python-source/" + name] = {"path": path, "sha256": digest(path), "size": path.stat().st_size}
     rows.update(inventory_tree(runtime / "Lib", prefix="runtime/Lib", excluded={"site-packages"}))
     rows.update(inventory_tree(runtime / "DLLs", prefix="runtime/DLLs"))
@@ -85,7 +90,9 @@ def inventory_runtime(repository, runtime, site):
         # Tcl resolves its script libraries relative to the relocated Python
         # stdlib, not the original interpreter's external tcl directory.
         # Freeze the Windows packages as well as the core Tcl/Tk trees.
-        tcl_root = runtime / "tcl"
+        # The generic offline Python already uses the relocated Lib layout.
+        # Accept that exact closed layout so the recipient can freeze it again.
+        tcl_root = runtime / "tcl" if (runtime / "tcl").is_dir() else runtime / "Lib"
         trees = ("tcl8.6", "tk8.6", "tcl8", "dde1.4", "reg1.3")
         required = (tcl_root / "tcl8.6/init.tcl", tcl_root / "tk8.6/tk.tcl",
                     tcl_root / "dde1.4/pkgIndex.tcl", tcl_root / "reg1.3/pkgIndex.tcl",
@@ -96,6 +103,10 @@ def inventory_runtime(repository, runtime, site):
             files = inventory_tree(tcl_root / name, prefix="runtime/Lib/" + name)
             if not files:
                 raise ValueError("runtime_tk_resources_missing")
+            if tcl_root == runtime / "Lib":
+                if any(rows.get(name, {}).get("sha256") != row["sha256"] for name, row in files.items()):
+                    raise ValueError("runtime_tk_path_conflict")
+                continue
             if rows.keys() & files.keys():
                 raise ValueError("runtime_tk_path_conflict")
             rows.update(files)

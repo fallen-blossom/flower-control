@@ -2473,7 +2473,8 @@ class _Runtime:
             return {"state": "not_verified", "verification": "download_event_timeout",
                     "business_result_verified": False}
         await check()
-        with tempfile.TemporaryDirectory(prefix="flower-web-download-") as directory:
+        from flower_control.data_paths import runtime_temp_root
+        with tempfile.TemporaryDirectory(prefix="flower-web-download-", dir=runtime_temp_root()) as directory:
             staged = Path(directory) / "download"
             try:
                 await asyncio.wait_for(download.save_as(staged), timeout=30)
@@ -2609,7 +2610,8 @@ class _Runtime:
             if violated:
                 await context.tracing.stop()
                 raise ControlError("trace_scope_changed_discarded")
-            with tempfile.TemporaryDirectory(prefix="flower-web-trace-") as directory:
+            from flower_control.data_paths import runtime_temp_root
+            with tempfile.TemporaryDirectory(prefix="flower-web-trace-", dir=runtime_temp_root()) as directory:
                 staged = Path(directory) / "trace.zip"
                 await context.tracing.stop(path=staged)
                 await check()
@@ -2693,7 +2695,8 @@ async def _serve(endpoint: str, *, guarded: bool = False,
     from .web_upload_recovery import recover_dead_leases
     await asyncio.to_thread(recover_dead_leases)
     async with async_playwright() as playwright, AsyncExitStack() as stack:
-        artifacts_dir = stack.enter_context(tempfile.TemporaryDirectory(prefix="flower-web-worker-artifacts-"))
+        from flower_control.data_paths import runtime_temp_root
+        artifacts_dir = stack.enter_context(tempfile.TemporaryDirectory(prefix="flower-web-worker-artifacts-", dir=runtime_temp_root()))
         browser = await playwright.chromium.connect_over_cdp(
             endpoint, timeout=10_000, no_defaults=True, artifacts_dir=artifacts_dir)
         runtime = _Runtime(browser, profile_kind=profile_kind, shared_browser=shared_browser, shared_headless=shared_headless)

@@ -48,7 +48,18 @@ internal static class BoundMaintenanceWriterTests
         foreach (string? phase in new[] { "control", "prepare", "program_launch", "work_authority",
                      "open_settings", "uac_host_event", "maintenance_ordinary", null })
             Reject(() => BoundMaintenanceWriter.RequirePhase(phase), "phase_rejected");
-        return new { assertions = 19, rawFiletime = value.WriterCreated.ToString(), productionAuthorityCreated = false };
+        BoundMaintenanceWriter.RequirePhase("status", ordinary: true);
+        BoundMaintenanceWriter.RequirePhase("maintenance_ordinary", ordinary: true);
+        foreach (string phase in new[] { "maintenance", "program_launch", "control" })
+            Reject(() => BoundMaintenanceWriter.RequirePhase(phase, ordinary: true), "ordinary_phase_rejected");
+        var exit=value with { Schema=2, Purpose="exit", NewVersion=value.OldVersion };
+        Assert(BoundMaintenanceWriter.ParseMarker(Bytes(exit))==exit,"exit_marker_roundtrip");
+        Reject(()=>BoundMaintenanceWriter.ParseMarker(Bytes(exit with{NewVersion=value.NewVersion})),"exit_no_version_switch");
+        Reject(()=>BoundMaintenanceWriter.ParseMarker(Bytes(exit with{Purpose="resume"})),"exit_purpose_closed");
+        BoundMaintenanceWriter.RequireCommandForPurpose("exit","pause");
+        BoundMaintenanceWriter.RequireCommandForPurpose("exit","shutdown");
+        Reject(()=>BoundMaintenanceWriter.RequireCommandForPurpose("exit","resume"),"exit_cannot_resume");
+        return new { assertions = 30, rawFiletime = value.WriterCreated.ToString(), productionAuthorityCreated = false };
     }
 
     private static Peer RequireFixture()
@@ -126,7 +137,7 @@ internal static class BoundMaintenanceWriterTests
         if (Directory.Exists(tempDirectory)) throw new Boundary("bound_writer_test_path_exists");
         Directory.CreateDirectory(tempDirectory);
         string infoPath = FixtureInfoPath(Path.Combine(tempDirectory, "info.json"), id);
-        string recovery = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "recovery");
+        string recovery = Path.Combine(InstallationLocation.Current().ProgramRoot, "recovery");
         string directory = Path.Combine(recovery, "installation-" + operation);
         string markerPath = Path.Combine(directory, "maintenance-writer.json");
         if (Directory.Exists(directory)) throw new Boundary("bound_writer_test_operation_exists");

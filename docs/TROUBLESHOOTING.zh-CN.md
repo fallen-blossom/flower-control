@@ -8,6 +8,21 @@
 
 Issue 里不要附凭据、Cookie、浏览器资料、私人截图或完整用户目录转储。
 
+## 还没接入宿主，也能查本机状态
+
+候选提供本地只读状态和设置打开入口，不要求先有 Codex MCP 来源。使用安装回执的**实际已安装版本**，在普通 PowerShell 运行；示例中的版本必须替换：
+
+```powershell
+& 'D:\FlowerControl\Program\versions\<实际版本>\Flower.HighHelper.exe' --flower-local-status
+& 'D:\FlowerControl\Program\versions\<实际版本>\Flower.HighHelper.exe' --flower-local-settings
+```
+
+前者只读真实普通/High 执行器状态，后者只请求打开已有设置。不派发业务输入、不清 Stop、不授权聊天或 work；本地连接成功仍不等于宿主已加载。找不到可验证执行器就保留错误，不复制 exe 或改权限/登记硬开。
+
+安装/更新/卸载失败时保留同一计划、回执和恢复目录。诊断页提供显式全量完整性自检、脱敏导出和只重建当前设置窗口的有界修复，不会自动修复授权、删除 unknown 或放行 pending。
+
+诊断时间线保留本次助手运行内最近 256 条状态元数据，界面显示最近 12 条；它不是跨重启的完整逐步任务历史，也不录屏。既有执行/恢复台账继续保留，两者不能互相替代。
+
 ## 插件到底加载了吗
 
 确认插件已安装并启用：
@@ -16,7 +31,7 @@ Issue 里不要附凭据、Cookie、浏览器资料、私人截图或完整用�
 codex plugin list
 ```
 
-本地身份应为 `flower-control@flower-control-local`。界面显示“16 个已配置插件”不等于当前线程的工具清单；当前线程必须实际收到三个 Flower MCP 通道的工具。本教程的本地生成器没有复制或注册仓库的 Skill，缺少 Flower Skill 不能单独判定安装失败。
+本地身份应为 `flower-control@flower-control-local`。界面配置数量不等于当前线程工具清单；当前线程必须实际收到三个 Flower 通道工具。旧源码开发生成器只有基本入口，冻结候选带完整 Skill/Hook/图标；核实所用安装路线，不混用两份目录。
 
 插件已安装但新聊天没有 Flower 工具时：
 
@@ -59,7 +74,7 @@ codex plugin list
 
 Flower 安装会通过 `tools/configure_local_plugin.py` 生成本地 Hook。安装插件不等于信任 Hook。要在 Codex 输入框执行 `/hooks`，核对准确命令并信任后再操作目标；未信任时，新聊天可能拒绝全部 Flower 调用。
 
-检查 Hook 命令路径是否确实指向本次源码目录及其 `.venv`，并确认当前宿主启用了该扩展。不要通过改 Hook、改权限 router、换 Shell 或复用旧授权来绕过拒绝。
+源码开发模式的 Hook 指向准确源码及其 `.venv`；冻结候选指向实际 `<Root>\Program\versions\<version>` 内置运行时/bootstrap。核对本次生成物并在宿主启用/信任；不改 Hook、权限 router、换 Shell 或复用旧授权绕过拒绝。
 
 ## 权限或 Stop 挡住了
 
@@ -68,6 +83,7 @@ Flower 安装会通过 `tools/configure_local_plugin.py` 生成本地 Hook。安
 - 01 完全停止：三个通道都不派发。
 - 全局 Stop：即使后来看起来换了档位，也仍然阻止写入。
 - Computer 暂停：只阻止新的 Computer 输入。
+- Ctrl+Alt+9 只结束 Computer；Ctrl+Alt+Shift+9 或“紧急停止全部 Flower”是独立全局 Stop。快捷键占用/注册失败时看诊断，不假定成功。
 - 权限配置损坏：进入 fault 状态，相关能力拒绝。
 - 黑名单：优先于允许名单和任务授权。
 
@@ -103,4 +119,8 @@ Issue 请附版本、步骤、原始错误码、之前是否装过助手、新�
 2. 图标仍没有：检查安装第 5 步的退出码及计划任务启动结果，把错误交给 Codex 做只读诊断。不要再次运行首次安装脚本覆盖它。
 3. 01 完全停止：打开设置，用左侧实际档位按钮选 02，等待已保存档位更新。
 4. Computer 暂停：在托盘点**继续使用 Computer Use**，再要求 Codex 重新观察目标。
-5. 全部写入停止：只有菜单显示**继续全部写入**时才用该入口；若显示保护记录不可恢复或没有恢复入口，保持停止，在[问题页](https://github.com/fallen-blossom/flower-control/issues)附版本、原始错误码和不含私密内容的状态。此版没有通用“一键修复”入口。
+5. 全部写入停止：只有菜单显示**继续全部写入**时才用；不可恢复或没有入口就保持停止，在[问题页](https://github.com/fallen-blossom/flower-control/issues)附版本、错误码和脱敏状态。只重建设置窗口不等于通用授权修复。
+
+## 选了 D 盘，为何 C 盘还有临时占用
+
+候选 Program/Data/Cache/Packages 使用实际登记根；旧安装不自动迁盘。Windows TEMP 和 .NET 单文件/Setup 解包仍可能使用 C，系统登记也不放进自定义根。区分临时解包与大缓存，以实际目录/字节/回执为准，不改 ProgramFiles 环境变量。发布、签名和干净机边界见[安装器指南](INSTALLER.zh-CN.md)。

@@ -52,4 +52,4 @@ A previously managed browser can normally follow a Brave update when it was clea
 
 ## Local data
 
-Control state is under `%LOCALAPPDATA%\FlowerControl\state-v1`. Dedicated profile paths are generated locally. Use the session result for the exact path; do not guess and delete a similarly named directory. Browser data can contain cookies and credentials, so keep it out of issues, chats, and release packages.
+Candidate new installs store control state in actual `<Root>\Data\state-v1` and profiles under the same Data root; large caches use `<Root>\Cache`. An unregistered legacy installation retains its verified old data root, commonly `%LOCALAPPDATA%\FlowerControl`, without automatic relocation. Dedicated profile paths are generated locally. Use the session result for the exact path; do not guess and delete a similarly named directory. Browser data can contain cookies and credentials, so keep it out of issues, chats, and release packages. Ordinary settings backups omit profiles/cookies/live grants; importing lists on another PC does not authorize personal access. Uninstall retains Data, Cache, and recovery by default; inventory before separate cleanup.

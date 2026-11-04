@@ -10,10 +10,30 @@ import ctypes
 from ctypes import wintypes
 import os
 from pathlib import Path
+import tempfile
 
 
 class DataPathError(ValueError):
     pass
+
+
+def runtime_temp_root() -> Path:
+    """Managed browser/artifact workspaces belong to the selected drive.
+
+    Legacy installations retain their original temporary-profile identities.
+    Small OS IPC and installer extraction remain Windows temporary operations.
+    This returns a checked existing root; it never migrates or clears data.
+    """
+    if os.name == "nt":
+        from flower_control.install_location import discover_installation
+        location = discover_installation()
+        if not location.legacy:
+            root = location.cache_root
+            resolved = physical_path(root)
+            if resolved != root or not root.is_dir():
+                raise DataPathError("registered_cache_root_mismatch")
+            return root
+    return Path(tempfile.gettempdir())
 
 
 def _final_existing(path: Path) -> Path:
@@ -77,6 +97,16 @@ def resolve_data_root(environment=None) -> Path:
     """
     env = os.environ if environment is None else environment
     configured = env.get("FLOWER_DATA_ROOT")
+    # A registered installation has one physical ledger/profile root. A stale
+    # host environment must fail visibly instead of opening a second ledger.
+    if os.name == "nt":
+        from flower_control.install_location import discover_installation
+        location = discover_installation()
+        if not location.legacy:
+            registered = location.data_root
+            if configured and physical_path(Path(configured)) != physical_path(registered):
+                raise DataPathError("registered_data_root_mismatch")
+            configured = str(registered)
     if configured:
         root = Path(configured)
     else:

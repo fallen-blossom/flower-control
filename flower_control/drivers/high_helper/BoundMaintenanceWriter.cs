@@ -7,7 +7,8 @@ namespace Flower.HighHelper;
 
 internal sealed record MaintenanceWriterMarker(int Schema, string State, string OperationId,
     string UserSid, int Session, string OldVersion, string NewVersion, int WriterPid,
-    long WriterCreated, string WriterImage, string WriterImageSha256);
+    long WriterCreated, string WriterImage, string WriterImageSha256,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Purpose = null);
 
 // A protected installation record binds exactly one live High writer and its
 // direct native child. It is not an MCP source or a general admin admission.
@@ -27,12 +28,15 @@ internal static class BoundMaintenanceWriter
             using var document = JsonDocument.Parse(bytes);
             Protocol.CheckUnique(document);
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object ||
-                !root.EnumerateObject().Select(p => p.Name).ToHashSet(StringComparer.Ordinal).SetEquals(Fields))
+            var names=root.EnumerateObject().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+            bool exitMarker=names.SetEquals(Fields.Append("Purpose"));
+            if (root.ValueKind != JsonValueKind.Object || (!names.SetEquals(Fields) && !exitMarker))
                 throw new Boundary("maintenance_writer_marker_invalid");
             var marker = Protocol.Decode<MaintenanceWriterMarker>(document);
-            if (marker.Schema != 1 || marker.State != "active" || !Hex32(marker.OperationId)
-                || !Hex32(marker.OldVersion) || !Hex32(marker.NewVersion) || marker.OldVersion == marker.NewVersion
+            if ((exitMarker ? marker.Schema != 2 || marker.Purpose != "exit" || marker.OldVersion != marker.NewVersion
+                    : marker.Schema != 1 || marker.Purpose is not null || marker.OldVersion == marker.NewVersion)
+                || marker.State != "active" || !Hex32(marker.OperationId)
+                || !Hex32(marker.OldVersion) || !Hex32(marker.NewVersion)
                 || marker.UserSid is null || new SecurityIdentifier(marker.UserSid).Value != marker.UserSid
                 || marker.Session <= 0 || marker.WriterPid <= 0 || marker.WriterCreated <= 0
                 || marker.WriterImage is null || !Path.IsPathFullyQualified(marker.WriterImage)
@@ -45,15 +49,33 @@ internal static class BoundMaintenanceWriter
         { throw new Boundary("maintenance_writer_marker_invalid"); }
     }
 
-    internal static void RequirePhase(string? phase)
+    internal static void RequirePhase(string? phase, bool ordinary = false)
     {
-        if (phase is not ("status" or "maintenance")) throw new Boundary("maintenance_writer_phase_rejected");
+        if (phase != "status" && phase != (ordinary ? "maintenance_ordinary" : "maintenance"))
+            throw new Boundary("maintenance_writer_phase_rejected");
+    }
+
+    internal static void RequireCommandForPurpose(string? purpose, string? command)
+    {
+        if(command is not ("pause" or "resume" or "shutdown") || purpose is not (null or "exit")
+            || purpose == "exit" && command == "resume") throw new Boundary("maintenance_writer_command_rejected");
+    }
+
+    internal static void RequireMessage(Admission admission, JsonElement message)
+    {
+        if(admission.Evidence.Source != "bound-maintenance-exit-writer") return;
+        if(!message.TryGetProperty("Phase",out var phase) || phase.ValueKind!=JsonValueKind.String)
+            throw new Boundary("maintenance_writer_phase_rejected");
+        if(phase.GetString()=="status") return;
+        if(!message.TryGetProperty("Command",out var command) || command.ValueKind!=JsonValueKind.String)
+            throw new Boundary("maintenance_writer_command_rejected");
+        RequireCommandForPurpose("exit",command.GetString());
     }
 
     private static string MarkerPath(string operationId)
     {
         if (!Hex32(operationId)) throw new Boundary("maintenance_writer_operation_invalid");
-        string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper");
+        string root = InstallationLocation.Current().ProgramRoot;
         string recovery = Path.Combine(root, "recovery");
         string directory = Path.Combine(recovery, "installation-" + operationId);
         // Older shared parents can lack a High label, but cannot grant ordinary
@@ -73,9 +95,10 @@ internal static class BoundMaintenanceWriter
 
     internal static Admission Verify(int pid, string operationId, BrokerPolicy policy, Peer own)
     {
-        if (policy.Fixture || own.Pid != Environment.ProcessId || own.Integrity != 12288
+        if (policy.Fixture || own.Pid != Environment.ProcessId || own.Integrity is not (8192 or 12288)
             || own.User != policy.UserSid || own.Session <= 0 || Native.UiAccess(own.Pid))
             throw new Boundary("maintenance_writer_context_rejected");
+        if (own.Integrity == 8192) NativeRoleIdentity.Require(own, policy, 8192);
         string path = MarkerPath(operationId);
         // Prevent a concurrent marker replacement or closure during admission.
         using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -109,6 +132,7 @@ internal static class BoundMaintenanceWriter
             || Native.ParentPid(client.Pid) != writer.Pid)
             throw new Boundary("maintenance_writer_peer_changed");
         return new Admission(client, new PeerEvidence(client.Pid, client.Created, client.Session,
-            "bound-maintenance-writer", null, true, null, null, null, writer.Pid), true);
+            marker.Purpose == "exit" ? "bound-maintenance-exit-writer" : "bound-maintenance-writer",
+            null, true, null, null, null, writer.Pid), true);
     }
 }

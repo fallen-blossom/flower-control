@@ -1,41 +1,25 @@
-# Flower Control 0.1.0-preview.3
+# Flower Control 0.1.0
 
 [English](RELEASE_NOTES.md)
 
-**Windows 11 x64 源码预览版，不是签名的一键安装器。**
+**正式发行准备中，Setup 与对应资产尚未公开。** 先看[安装器指南](INSTALLER.zh-CN.md)，再做[第一次使用](USAGE.zh-CN.md#安装后第一次使用)。
 
-这个版本把 B46-r6 源码线整理成完整的公开仓库和源码包，包含本地 Codex 插件生成器、管理员助手构建/安装工具、三个 MCP 通道、文档、测试、许可证和逐文件源码清单。
+## 本版变化
 
-## 本版重点
+- 完整离线 Setup 自带 Python 与 .NET 运行依赖。新安装采用一个可选的 Program/Data/Cache/Packages 根；已有安装保留登记位置和资料。
+- 本机 status/设置入口、只读完整性自检、脱敏诊断导出、普通偏好备份/草稿导入和空间审阅。
+- 新权限文件默认 02；已有档位与 Stop 保留。**Ctrl+Alt+Shift+9** 紧急停止全部通道，**Ctrl+Alt+9** 继续只停止 Computer 输入。
+- 中断维护保留原计划和回执。卸载先审阅准确范围，默认保留个人资料与受保护恢复状态；Data/Cache 回收需要另行确认。
+- 固定的最小 FFmpeg 录屏编码器，附匹配 FFmpeg/x264/zlib 源码档、构建配方与原始声明；保留本地 PNG/concat/pad/H.264/MP4 路径，禁用网络协议。
 
-- **四档可选权限**：01 完全停止、02 普通控制、03 管理员窗口、04 管理员执行。
-- **明确的 03/04 边界**：03 可操作已经打开的管理员窗口；04 再增加按本地策略启动精确程序。UAC 安全桌面自动化和旧系统接管路线仍冻结。
-- **三个通道**：Web 操作受管 Chromium 页面，App 操作 Windows 可访问控件，Computer 操作指定窗口的截图与输入。
-- **本地设置**：黑名单、管理员窗口规则、管理员启动名单、隐私遮挡、Stop 和 Computer 暂停。
-- **可恢复的输入控制**：Ctrl+Alt+9、HUD Stop、托盘 Stop、恢复前重新观察，以及未知动作不自动重放。
-- **重写文档**：中英文分别拆出安装、权限、使用、排障和浏览器资料说明。
+Web、App、Computer 仍是三个任务通道。Codex 是主要入口，其他宿主适配遵守各自说明。可选外联决策服务需要在本机启用；Flower 不加入遥测或自动更新。
 
-## 从源码安装
+## 验证与发行
 
-先看[安装](INSTALL.zh-CN.md)，再看[权限](PERMISSIONS.zh-CN.md)和[使用](USAGE.zh-CN.md)。
+源码/隔离检查、Windows 版本资源检查和短合成帧编码器测试已通过。最终匹配 0.1.0 的安装、真实 High 控制、宿主信任/加载、升级恢复与卸载尚未验证。范围见[验证说明](VALIDATION.zh-CN.md)；没有干净机验收或整体成功率结论。
 
-Release 附带的是源码和校验和。你需要在本机创建 Python 环境、编译原生助手、通过一次 UAC 完成助手安装、添加本地 Codex 插件市场，并信任生成的 Hook 后才能使用。
+本版采用未签名发行（`signed: false`）。通过官方 GitHub Release、SHA-256 和匹配源码/构建输入核对文件身份；这些不等于公信发布者签名。Windows UAC 由你人工判断。[私密漏洞报告](https://github.com/fallen-blossom/flower-control/security/advisories/new)已启用。
 
-## 验证边界
+## 历史预览
 
-开发机已有助手安装、本地 Codex 插件发布和三通道加载证据。本版记录源码/导出一致性以及已检查的构建安装工具，但不宣称：
-
-- 干净 PC 或第二账号首次安装已经完成；
-- 所有网站和第三方应用都受支持；
-- UAC 安全桌面自动化可用；
-- 提供签名二进制或静默更新；
-- 有总体成功率。
-
-一次 status 探测或一个无害目标小试，不能证明以后所有目标和动作都安全。
-
-## 文件
-
-- `flower-control-0.1.0-preview.3-source.zip`：完整公开源码树。
-- `SHA256SUMS.txt`：源码包校验和。
-
-解压或构建前先核对校验和。不要从 issue、网盘或镜像下载未核验的助手二进制。
+[Preview.3 及其原发行资产](https://github.com/fallen-blossom/flower-control/releases/tag/v0.1.0-preview.3)保持不变。其中的源码安装路线和历史测试属于原快照，不代表 0.1.0 安装器已通过。

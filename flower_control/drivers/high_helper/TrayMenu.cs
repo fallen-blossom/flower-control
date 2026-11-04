@@ -40,6 +40,9 @@ internal static class TrayMenu
     [DllImport("user32.dll")] private static extern IntPtr MonitorFromPoint(Native.Point point, uint flags);
     [DllImport("user32.dll")] private static extern bool GetMonitorInfoW(IntPtr monitor, ref MonitorInfo info);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern uint GetSysColor(int index);
+    [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+    private static extern bool SystemPreference(uint action, uint parameter, [MarshalAs(UnmanagedType.Bool)] out bool value, uint flags);
     [DllImport("user32.dll")] private static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint key, byte alpha, uint flags);
     [DllImport("user32.dll")] private static extern IntPtr BeginPaint(IntPtr hwnd, out Paint paint);
     [DllImport("user32.dll")] private static extern bool EndPaint(IntPtr hwnd, ref Paint paint);
@@ -126,6 +129,8 @@ internal static class TrayMenu
         var rows = new List<Row> {
             new Row(0, UiText.Get("当前档位 · ") + tier + state, tierDetail, "", false, false),
         };
+        rows.Add(new Row(6, UiText.Get("紧急停止全部 Flower"),
+            UiText.Get("立即阻止 Web / App / Computer 的新写入并取消在途控制；持续停止，须明确继续。已运行的程序与未知结果保留。"), "Ctrl+Alt+Shift+9", true, true));
         if (globalPaused) rows.Add(new Row(5, UiText.Get("继续全部写入"),
             UiText.Get("只恢复当前停止代次；会先核对受保护记录。旧动作、旧观察和未确认结果都不会重放，下一步仍需重新观察。"), "", true, false));
         rows.AddRange([
@@ -171,9 +176,14 @@ internal static class TrayMenu
             window = CreateWindowExW(0x00000080 | 0x00000008 | 0x00080000, "FlowerControl.TrayMenu", "Flower Control",
                 0x80000000, monitor.Work.Left + 8, monitor.Work.Top + 8, 10, 10, owner, IntPtr.Zero, instance, IntPtr.Zero);
             if (window == IntPtr.Zero) throw new Boundary("tray_menu_window_failed", Marshal.GetLastWin32Error());
-            try { int dark = 1; DwmSetWindowAttribute(window, 20, ref dark, sizeof(int)); } catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException) { }
+            try { int dark = SettingsWorkspace.HighContrast() ? 0 : 1; DwmSetWindowAttribute(window, 20, ref dark, sizeof(int)); } catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException) { }
             try { int round = 2; DwmSetWindowAttribute(window, 33, ref round, sizeof(int)); } catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException) { }
         }
+        // A reused popup still belongs to the previous monitor until moved.
+        // Move it while hidden, so GetDpiForWindow observes this invocation's
+        // monitor before fonts, hitboxes and measurements are built.
+        if (!SetWindowPos(window, IntPtr.Zero, monitor.Work.Left + 8, monitor.Work.Top + 8, 0, 0, 0x15))
+            throw new Boundary("tray_menu_monitor_move_failed", Marshal.GetLastWin32Error());
         scale = Math.Max(1.0, GetDpiForWindow(window) / 96.0);
         (string Label, string Detail) tier = previewMode
             ? (AuthorityPresentation.Label(2), UiText.Get("预览 · 合成数据") + "\r\n" + AuthorityPresentation.FrozenNotice)
@@ -183,16 +193,24 @@ internal static class TrayMenu
         EnsureFonts();
         Measure();
         var (x, y) = PositionFor(monitor.Work.Left, monitor.Work.Top, monitor.Work.Right, monitor.Work.Bottom, cursor.X, cursor.Y, popupWidth, popupHeight);
-        finalX = x; finalY = y; frame = 0; hoverIndex = -1; selectIndex = -1; activated = false;
+        bool animate = AnimationAllowed();
+        finalX = x; finalY = y; frame = animate ? 0 : FrameCount; hoverIndex = -1; selectIndex = -1; activated = false;
         previousForeground = GetForegroundWindow();
-        SetLayeredWindowAttributes(window, 0, 0, 2);
+        SetLayeredWindowAttributes(window, 0, animate ? (byte)0 : (byte)255, 2);
         ShowWindow(window, 5);
         SetForegroundWindow(window);
         if (GetForegroundWindow() == window && IsWindowVisible(window)) SetFocus(window);
-        SetWindowPos(window, new IntPtr(-1), x, y + SlidePx, popupWidth, popupHeight, 0x0010);
+        SetWindowPos(window, new IntPtr(-1), x, y + (animate ? SlidePx : 0), popupWidth, popupHeight, 0x0010);
         InvalidateRect(window, IntPtr.Zero, false);
-        if (SetTimer(window, new UIntPtr(1), FrameMs, IntPtr.Zero) == UIntPtr.Zero) throw new Boundary("tray_menu_timer_failed");
+        if (animate && SetTimer(window, new UIntPtr(1), FrameMs, IntPtr.Zero) == UIntPtr.Zero) throw new Boundary("tray_menu_timer_failed");
     }
+    private static bool AnimationAllowed()
+    {
+        bool menu = !SystemPreference(0x1002, 0, out var menuPreference, 0) || menuPreference;
+        bool client = !SystemPreference(0x1042, 0, out var clientPreference, 0) || clientPreference;
+        return ShouldAnimate(SettingsWorkspace.HighContrast(), menu, client);
+    }
+    internal static bool ShouldAnimate(bool contrast, bool menu, bool client) => !contrast && menu && client;
     private static void Hide(bool restore)
     {
         CancelMousePress();
@@ -240,12 +258,17 @@ internal static class TrayMenu
     private static void Activate(Row row)
     {
         var core = coreState; var owner = ownerWindow;
-        Hide(restore: row.Id is 1 or 2 or 5);
+        Hide(restore: row.Id is 1 or 2 or 5 or 6);
         // The preview must never touch broker state: the menu is drawn exactly
         // as it ships, but nothing here stops, pauses or exits anything.
         if (previewMode) return;
         switch (row.Id)
         {
+            case 6:
+                core?.Pause(true);
+                if (core?.ProductStatus().StopPersistenceError is not null)
+                    PermissionSettingsWindow.ShowError(owner, UiText.Get("当前执行器已停止；持久停止记录尚未确认。请保持停止并查看只读诊断。"));
+                break;
             case 5:
                 try
                 {
@@ -345,10 +368,13 @@ internal static class TrayMenu
         {
             if (!GetClientRect(window, out var client)) return;
             int pad = (int)Math.Round(14 * scale), icon = (int)Math.Round(20 * scale);
-            var background = CreateSolidBrush(Rgb(18, 20, 26));
-            var border = CreateSolidBrush(Rgb(48, 52, 62));
-            var hover = CreateSolidBrush(Rgb(40, 44, 54));
-            var line = CreatePen(0, 1, Rgb(48, 52, 62));
+            bool contrast = SettingsWorkspace.HighContrast();
+            uint textInk = contrast ? GetSysColor(7) : Rgb(237, 237, 239);
+            uint detailInk = contrast ? GetSysColor(7) : Rgb(150, 155, 165);
+            var background = CreateSolidBrush(contrast ? GetSysColor(4) : Rgb(18, 20, 26));
+            var border = CreateSolidBrush(contrast ? GetSysColor(7) : Rgb(48, 52, 62));
+            var hover = CreateSolidBrush(contrast ? GetSysColor(13) : Rgb(40, 44, 54));
+            var line = CreatePen(0, 1, contrast ? GetSysColor(7) : Rgb(48, 52, 62));
             try
             {
                 FillRect(dc, ref client, background);
@@ -359,9 +385,9 @@ internal static class TrayMenu
                 var glyph = HeaderGlyph(icon);
                 if (glyph != IntPtr.Zero) DrawIconEx(dc, pad, y + (int)Math.Round(6 * scale), glyph, icon, icon, 0, IntPtr.Zero, 3);
                 var titleRect = Rect(pad + icon + (int)Math.Round(10 * scale), y, client.Right - pad, y + (int)Math.Round(22 * scale));
-                Text(dc, fontTitle, Rgb(237, 237, 239), ref titleRect, rows[0].Label, 0x10 | 4 | 0x8000);
+                Text(dc, fontTitle, textInk, ref titleRect, rows[0].Label, 0x10 | 4 | 0x8000);
                 var detailRect = Rect(pad + icon + (int)Math.Round(10 * scale), y + (int)Math.Round(24 * scale), client.Right - pad, y + headerHeight);
-                Text(dc, fontDetail, Rgb(150, 155, 165), ref detailRect, FirstLine(rows[0].Detail), 0x10 | 0x8000);
+                Text(dc, fontDetail, detailInk, ref detailRect, FirstLine(rows[0].Detail), 0x10 | 0x8000);
                 y += headerHeight + (int)Math.Round(6 * scale);
                 Separator(dc, line, pad, y, client.Right - pad); hitboxes.Add((-1, -1)); y += (int)Math.Round(7 * scale);
                 for (int index = 1; index < rows.Count; index++)
@@ -372,14 +398,15 @@ internal static class TrayMenu
                     var box = Rect((int)Math.Round(8 * scale), y, client.Right - (int)Math.Round(8 * scale), y + height);
                     bool highlighted = (index == hoverIndex || index == selectIndex) && row.Enabled;
                     if (highlighted) { var filled = box; FillRect(dc, ref filled, hover); }
-                    uint colour = !row.Enabled ? Rgb(120, 124, 132) : row.Danger ? Rgb(255, 122, 137) : Rgb(237, 237, 239);
+                    uint colour = contrast ? GetSysColor(!row.Enabled ? 17 : highlighted ? 14 : 7)
+                        : !row.Enabled ? Rgb(120, 124, 132) : row.Danger ? Rgb(255, 122, 137) : textInk;
                     Glyph(dc, row.Id, pad + (int)Math.Round(6 * scale), y + height / 2, (int)Math.Round(16 * scale), colour, row.Id == 2 && row.Label.StartsWith(UiText.Get("继续"), StringComparison.Ordinal));
                     var labelRect = Rect(pad + icon + (int)Math.Round(8 * scale), y, client.Right - pad - (row.Shortcut.Length != 0 ? MeasureText(fontDetail, row.Shortcut) + pad : 0), y + height);
                     Text(dc, fontItem, colour, ref labelRect, row.Label, 0x20 | 4 | 0x8000);
                     if (row.Shortcut.Length != 0)
                     {
                         var shortcutRect = Rect(client.Right - pad - MeasureText(fontDetail, row.Shortcut), y, client.Right - pad, y + height);
-                        Text(dc, fontDetail, Rgb(150, 155, 165), ref shortcutRect, row.Shortcut, 0x20 | 4 | 2);
+                        Text(dc, fontDetail, contrast && highlighted ? GetSysColor(14) : detailInk, ref shortcutRect, row.Shortcut, 0x20 | 4 | 2);
                     }
                     hitboxes.Add((y, height));
                     y += height + (int)Math.Round(2 * scale);
@@ -388,7 +415,7 @@ internal static class TrayMenu
                 Separator(dc, line, pad, y, client.Right - pad); y += (int)Math.Round(6 * scale);
                 string strip = hoverIndex > 0 && hoverIndex < rows.Count ? rows[hoverIndex].Detail : rows[0].Detail;
                 var stripRect = Rect(pad, y, client.Right - pad, client.Bottom - (int)Math.Round(6 * scale));
-                Text(dc, fontDetail, Rgb(150, 155, 165), ref stripRect, strip, 0x10 | 0x8000);
+                Text(dc, fontDetail, detailInk, ref stripRect, strip, 0x10 | 0x8000);
             }
             finally
             {
@@ -424,7 +451,7 @@ internal static class TrayMenu
             switch (id)
             {
                 case 5: Polygon(dc, [new GlyphPoint { X = x + 2, Y = cy - half }, new GlyphPoint { X = x + size - 1, Y = cy }, new GlyphPoint { X = x + 2, Y = cy + half }], 3); break;
-                case 1: RoundRect(dc, x, cy - half, x + size, cy + half, 5, 5); break;
+                case 1 or 6: RoundRect(dc, x, cy - half, x + size, cy + half, 5, 5); break;
                 case 2 when resume: Polygon(dc, [new GlyphPoint { X = x + 1, Y = cy - half }, new GlyphPoint { X = x + size, Y = cy }, new GlyphPoint { X = x + 1, Y = cy + half }], 3); break;
                 case 2: RoundRect(dc, x + 2, cy - half, x + 2 + size / 3, cy + half, 3, 3);
                         RoundRect(dc, x + size - size / 3 - 2, cy - half, x + size - 2, cy + half, 3, 3); break;
@@ -671,13 +698,16 @@ internal static class TrayMenu
     internal static object SelfTest()
     {
         int assertions = 0;
-        void Require(bool value) { ++assertions; if (!value) throw new Boundary("tray_menu_selftest_failed"); }
+        void Require(bool value) { ++assertions; if (!value) throw new Boundary("tray_menu_selftest_failed_" + assertions); }
         var open = BuildRows(false, UiText.Get("普通控制"), "detail");
-        Require(open.Count == 5 && open[0].Id == 0 && !open[0].Enabled);
-        Require(open[1].Danger && open[1].Shortcut == "Ctrl+Alt+9");
-        Require(open[2].Label.Contains(UiText.Get("暂停")) && open[4].Label == UiText.Get("退出"));
+        Require(open.Count == 6 && open[0].Id == 0 && !open[0].Enabled);
+        Require(open[1].Id == 6 && open[1].Danger && open[1].Shortcut == "Ctrl+Alt+Shift+9");
+        Require(open.Single(r => r.Id == 1).Danger && open.Single(r => r.Id == 1).Shortcut == "Ctrl+Alt+9");
+        Require(open.Single(r => r.Id == 2).Label.Contains(UiText.Get("暂停")) && open[^1].Label == UiText.Get("退出"));
         var paused = BuildRows(true, UiText.Get("普通控制"), "detail");
-        Require(paused[2].Label.Contains(UiText.Get("继续")) && paused[0].Label.Contains(UiText.Get("已暂停")));
+        Require(paused.Single(r => r.Id == 2).Label.Contains(UiText.Get("继续")) && paused[0].Label.Contains(UiText.Get("已暂停")));
+        Require(BuildRows(false, "fixture", "detail", globalPaused: true).Any(r => r.Id == 5 && r.Enabled));
+        assertions += ProductDiagnostics.SelfTest();
         // Tray pops up-left from the cursor and never leaves the work area.
         var (x, y) = PositionFor(0, 0, 1920, 1080, 1900, 1060, 300, 240);
         Require(x == 1612 && y == 810);
@@ -712,11 +742,12 @@ internal static class TrayMenu
         MousePress(20, 266); WindowProc(IntPtr.Zero, 0x215, UIntPtr.Zero, IntPtr.Zero); Require(MouseRelease(20, 266) == -1);
         MousePress(20, 266); WindowProc(IntPtr.Zero, 0x1f, UIntPtr.Zero, IntPtr.Zero); Require(MouseRelease(20, 266) == -1);
         selectIndex = -1; MoveSelection(1); Require(selectIndex == 1);
-        MoveSelection(-1); Require(selectIndex == 4);
-        rows[3] = disabled with { Enabled = false }; MoveSelection(-1); Require(selectIndex == 2); rows[3] = disabled;
+        MoveSelection(-1); Require(selectIndex == rows.Count - 1);
+        var beforeLast = rows[^2]; rows[^2] = beforeLast with { Enabled = false };
+        MoveSelection(-1); Require(selectIndex == rows.Count - 3); rows[^2] = beforeLast;
         // Preview may select Exit, but never acts on even a synthetic broker.
         var testCore = new BrokerState(); coreState = testCore; previewMode = true;
-        try { Activate(rows[4]); Require(!testCore.Shutdown.IsCancellationRequested); }
+        try { Activate(rows[^1]); Require(!testCore.Shutdown.IsCancellationRequested); }
         finally { previewMode = false; coreState = null; }
         CancelMousePress(); hoverIndex = selectIndex = -1;
         hitboxes.Clear();

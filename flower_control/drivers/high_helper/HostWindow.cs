@@ -78,6 +78,7 @@ internal static class HostWindow
     private static UserPermissionSettings? trayPermissions;
     private static UacCapabilities? trayCapabilities;
     private static bool trayPermissionFault;
+    private static bool computerHotkeyRegistered, emergencyHotkeyRegistered;
     private static string? trayPermissionRevision;
     internal static void BeginOrdinaryControl(BrokerState core, LocalUiOperation operation)
     {
@@ -112,8 +113,8 @@ internal static class HostWindow
             if (window == IntPtr.Zero || !SetPropW(window, "FlowerControlTaskIndicator", new IntPtr(1)))
                 throw new Boundary("host_window_failed", Marshal.GetLastWin32Error());
             if (!WTSRegisterSessionNotification(window, 0)) throw new Boundary("session_notification_failed", Marshal.GetLastWin32Error());
-            bool hotkey = RegisterHotKey(window, 9, 0x4003, 0x39); // Ctrl+Alt, main-row 9, MOD_NOREPEAT.
-            core.HotkeyAvailable(hotkey, hotkey ? null : Marshal.GetLastWin32Error());
+            computerHotkeyRegistered = emergencyHotkeyRegistered = false;
+            RefreshStopHotkeys(core);
             icon = new IconData { Size = (uint)Marshal.SizeOf<IconData>(), Hwnd = window, Id = 1, Flags = 7, Callback = 0x8001,
                 Icon = LoadTrayIcon(), Tip = UiText.Get("Flower Control 管理员助手"), Info = "", Title = "" };
             taskbarCreated = RegisterWindowMessageW("TaskbarCreated");
@@ -127,7 +128,8 @@ internal static class HostWindow
             UpdateTray(core);
             try
             {
-                if (SettingsWorkspace.HasIncomingHandoff) SettingsWorkspace.Show(window, core);
+                if (SettingsWorkspace.HasIncomingHandoff || ShouldOpenFirstRun(UserPermissions.Read()))
+                    SettingsWorkspace.Show(window, core);
             }
             catch (Exception error)
             { Console.Error.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { settingsDraftImport = Program.Code(error) })); }
@@ -154,6 +156,8 @@ internal static class HostWindow
                 KillTimer(window, new UIntPtr(1)); tray?.Close(); tray = null; core.TrayAvailable(false);
                 TrayStateIcons.Release();
                 UnregisterHotKey(window, 9); core.HotkeyAvailable(false);
+                UnregisterHotKey(window, 10); core.EmergencyHotkeyAvailable(false);
+                computerHotkeyRegistered = emergencyHotkeyRegistered = false;
                 WTSUnRegisterSessionNotification(window);
                 if (Native.IsWindow(window)) DestroyWindow(window);
                 UnregisterClassW(name, instance); state = null;
@@ -170,11 +174,30 @@ internal static class HostWindow
         if (handle == IntPtr.Zero) throw new Boundary("tray_icon_load_failed", Marshal.GetLastWin32Error());
         return handle;
     }
+    internal static bool ShouldOpenFirstRun(UserPermissionSettings permissions)
+        => permissions.Revision == "absent" && UserPermissions.TierOf(permissions) == 0;
+    private static void RefreshStopHotkeys(BrokerState core)
+    {
+        // Role handoff can briefly leave the old helper owning either key.
+        // Retry only unregistered keys on the existing one-second tray cadence;
+        // a conflicting application retains its registration and buttons work.
+        if (!computerHotkeyRegistered)
+        {
+            computerHotkeyRegistered = RegisterHotKey(window, 9, 0x4003, 0x39);
+            core.HotkeyAvailable(computerHotkeyRegistered, computerHotkeyRegistered ? null : Marshal.GetLastWin32Error());
+        }
+        if (!emergencyHotkeyRegistered)
+        {
+            emergencyHotkeyRegistered = RegisterHotKey(window, 10, 0x4007, 0x39);
+            core.EmergencyHotkeyAvailable(emergencyHotkeyRegistered, emergencyHotkeyRegistered ? null : Marshal.GetLastWin32Error());
+        }
+    }
     private static void UpdateTray(BrokerState core)
     {
         long now = Environment.TickCount64;
         if (trayPermissionReadAt == long.MinValue || now - trayPermissionReadAt >= 1000)
         {
+            RefreshStopHotkeys(core);
             SettingsWorkspace.RefreshDisplayPreference();
             try
             {
@@ -188,6 +211,9 @@ internal static class HostWindow
             }
             catch (Exception) { trayPermissionFault = true; trayPermissionSummary = UiText.Get("权限配置需修复"); }
             trayPermissionReadAt = now;
+            // Bounded metadata only. Sampling cannot change dispatch, Stop or
+            // the user's policy; its failure must never break the tray.
+            try { ProductDiagnostics.Current.Observe(core.ProductStatus()); } catch { }
         }
         string summary = UiText.BrokerSummary(core.Summary) + UiText.Get("｜") + trayPermissionSummary;
         int tier = trayPermissions is null ? -1 : UserPermissions.TierOf(trayPermissions);
@@ -198,7 +224,8 @@ internal static class HostWindow
         route &= !core.OrdinaryResident || tier <= 0;
         if (core.OrdinaryResident && tier > 0) summary += UiText.Get("｜普通执行器；管理员待确认");
         int visualState = TrayStateIcons.Select(tier, route && !core.IsPaused && !core.TrayUnavailable,
-            trayPermissionFault || trayPermissions?.UacPolicyError is not null || core.TrayFaulted || core.ComputerPaused);
+            trayPermissionFault || trayPermissions?.UacPolicyError is not null || core.TrayFaulted || core.ComputerPaused
+                || core.EmergencyHotkeyRegistered == false);
         TrayMenu.SetVisualState(visualState);
         SettingsWorkspace.SetVisualState(visualState);
         icon.Icon = TrayStateIcons.Load(visualState, Math.Max(16, GetSystemMetrics(49)), Math.Max(16, GetSystemMetrics(50)));
@@ -226,6 +253,26 @@ internal static class HostWindow
         if (sessionEnded) core.Stop(BrokerShutdownReason.SessionEnded);
         return IntPtr.Zero;
     }
+    internal static bool HandlePowerMessage(BrokerState core, uint message, uint change, Action<BrokerState>? probe = null)
+    {
+        if (message != 0x218) return false; // WM_POWERBROADCAST.
+        if (change == 4) core.Desktop(false, "system_suspended"); // PBT_APMSUSPEND.
+        else if (change is 6 or 7 or 18)
+        {
+            // Resuming never revives the cancelled request or clears a durable
+            // Stop. The next independent operation needs a fresh observation.
+            core.Desktop(false, "desktop_transition");
+            (probe ?? BrokerHost.PollDesktop)(core);
+        }
+        else return false;
+        return true;
+    }
+    internal static bool HandleStopHotkey(BrokerState core, uint id)
+    {
+        if (id == 9) { core.StopComputerUse(); return true; }
+        if (id == 10) { core.Pause(true); return true; }
+        return false;
+    }
     private static IntPtr WindowProc(IntPtr hwnd, uint message, UIntPtr wp, IntPtr lp)
     {
         try { return WindowMessageCore(hwnd, message, wp, lp); }
@@ -251,6 +298,7 @@ internal static class HostWindow
         }
         var core = state;
         if (core is null) return DefWindowProcW(hwnd, message, wp, lp);
+        if (HandlePowerMessage(core, message, wp.ToUInt32())) return new IntPtr(1);
         if (taskbarCreated != 0 && message == taskbarCreated)
         {
             tray?.ExplorerRestarted(Environment.TickCount64); UpdateTray(core);
@@ -277,12 +325,9 @@ internal static class HostWindow
             }
             return IntPtr.Zero;
         }
-        if (message == 0x312 && wp.ToUInt32() == 9)
+        if (message == 0x312 && HandleStopHotkey(core, wp.ToUInt32()))
         {
-            // Ends the current Computer Use run only: in-flight computer work is
-            // cancelled and released. App/Web and the UAC bridge keep working;
-            // the next computer call starts with a fresh observation.
-            core.StopComputerUse();
+            // 9 retains Computer-only semantics; 10 latches all-channel Stop.
             UpdateTray(core);
             return IntPtr.Zero;
         }

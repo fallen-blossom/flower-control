@@ -1,0 +1,391 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Global
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -Global
+Import-Module (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\Modules\ScheduledTasks\ScheduledTasks.psd1') -Global
+$plan = @'
+@@PLAN_JSON@@
+'@ | ConvertFrom-Json
+$package=$plan.Package; $brokerRoot=$plan.BrokerRoot; $version=$plan.Version; $oldVersion=$plan.OldVersion; $taskName=$plan.TaskName
+$oldDir=Join-Path $brokerRoot ('versions\'+$oldVersion); $newDir=Join-Path $brokerRoot ('versions\'+$version)
+$newExe=Join-Path $newDir 'Flower.HighHelper.exe'
+$prefix=$plan.ProgressPrefix; $utf8=New-Object Text.UTF8Encoding($false)
+$script:LoggingReady=$false; $guard=$null; $stage='preflight'; $taskChanged=$false; $activeChanged=$false; $startAttempted=$false
+$roleFilesHash=$null; $roleAnchorHash=$null; $script:ledgerFence=$null; $script:finalSharedEpoch=$null
+$retainClients=$plan.PSObject.Properties.Name -contains 'RetainedStoppedClients' -and $plan.RetainedStoppedClients -eq $true
+@@UPDATE_FUNCTIONS@@
+@@OFFLINE_FUNCTIONS@@
+function RequirePersistentStop {
+    foreach($record in @(@($plan.StopPath,$plan.StopSha256),@($plan.ComputerPath,$plan.ComputerSha256))) {
+        [FlowerRecoveryProtection]::RequireProtectedFile($record[0])
+        if((Hash $record[0]) -cne $record[1]) { throw 'continuation_stop_record_changed' }
+    }
+}
+function RequireFixedStop {
+    RequirePersistentStop
+    $shared=[FlowerPinnedDelivery]::SnapshotWriteGate()
+    if($shared[0] -ne 1 -or $shared[1] -ne $plan.SharedEpoch -or $shared[2] -ne $plan.ResumeAllEpoch) { throw 'continuation_shared_stop_changed' }
+}
+function RequireUpdateActors {
+    if(!$retainClients) { RequireNoActors; return }
+    if(![FlowerPinnedDelivery]::StoppedWriteFenceHeld()) { throw 'retained_clients_not_parked' }
+    RequireFixedStop
+    $running=@(Get-ScheduledTask | Where-Object {$_.TaskName.StartsWith('FlowerControl.',[StringComparison]::Ordinal) -and [string]$_.State -eq 'Running'})
+    if($running.Count) { throw 'offline_flower_task_still_running' }
+    foreach($fact in $plan.RetainedProcessFacts) {
+        $current=[FlowerStoppedClientRetention]::Verify([int]$fact.Pid)
+        if($null -eq $current -and $plan.RetainedHostPids -contains [int]$fact.Pid) { throw 'retained_host_exited' }
+    }
+    $versionsRoot=(Join-Path $brokerRoot 'versions')+'\'
+    $knownNames=@($plan.VersionExecutableNames)
+    $candidates=[Collections.Generic.HashSet[int]]::new()
+    foreach($process in @(Get-CimInstance Win32_Process)) {
+        $known=$knownNames -icontains $process.Name
+        $inside=![string]::IsNullOrWhiteSpace($process.ExecutablePath) -and $process.ExecutablePath.StartsWith($versionsRoot,[StringComparison]::OrdinalIgnoreCase)
+        if($known -or $inside) { $null=$candidates.Add([int]$process.ProcessId) }
+    }
+    foreach($process in [FlowerStoppedClientRetention]::ProcessNames()) {
+        if($knownNames -icontains $process.Name) { $null=$candidates.Add([int]$process.Pid) }
+    }
+    foreach($candidatePid in $candidates) {
+        $live=[FlowerStoppedClientRetention]::Read($candidatePid)
+        if($null -eq $live -or !$live.Image.StartsWith($versionsRoot,[StringComparison]::OrdinalIgnoreCase)) { continue }
+        if($plan.RetainedActorPids -notcontains [int]$live.Pid) { throw 'unparked_version_executor_present' }
+        $null=[FlowerStoppedClientRetention]::Verify([int]$live.Pid)
+    }
+    RequireFixedStop
+}
+function RequirePausedInstalledStatus($response) {
+    if($response.Phase -cne 'status') { throw 'continuation_status_phase_rejected' }
+    $status=$response.Status; RequireStatusShape $status
+    $ordinary=[int]$roleAnchor.Tier -le 0
+    if($status.version -cne $version -or $status.session_id -ne $plan.SessionId -or
+        $status.authority_tier -ne $roleAnchor.Tier -or $status.policy_revision -cne $roleAnchor.Revision -or
+        $status.paused -ne $true -or $status.global_write_stopped -ne $true -or
+        $status.global_stop_epoch -ne $plan.SharedEpoch -or $status.protected_stop_epoch -ne $plan.ProtectedEpoch -or
+        $status.computer_paused -ne $plan.ComputerStopped -or $status.active_requests -ne 0 -or
+        $status.stopping -ne $false -or $status.release_fault -ne $false -or $status.role_transition -ne $false -or
+        $null -ne $status.stop_persistence_error -or $null -ne $status.computer_pause_persistence_error -or
+        $status.high_verified -ne (!$ordinary) -or $status.ordinary_verified -ne $ordinary -or
+        $status.broker_role -cne $(if($ordinary){'ordinary'}else{'high'}) -or $status.ui_access -ne $false) {
+        throw 'continuation_paused_status_rejected'
+    }
+    # Admin's existing pipe handshake validates the exact server image. Recheck
+    # its live kernel identity and token, including the ordinary bootstrap case.
+    $server=[FlowerStoppedClientRetention]::Read([int]$status.pid)
+    if($null -eq $server -or $server.Created -cne ([string]$status.created) -or $server.Image -ine $newExe -or
+        $server.Session -ne $plan.SessionId -or $server.User -cne $plan.UserSid -or $server.UiAccess -or
+        $server.Integrity -ne $(if($ordinary){8192}else{12288}) -or
+        ![FlowerOfflineGuard]::HasHostWindow([int]$server.Pid)) { throw 'continuation_started_role_identity_rejected' }
+    return $server
+}
+function CloseRetainedLedgerFence {
+    if($null -eq $script:ledgerFence) { return }
+    if(!$script:ledgerFence.Held) { throw 'continuation_ledger_fence_lost' }
+    # Used for both successful and failed starts. Do not let a resume already
+    # waiting at SQLite escape just because startup/status verification failed.
+    if(![FlowerPinnedDelivery]::StoppedWriteFenceHeld()) {
+        [FlowerPinnedDelivery]::EnterStoppedWriteFence([long]$plan.SharedEpoch,[long]$plan.ResumeAllEpoch)
+    }
+    $script:finalSharedEpoch=[FlowerPinnedDelivery]::AdvanceStoppedGeneration([long]$plan.SharedEpoch,[long]$plan.ResumeAllEpoch)
+    $script:ledgerFence.Dispose();$script:ledgerFence=$null
+    RequirePersistentStop
+    $closed=[FlowerPinnedDelivery]::SnapshotWriteGate()
+    if($closed[0] -ne 1 -or $closed[1] -ne $script:finalSharedEpoch -or $closed[2] -ne $plan.ResumeAllEpoch) {throw 'continuation_final_stop_unconfirmed'}
+    Log 'legacy_waiting_resume_epoch_invalidated' @{previous_epoch=$plan.SharedEpoch;shared_epoch=$script:finalSharedEpoch;resume_all_epoch=$plan.ResumeAllEpoch;shared_mutex_held=$true;resumed=$false}
+}
+function CopyNewCandidateIfMissing {
+    Assert-FlowerNoLinks $newDir -Shallow
+    # Existing targets retain the original strict complete-version verification.
+    # Never fill, overwrite or erase an unconfirmed partial target here.
+    if([IO.Directory]::Exists($newDir)) { return $false }
+    if($plan.PSObject.Properties.Name -notcontains 'CopyNewTarget' -or !$plan.CopyNewTarget) { throw 'continuation_existing_payload_required' }
+    $hashes=@{}
+    foreach($item in $newActive.hashes.PSObject.Properties) {$hashes.Add($item.Name,[string]$item.Value)}
+    foreach($item in $newActive.runtime_hashes.PSObject.Properties) {$hashes.Add($item.Name.Replace('/','\'),[string]$item.Value)}
+    foreach($item in $newPolicy.AppWorkerHashes.PSObject.Properties) {$hashes.Add(('app\'+$item.Name),[string]$item.Value)}
+    foreach($item in $newPolicy.WgcWorkerHashes.PSObject.Properties) {$hashes.Add(('wgc\'+$item.Name),[string]$item.Value)}
+    $hashes.Add('installation.json',$plan.ActiveSha256)
+    foreach($relative in $hashes.Keys) {
+        if([IO.Path]::IsPathRooted($relative) -or $relative.Contains(':') -or $relative.Contains('/') -or @($relative.Split('\')|Where-Object {$_ -in @('','.','..')}).Count) { throw 'payload_relative_path_rejected' }
+    }
+    RequireFixedStop; RequireUpdateActors; RequirePreviousTask
+    [FlowerPinnedDelivery]::CreateNewVersionDirectory($newDir,$plan.UserSid)
+    Set-FlowerProtection $newDir
+    [FlowerPinnedDelivery]::PinDirectory($newDir)
+    $count=0
+    foreach($relative in @($hashes.Keys|Sort-Object)) {
+        $destination=Join-Path $newDir $relative;$parent=[IO.Path]::GetDirectoryName($destination)
+        $missing=New-Object 'System.Collections.Generic.Stack[string]'
+        for($part=$parent;![IO.Directory]::Exists($part);$part=[IO.Path]::GetDirectoryName($part)) {$missing.Push($part)}
+        while($missing.Count) {$part=$missing.Pop();[IO.Directory]::CreateDirectory($part)|Out-Null;Set-FlowerProtection $part}
+        [FlowerPinnedDelivery]::CopyFile((Join-Path $sourceDir $relative),$destination,$hashes[$relative])
+        Set-FlowerProtection $destination;$count++
+        if($count % 128 -eq 0) {Write-Progress -Activity '正在自动复制新版文件；Codex 保持打开即可' -Status ($count.ToString()+'/'+$hashes.Count) -PercentComplete ([int](100*$count/$hashes.Count))}
+    }
+    Write-Progress -Activity '正在自动复制新版文件；Codex 保持打开即可' -Completed
+    Log 'new_candidate_copied_without_overwrite' @{version=$version;files=$count;resumed=$false}
+    return $true
+}
+function WaitForHostConnectionsToClose {
+    $deadline=[Diagnostics.Stopwatch]::GetTimestamp()+600*[Diagnostics.Stopwatch]::Frequency
+    Write-Host '新版文件已校验完成。现在请正常退出整个 Codex，让旧插件连接关闭。请保持 Codex 关闭，直到看到“安装换版完成”弹窗。最多等待十分钟。' -ForegroundColor Yellow
+    do {
+        try { RequireNoActors; return }
+        catch {
+            if($_.Exception.Message -cne 'offline_independent_executor_present') { throw }
+            if([Diagnostics.Stopwatch]::GetTimestamp() -ge $deadline) { throw 'continuation_host_connections_not_closed' }
+            RequireFixedStop; RequirePreviousTask
+        }
+    } while($true)
+}
+function ShowContinuationResult([bool]$Succeeded) {
+    if($Succeeded) {
+        $title='Flower Control：安装换版完成'
+        $message='安装换版完成。现在可以重新打开 Codex，回原聊天核对实际服务和插件。Flower 保持停止状态；安装完成不代表功能测试已通过。'
+        $icon=[System.Windows.Forms.MessageBoxIcon]::Information
+    } else {
+        $title='Flower Control：安装未完成'
+        $message='安装未完成。现在可以重新打开 Codex，回原聊天检查本次错误。不要重跑这个入口，也不要手动恢复控制权限。'
+        $icon=[System.Windows.Forms.MessageBoxIcon]::Error
+    }
+    [System.Windows.Forms.MessageBox]::Show($message,$title,[System.Windows.Forms.MessageBoxButtons]::OK,$icon) | Out-Null
+}
+try {
+    Add-Type -TypeDefinition @'
+@@PINNED_DELIVERY_TYPE@@
+'@
+    Add-Type -TypeDefinition @'
+@@OFFLINE_GUARD_TYPE@@
+'@
+    Add-Type -TypeDefinition @'
+@@RECOVERY_PROTECTION_TYPE@@
+'@
+    $principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if(!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'elevation_required' }
+    # Record preflight before checking or changing any installation state.
+    $log=[FlowerPinnedDelivery]::CreateLogDirectory($plan.OperationId,$plan.UserSid)
+    if($log -ine [IO.Path]::GetDirectoryName($prefix)) { throw 'continuation_log_path_changed' }
+    $script:LoggingReady=$true
+    Log 'continuation_preflight_started' @{version=$version;pid=$PID;resumed=$false}
+    if($plan.ClientQuiescenceContinuation) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FlowerContinuationLifetime {
+    [DllImport("kernel32.dll",SetLastError=true)]
+    static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool result);
+    public static int ObserveMembership() {
+        bool inJob;
+        if(!IsProcessInJob(new IntPtr(-1),IntPtr.Zero,out inJob))
+            return -1;
+        return inJob ? 1 : 0;
+    }
+}
+'@
+        # Job membership alone does not identify the owner or prove that a
+        # normal Codex exit terminates this human-launched installer. Keep it
+        # diagnostic; real stopped state and quiescence remain mandatory.
+        $membership=[FlowerContinuationLifetime]::ObserveMembership()
+        Log 'installer_job_membership_observed' @{pid=$PID;membership=$membership;diagnostic_only=$true;resumed=$false}
+    }
+    [FlowerPinnedDelivery]::RequireLogDirectory($plan.PreviousOperation,$plan.UserSid) | Out-Null
+    foreach($record in @(@($plan.PreviousProgress,$plan.PreviousProgressSha256),@($plan.PreviousResult,$plan.PreviousResultSha256))) {
+        [FlowerRecoveryProtection]::RequireProtectedFile($record[0])
+        [FlowerPinnedDelivery]::ReadText($record[0],$record[1]) | Out-Null
+    }
+    if($plan.PSObject.Properties.Name -contains 'FailedContinuationOperation') {
+        [FlowerPinnedDelivery]::RequireLogDirectory($plan.FailedContinuationOperation,$plan.UserSid) | Out-Null
+        foreach($record in @(@($plan.FailedContinuationProgress,$plan.FailedContinuationProgressSha256),@($plan.FailedContinuationResult,$plan.FailedContinuationResultSha256))) {
+            [FlowerRecoveryProtection]::RequireProtectedFile($record[0])
+            [FlowerPinnedDelivery]::ReadText($record[0],$record[1]) | Out-Null
+        }
+    }
+    if($retainClients) {
+        if(!$plan.ClientQuiescenceContinuation -or $plan.SharedGateMode -cne 'create_fresh_stopped' -or
+            $plan.RetainedActorPids.Count -lt 2 -or $plan.RetainedActorPids.Count -gt 256) { throw 'retained_clients_plan_rejected' }
+        Add-Type -TypeDefinition ([FlowerPinnedDelivery]::ReadText($plan.HostRetentionTypePath,$plan.HostRetentionTypeSha256))
+        foreach($expected in $plan.RetainedProcessFacts) {
+            $fact=New-Object FlowerStoppedClientFact
+            foreach($name in @('Pid','Created','Image','ParentPid','Session','User','Integrity','UiAccess')) { $fact.$name=$expected.$name }
+            [FlowerStoppedClientRetention]::Pin($fact) | Out-Null
+        }
+    }
+    $guard=[FlowerOfflineGuard]::AcquireStopped($plan.UserSid,[int]$plan.SessionId,$plan.LogonSid)
+    $guard.HoldInputResource()
+    RequirePersistentStop
+    if($retainClients) {
+        # Respect the old Python lock order: ledger transaction, then shared
+        # gate. Keep this reservation through the new broker's status receipt.
+        if($plan.PSObject.Properties.Name -contains 'LegacyResumeCompatibilityReview') {
+        [FlowerPinnedDelivery]::ReadText($plan.LegacyResumeCompatibilityReview.Path,$plan.LegacyResumeCompatibilityReview.Sha256) | Out-Null
+    }
+    foreach($source in $plan.LegacyResumeSourceHashes.PSObject.Properties) {
+            [FlowerPinnedDelivery]::ReadText($source.Name,[string]$source.Value) | Out-Null
+        }
+        $script:ledgerFence=[FlowerLedgerFence]::Acquire($plan.LedgerPath,$plan.LedgerLibrary,$plan.LedgerLibrarySha256)
+        Log 'legacy_ledger_writer_fenced' @{existing_write_actions=0;rows_changed=$false;resumed=$false}
+    }
+    if($plan.SharedGateMode -ceq 'create_fresh_stopped') {
+        $fresh=[FlowerPinnedDelivery]::CreateFreshStoppedWriteGate($plan.UserSid)
+        if($fresh[0] -ne 1 -or $fresh[1] -ne 1 -or $fresh[2] -ne 0) {throw 'continuation_fresh_stop_unconfirmed'}
+        Log 'fresh_stopped_shared_namespace_created' @{stopped=$true;epoch=$fresh[1];resume_all_epoch=$fresh[2];previous_namespace_retained=$false;resumed=$false}
+    } elseif($plan.SharedGateMode -ceq 'retain_existing_stopped') {
+        [FlowerPinnedDelivery]::HoldWriteGate($plan.UserSid)
+    } else {throw 'continuation_shared_gate_mode_rejected'}
+    if($retainClients) {
+        [FlowerPinnedDelivery]::EnterStoppedWriteFence([long]$plan.SharedEpoch,[long]$plan.ResumeAllEpoch)
+        Log 'legacy_stdio_clients_parked' @{count=$plan.RetainedActorPids.Count;shared_mutex_held=$true;clients_exited=$false;input_dispatched=$false;resumed=$false}
+        RequireUpdateActors
+    }
+    $newActive=([FlowerPinnedDelivery]::ReadText((Join-Path $package 'active.json'),$plan.ActiveSha256))|ConvertFrom-Json
+    $sourceDir=Join-Path $package ('versions\'+$version)
+    $newPolicy=([FlowerPinnedDelivery]::ReadText((Join-Path $sourceDir 'broker.json'),$newActive.hashes.'broker.json'))|ConvertFrom-Json
+    $common=[FlowerPinnedDelivery]::ReadText((Join-Path $package 'InstallCommon.ps1'),$plan.CommonSha256)
+    . ([scriptblock]::Create($common))
+    Assert-FlowerNoLinks $brokerRoot -Shallow
+    RequirePreviousTask; RequireFixedStop
+    if((Hash (Join-Path $brokerRoot 'active.json')) -cne $plan.OldActiveSha256 -or
+        (Hash (Join-Path $oldDir 'broker.json')) -cne $plan.OldPolicySha256 -or
+        (Hash (Join-Path $oldDir 'Flower.HighHelper.exe')) -cne $plan.OldExeSha256 -or
+        (Hash (Join-Path $oldDir 'Flower.HighHelper.dll')) -cne $plan.OldDllSha256) { throw 'continuation_original_changed' }
+    $stage='verifying_existing_payload'
+    if($retainClients) { Write-Host '正在自动校验和换版，Codex 保持打开即可；无需手动退出 Flower 或运行其它脚本。' -ForegroundColor Yellow }
+    else { Write-Host '正在校验新版文件和保护权限，此时请保持 Codex 打开。校验完成后才会提示退出。' -ForegroundColor Yellow }
+    Log 'verifying_payload_before_host_exit' @{version=$version;resumed=$false}
+    # A newer independently verified candidate may not be installed yet. Copy
+    # it once inside this same human-elevated operation; existing bytes are only
+    # verified, never rewritten. Both branches then use the complete hash/ACL checks.
+    $null=CopyNewCandidateIfMissing
+    Assert-FlowerVersion $newDir; Assert-FlowerSource $newDir
+    Assert-FlowerAcl $newDir
+    $payloadItems=@(Get-ChildItem -LiteralPath $newDir -Recurse -Force)
+    $verifiedItems=0
+    foreach($item in $payloadItems) {
+        Assert-FlowerAcl $item.FullName
+        $verifiedItems++
+        if($verifiedItems % 128 -eq 0) {
+            Write-Progress -Activity '正在校验新版文件；此时请保持 Codex 打开' -Status ($verifiedItems.ToString()+'/'+$payloadItems.Count) -PercentComplete ([int](100*$verifiedItems/$payloadItems.Count))
+        }
+    }
+    Write-Progress -Activity '正在校验新版文件；此时请保持 Codex 打开' -Completed
+    $newXml=[FlowerPinnedDelivery]::ReadText((Join-Path $package 'task.xml'),$plan.TaskXmlSha256)
+    $oldSddl=Get-FlowerTaskSecurityDescriptor
+    # Load the completion dialog before asking the user to close the host.
+    if(!$retainClients) {
+        try { Add-Type -AssemblyName System.Windows.Forms }
+        catch { Write-Warning '结果弹窗不可用，请以安装窗口最后明确的完成或失败提示为准。' }
+    }
+    RequirePreviousTask; RequireFixedStop
+    Log 'payload_verified_before_host_exit' @{version=$version;items=$verifiedItems;resumed=$false}
+    if($retainClients) {
+        RequireUpdateActors
+    } elseif($plan.ClientQuiescenceContinuation) {
+        $stage='waiting_for_host_connections_to_close'
+        Log 'waiting_for_host_connections_to_close' @{previous_operation=$plan.OriginalExitEvidenceOperation;resumed=$false}
+        WaitForHostConnectionsToClose
+    } else { RequireNoActors }
+    if($retainClients) { Write-Host '正在自动换版，Codex 可以保持打开。旧插件连接已由共享停止锁暂停写入。' -ForegroundColor Yellow }
+    else { Write-Host '旧连接已关闭，正在换版。请继续保持 Codex 关闭，直到看到“安装换版完成”弹窗。' -ForegroundColor Yellow }
+    Log 'stopped_continuation_bound' @{previous_operation=$plan.PreviousOperation;original_exit_evidence_operation=$plan.OriginalExitEvidenceOperation;original_exit_code=0;current_quiescence_verified=(!$retainClients);old_stdio_clients_retained=$retainClients;resumed=$false}
+    RequireUpdateActors; RequirePreviousTask; RequireFixedStop
+    $stage='repairing_recovery_inheritance'
+    EnsureRecoveryProtection
+    $stage='strict_offline_validation'
+    $journalHash=RequireReleasedJournal -AllowMissing:$plan.ClientQuiescenceContinuation
+    if($journalHash -cne $plan.JournalSha256) { throw 'continuation_journal_changed' }
+    $roleAnchor=Admin $newExe '--flower-role-policy'
+    if($roleAnchor.Phase -cne 'role_policy' -or $roleAnchor.UserSid -cne $plan.UserSid) { throw 'continuation_role_rejected' }
+    $roleAnchorHash=HashText ($roleAnchor|ConvertTo-Json -Depth 8 -Compress)
+    $roleFilesHash=HashText (RoleFileInventory)
+    if($null -eq $journalHash) {
+        Log 'journal_absent_after_current_quiescence' @{path=$plan.RecoveryJournal;state='absent';hash=$null;native_pending_read=$false}
+    } else {
+        $state=Admin $newExe '--offline-update-state'
+        if($state.version -cne $version -or $state.Stop.Stopped -ne $true -or $state.Stop.Epoch -ne $plan.ProtectedEpoch -or
+            $state.Stop.UserSid -cne $plan.UserSid -or $state.Stop.Session -ne $plan.SessionId -or
+            $state.Computer.Stopped -ne $plan.ComputerStopped -or $state.Computer.Epoch -ne $plan.ComputerEpoch -or
+            $state.JournalSha256 -cne $plan.JournalSha256 -or $state.nativeInputExecuted -ne $false -or
+            $state.resumed -ne $false) { throw 'continuation_offline_state_changed' }
+    }
+    RequireFixedStop; RequirePreviousTask; RequireUpdateActors
+    $null=RequireRoleAnchor
+    if((RequireReleasedJournal -AllowMissing:$plan.ClientQuiescenceContinuation) -cne $journalHash) { throw 'continuation_journal_changed' }
+    if((Hash (Join-Path $brokerRoot 'active.json')) -cne $plan.OldActiveSha256) { throw 'continuation_active_changed' }
+    Log 'strict_offline_verified' @{version=$version;journal_sha256=$journalHash;current_quiescence_verified=(!$retainClients);old_stdio_clients_retained=$retainClients;resumed=$false}
+    $stage='publishing'
+    $taskChanged=$true; RegisterTask $newXml $oldSddl
+    Assert-FlowerTaskSecurity
+    if((HashText (Get-FlowerTaskSecurityDescriptor)) -cne $plan.OldTaskSddlSha256) { throw 'continuation_task_security_changed' }
+    $task=Get-FlowerTask
+    if(@($task.Actions).Count -ne 1 -or $task.Actions.Execute -ine $newExe -or $task.Actions.Arguments -cne '--serve' -or $task.Actions.WorkingDirectory -ine $newDir) { throw 'continuation_task_changed' }
+    RequireFixedStop; RequireUpdateActors; $null=RequireRoleAnchor
+    if((RequireReleasedJournal -AllowMissing:$plan.ClientQuiescenceContinuation) -cne $journalHash) { throw 'continuation_journal_changed' }
+    $activeChanged=$true; ReplaceActive (Join-Path $package 'active.json') $plan.ActiveSha256 $plan.OldActiveSha256
+    RequireFixedStop
+    RequireUpdateActors; $null=RequireRoleAnchor
+    if((RequireReleasedJournal -AllowMissing:$plan.ClientQuiescenceContinuation) -cne $journalHash) { throw 'continuation_journal_changed' }
+    # Release content pins before normal journal persistence; keep the shared
+    # mapping alive through task startup. All writes stay stopped.
+    [FlowerPinnedDelivery]::CloseInputs()
+    if($retainClients) {
+        [FlowerPinnedDelivery]::ExitStoppedWriteFence()
+        if($null -eq $ledgerFence -or !$ledgerFence.Held) {throw 'continuation_ledger_fence_lost'}
+        Log 'legacy_stdio_shared_fence_handed_to_ledger' @{active_changed=$true;ledger_writer_fence_held=$true;resumed=$false}
+    }
+    $guard.Dispose(); $guard=$null
+    $stage='starting_paused'; $startAttempted=$true
+    Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+    $hostReady=$false
+    $serveMode=if([int]$roleAnchor.Tier -le 0){'--serve-user'}else{'--serve'}
+    for($attempt=0;$attempt -lt 40;$attempt++) {
+        $servers=@(Get-CimInstance Win32_Process | Where-Object {$_.ExecutablePath -ieq $newExe -and $_.CommandLine -match ('(?:^|\s)'+[regex]::Escape($serveMode)+'(?:\s|$)')})
+        if($servers.Count -eq 1 -and [FlowerOfflineGuard]::HasHostWindow([int]$servers[0].ProcessId)) {$hostReady=$true;break}
+        Start-Sleep -Milliseconds 250
+    }
+    if(!$hostReady) {throw 'continuation_new_host_start_unconfirmed'}
+    RequireFixedStop
+    if($retainClients) {
+        $server=RequirePausedInstalledStatus (Admin $newExe '--flower-admin status')
+        RequireFixedStop; $null=RequireRoleAnchor
+        # Invalidate old requests already waiting for SQLite. With the shared
+        # mutex held they cannot capture a newer epoch before ledger release.
+        CloseRetainedLedgerFence
+        Log 'installed_paused_verified' @{version=$version;pid=$server.Pid;created=$server.Created;broker_role=$(if([int]$roleAnchor.Tier -le 0){'ordinary'}else{'high'});shared_mutex_held=$true;shared_epoch=$finalSharedEpoch;status_sample_shared_epoch=$plan.SharedEpoch;resumed=$false}
+    }
+    $finalState=if($retainClients){'installed_paused_verified'}else{'installed_paused_status_pending'}
+    Log $finalState @{version=$version;resumed=$false;original_exit_evidence_operation=$plan.OriginalExitEvidenceOperation;current_quiescence_verified=(!$retainClients);old_stdio_clients_retained=$retainClients}
+    [IO.File]::WriteAllText(($prefix+'-result.json'),(@{schema=1;state=$finalState;version=$version;operation=$plan.OperationId;previous_operation=$plan.PreviousOperation;original_exit_evidence_operation=$plan.OriginalExitEvidenceOperation;current_quiescence_verified=(!$retainClients);old_stdio_clients_retained=$retainClients;resumed=$false;original_exit_code=0;journal_sha256=$plan.JournalSha256;shared_epoch=$finalSharedEpoch;status_sample_shared_epoch=$plan.SharedEpoch}|ConvertTo-Json -Depth 8),$utf8)
+    Write-Host '安装换版完成，Flower 保持停止状态。接下来核对插件实际版本，再进行功能测试。'
+    if(!$retainClients) { try { ShowContinuationResult $true } catch { Write-Warning '安装换版已完成。完成弹窗未能显示，现在可以重新打开 Codex 核对。' } }
+    exit 0
+} catch {
+    $reason=$_.Exception.Message
+    Log 'continuation_failed_no_resume' @{stage=$stage;reason=$reason;task_changed=$taskChanged;active_changed=$activeChanged;start_attempted=$startAttempted}
+    if($script:LoggingReady) {[IO.File]::WriteAllText(($prefix+'-result.json'),(@{schema=1;state='failed';stage=$stage;reason=$reason;operation=$plan.OperationId;version=$version;task_changed=$taskChanged;active_changed=$activeChanged;start_attempted=$startAttempted;resumed=$false}|ConvertTo-Json -Depth 8),$utf8)}
+    Write-Error $reason -ErrorAction Continue
+    if(!$retainClients) { try {
+        Add-Type -AssemblyName System.Windows.Forms
+        ShowContinuationResult $false
+    } catch { Write-Warning '安装未完成。现在可以重新打开 Codex 检查错误；不要重跑入口。' } }
+    exit 1
+} finally {
+    try {
+        try { CloseRetainedLedgerFence }
+        catch {
+            if($script:LoggingReady) {
+                Log 'continuation_cleanup_stop_unconfirmed' @{stage=$stage;resumed=$false;stop_confirmed=$false}
+                [IO.File]::WriteAllText(($prefix+'-result.json'),(@{schema=1;state='failed';stage='cleanup_stop_unconfirmed';operation=$plan.OperationId;version=$version;resumed=$false;stop_confirmed=$false}|ConvertTo-Json -Depth 8),$utf8)
+            }
+            throw
+        }
+        finally { if($null -ne $guard) {$guard.Dispose()} }
+    }
+    finally {
+        try { if('FlowerStoppedClientRetention' -as [type]) {[FlowerStoppedClientRetention]::Close()} }
+        finally {
+            try { if('FlowerPinnedDelivery' -as [type]) {[FlowerPinnedDelivery]::Close()} }
+            finally { if($null -ne $script:ledgerFence) {$script:ledgerFence.Dispose()} }
+        }
+    }
+}

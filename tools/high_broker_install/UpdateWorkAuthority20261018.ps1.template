@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Global
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -Global
-Import-Module (Join-Path $PSHOME 'Modules\ScheduledTasks\ScheduledTasks.psd1') -Global
+Import-Module (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\Modules\ScheduledTasks\ScheduledTasks.psd1') -Global
 $plan = @'
 @@PLAN_JSON@@
 '@ | ConvertFrom-Json
@@ -34,6 +34,7 @@ $script:WriterMarker = $null
 $recovering = $plan.RecoveryOperation -cne ''
 $leavePaused = $plan.PSObject.Properties.Name -contains 'LeavePaused' -and $plan.LeavePaused -eq $true
 $originalPaused = $plan.PSObject.Properties.Name -contains 'OriginalPaused' -and $plan.OriginalPaused -eq $true
+$keepPaused = $originalPaused -or ($plan.PSObject.Properties.Name -contains 'KeepPaused' -and $plan.KeepPaused -eq $true)
 $restoreRunning = $plan.PSObject.Properties.Name -contains 'RestoreRunningAfterInstall' -and $plan.RestoreRunningAfterInstall -eq $true
 if ($restoreRunning -and (!$leavePaused -or $originalPaused -or $recovering)) { throw 'running_restore_plan_invalid' }
 $reusePayload = $plan.PSObject.Properties.Name -contains 'ReusePayload' -and $plan.ReusePayload -eq $true
@@ -94,6 +95,9 @@ function Admin([string]$exe, [string]$arguments) {
         elseif($arguments.StartsWith('--flower-maintenance ',[StringComparison]::Ordinal)) {
             $arguments='--flower-update-maintenance '+$plan.OperationId+' '+$arguments.Substring('--flower-maintenance '.Length)
         }
+        elseif($arguments.StartsWith('--flower-maintenance-ordinary ',[StringComparison]::Ordinal)) {
+            $arguments='--flower-update-maintenance-ordinary '+$plan.OperationId+' '+$arguments.Substring('--flower-maintenance-ordinary '.Length)
+        }
     }
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $exe; $info.Arguments = $arguments; $info.UseShellExecute = $false; $info.CreateNoWindow = $true
@@ -102,7 +106,9 @@ function Admin([string]$exe, [string]$arguments) {
     try {
         if (!$child.Start()) { throw 'admin_start_failed' }
         $stdout = $child.StandardOutput.ReadToEndAsync(); $stderr = $child.StandardError.ReadToEndAsync()
-        if (!$child.WaitForExit(15000)) { throw 'admin_outcome_unknown' }
+        # Ordinary resume has two separate 15-second protocol reads plus the
+        # handshake. Keep the owning process wait outside that normal budget.
+        if (!$child.WaitForExit(45000)) { throw 'admin_outcome_unknown' }
         $out = $stdout.GetAwaiter().GetResult(); $err = $stderr.GetAwaiter().GetResult()
         if ($child.ExitCode -ne 0) { throw ('admin_failed:' + $child.ExitCode + ':' + $err + $out) }
         $result = $out | ConvertFrom-Json
@@ -516,7 +522,11 @@ function RegisterTask([string]$xml, [string]$sddl) {
 function WaitExit([int]$pidValue, [long]$created) {
     $until = [DateTime]::UtcNow.AddSeconds(20)
     do {
-        $live = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+        $queryErrors = @()
+        $live = Get-Process -Id $pidValue -ErrorAction SilentlyContinue -ErrorVariable queryErrors
+        foreach ($queryError in $queryErrors) {
+            if ($queryError.FullyQualifiedErrorId -notlike 'NoProcessFoundForGivenId*') { throw 'broker_exit_query_unconfirmed' }
+        }
         if ($null -eq $live) { return }
         if ($live.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $created) { throw 'broker_pid_reused' }
         Start-Sleep -Milliseconds 200
@@ -595,7 +605,7 @@ function Rollback {
         } else { $old = Status $oldExe }
         RequireIdle $old
         if ([long]$old.global_stop_epoch -ne $maintenanceShared -or [long]$old.protected_stop_epoch -ne $maintenanceProtected) { throw 'rollback_stop_changed' }
-        if ($recovering -or $leavePaused) {
+        if ($recovering -or $leavePaused -or $keepPaused) {
             Log 'rollback_recovery_keeps_original_pause' @{ version = $oldVersion; global_paused = $true }
             if($leavePaused) {return 'previous_restored_paused'}
             return 'previous_restored_legacy_pause_manual_recovery'
@@ -741,6 +751,12 @@ try {
     Start-ScheduledTask -TaskName $taskName -TaskPath '\'
     $started = WaitReady $newExe $version
     RequireComputerPause $started $true
+    if (!$leavePaused -and $keepPaused) {
+        RequireMaintenancePaused $started $maintenanceShared $maintenanceProtected
+        Log 'installed_paused_verified' @{version=$version;resumed=$false;broker_role=$newRole}
+        [IO.File]::WriteAllText(($prefix + '-result.json'), (@{schema=1;state='installed_paused_verified';version=$version;operation=$plan.OperationId;resumed=$false;after=$started} | ConvertTo-Json -Depth 10),$utf8)
+        exit 0
+    }
     if($leavePaused) {
         $finalStatus=CompleteLivePausedUpdate $started
         # Cleanup may absorb a newer user Stop. Only our exact maintenance

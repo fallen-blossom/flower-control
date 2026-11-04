@@ -6,8 +6,19 @@ internal static partial class SettingsWorkspace
 
     private static void ShowWorkspaceHelp()
     {
-        MessageBoxW(window, WorkspaceHelpText(), UiText.Get("使用说明"), 0x40);
+        MessageBoxW(window, FirstRunGuideText() + "\r\n\r\n" + WorkspaceHelpText(), UiText.Get("使用说明"), 0x40);
     }
+
+    private static void ShowFirstRunGuide()
+        => MessageBoxW(window, FirstRunGuideText(), UiText.Get("首次使用与权限说明"), 0x40);
+
+    private static string FirstRunGuideText() => UiText.Get(
+        "推荐从 02 普通控制开始：可操作普通窗口；需要管理员窗口时再选 03，需要 High 启动时再选 04。已有档位不会自动降低。\r\n\r\n"
+        + "左侧档位按钮是立即操作，会保存并切换执行权限；需要时由 Windows 请求确认。权限页顶部 02 / 03 / 04 只切换要查看的规则。\r\n\r\n"
+        + "名单、敏感词与操作偏好先改草稿，点击“保存权限与操作偏好”后才生效；“启用工作授权”、浏览器打开和界面语言按各自按钮立即处理。\r\n\r\n"
+        + "在当前聊天查看 flower_status，核对实际加载的 Web / App / Computer 通道、版本与已选目标。此设置窗口不能证明聊天已经注入，也不会替聊天选目标。\r\n\r\n"
+        + "Ctrl+Alt+Shift+9 以及托盘和总览的“紧急停止全部 Flower”持续阻止三通道写入，必须明确继续；Ctrl+Alt+9 只结束当前 Computer Use。热键注册结果见总览，失败时仍可用按钮。恢复不重放未知动作，不撤销真实拒绝，也不清除单独的 Computer 暂停。\r\n\r\n"
+        + "截图只在明确请求观察或录制时取得；诊断不默认录屏或上传。关闭说明不修改任何权限。");
 
     private static void ShowRuleHelp()
     {

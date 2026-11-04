@@ -28,11 +28,17 @@ import win32security
 from flower_control.control.native import (FOREGROUND_INPUT_RESOURCE,
     physical_window_resource, process_creation_filetime, process_is_alive)
 from flower_control.drivers.computer_native import WindowIdentity
+from flower_control.install_location import InstallLocationError, program_root, require_protected_path
 
 _LIMIT = 2 * 1024 * 1024
 _SEAL = object()
 _BUNDLE_NAMES = ("Flower.HighHelper.exe", "Flower.HighHelper.dll",
                  "Flower.HighHelper.deps.json", "Flower.HighHelper.runtimeconfig.json")
+_HOT_PROGRAM_NAMES = frozenset((*_BUNDLE_NAMES, "flower-python.exe", "flower-python._pth",
+    "flower_bootstrap.py", "flower_hook_bootstrap.py", "broker.json", "runtime-inventory.json",
+    "Flower.UacNative.dll", "python3.dll", "python314.dll"))
+_RESERVED_PROGRAM_NAMES = frozenset({"CON", "PRN", "AUX", "NUL",
+    *("COM" + str(i) for i in range(1, 10)), *("LPT" + str(i) for i in range(1, 10))})
 
 
 def _peer_evidence_shape(evidence):
@@ -942,9 +948,13 @@ class BrokerStatus:
 
 
 def _installed_bundle():
-    root = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "FlowerControl" / "HighHelper"
     try:
-        active = json.loads((root / "active.json").read_bytes(), object_pairs_hook=_unique_pairs)
+        root = program_root()
+        require_protected_path(root / "active.json")
+        active_path = root / "active.json"
+        if active_path.stat().st_size > 4_000_000:
+            raise HighHelperError("installation_rejected")
+        active = json.loads(active_path.read_bytes(), object_pairs_hook=_unique_pairs)
         if (type(active) is not dict or set(active) not in ({"schema", "version", "hashes"}, {"schema", "version", "hashes", "runtime_hashes"})
                 or active["schema"] != 1):
             raise HighHelperError("installation_rejected")
@@ -952,13 +962,28 @@ def _installed_bundle():
         if type(active["version"]) is not str or not re.fullmatch(r"[a-f0-9]{16,64}", active["version"]):
             raise HighHelperError("installation_rejected")
         directory = root / "versions" / active["version"]
+        require_protected_path(directory)
+        hashes = active["hashes"]
+        if type(hashes) is not dict or not 4 <= len(hashes) <= 20000:
+            raise HighHelperError("installation_rejected")
+        folded = set()
+        for name, expected in hashes.items():
+            if (type(name) is not str or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", name)
+                    or ".." in name or name.endswith(".") or name.casefold() in folded
+                    or name.split(".", 1)[0].upper() in _RESERVED_PROGRAM_NAMES
+                    or type(expected) is not str or not re.fullmatch(r"[a-f0-9]{64}", expected)):
+                raise HighHelperError("installation_rejected")
+            folded.add(name.casefold())
         bundle = HelperBundle(directory, tuple((name, active["hashes"][name]) for name in _BUNDLE_NAMES))
         bundle.verify()
+        for name in _BUNDLE_NAMES:
+            require_protected_path(directory / name)
         for path in (root, root / "versions", directory, root / "active.json"):
             if path.is_symlink() or path.is_junction():
                 raise HighHelperError("installation_rejected")
+        immutable = _immutable_dotnet_dependencies(directory, active)
         for name, expected in active["hashes"].items():
-            if Path(name).name != name or _digest(directory / name) != expected:
+            if name not in immutable and _digest(directory / name) != expected:
                 raise HighHelperError("installation_changed")
         if "runtime_hashes" in active:
             nested = active["runtime_hashes"]
@@ -987,8 +1012,57 @@ def _installed_bundle():
             # protected version ACL. Per-call verification pins this manifest,
             # without repeatedly hashing the full Python dependency runtime.
         return bundle, active["version"]
+    except InstallLocationError as error:
+        raise HighHelperError(str(error)) from None
     except (OSError, KeyError, ValueError, TypeError):
         raise HighHelperError("broker_not_installed") from None
+
+
+def _immutable_dotnet_dependencies(directory, active):
+    """Reuse the installed immutable-dependency contract for .NET runtimepack.
+
+    Only a frozen version with a matching protected installation manifest can
+    use this route. The app's freshly hashed deps file names the known .NET
+    runtime pack; arbitrary flat files and every fixed entry remain hot checks.
+    Installation and the explicit integrity check still hash every dependency.
+    """
+    if "runtime_hashes" not in active or "coreclr.dll" not in active["hashes"]:
+        return frozenset()
+    path = directory / "Flower.HighHelper.deps.json"
+    if path.stat().st_size > 4_000_000:
+        raise HighHelperError("installation_rejected")
+    deps = json.loads(path.read_bytes(), object_pairs_hook=_unique_pairs)
+    target = deps["targets"][deps["runtimeTarget"]["name"]]
+    libraries = deps["libraries"]
+    if type(target) is not dict or type(libraries) is not dict:
+        raise HighHelperError("installation_rejected")
+    names = set()
+    for package, info in libraries.items():
+        if not re.fullmatch(r"runtimepack\.Microsoft\.NETCore\.App\.Runtime\.win-x64/10\.[0-9]+\.[0-9]+", package):
+            continue
+        if type(info) is not dict or info.get("type") != "runtimepack":
+            raise HighHelperError("installation_rejected")
+        assets = target[package]
+        if type(assets) is not dict:
+            raise HighHelperError("installation_rejected")
+        for kind in ("runtime", "native"):
+            entries = assets.get(kind, {})
+            if type(entries) is not dict:
+                raise HighHelperError("installation_rejected")
+            for name in entries:
+                if (type(name) is not str or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", name)
+                        or ".." in name or name.endswith(".") or name.split(".", 1)[0].upper() in _RESERVED_PROGRAM_NAMES):
+                    raise HighHelperError("installation_rejected")
+                if name in active["hashes"] and name not in _HOT_PROGRAM_NAMES:
+                    names.add(name)
+    if not names:
+        return frozenset()
+    installation = directory / "installation.json"
+    require_protected_path(installation)
+    if (installation.stat().st_size > 4_000_000
+            or json.loads(installation.read_bytes(), object_pairs_hook=_unique_pairs) != active):
+        raise HighHelperError("installation_changed")
+    return frozenset(names)
 
 
 class HighHelperClient:
@@ -1017,8 +1091,8 @@ class HighHelperClient:
                       running=None, connected=False, paused=None, high_token_verified=None,
                       actual_integrity_rid=None, source_admitted=None, high_control_available=False,
                       reason=None, native_binary_hashes=None, status=None)
-        active = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "FlowerControl/HighHelper/active.json"
         try:
+            active = program_root() / "active.json"
             active.stat()
             result["installation_present"] = True
         except FileNotFoundError:
@@ -1026,6 +1100,8 @@ class HighHelperClient:
                     "installation_present": False, "reason": "broker_not_installed"}
         except OSError:
             return {**result, "reason": "installation_status_unavailable"}
+        except InstallLocationError as error:
+            return {**result, "reason": str(error)}
         session = None
         stage = "bundle"
         close_failure = None

@@ -1,42 +1,32 @@
-# What has been tested
-
-## Current source evidence boundary
-
-Historical tasks below apply to their original version. The three-browser checks use real Brave/Chrome/Edge processes, localhost test pages, synthetic cookies and an isolated ledger: connection, observation, fill/click/readback, temporary isolation and persistence after process exit. They are not a full native-chat task or access to personal accounts.
-
-The DSH model-step binding repair is checked with production JS and a fake helper, not a live privileged DSH task. Complete Stop entries, actual application drag results, original-speed motion, foreground occupancy, new settings and maintenance recovery still require combined acceptance. Clean-Windows first installation remains unverified.
-
-## Historical installed tasks
+# Validation for Flower Control 0.1.0
 
 [简体中文](VALIDATION.zh-CN.md)
 
-The real-task results below apply to the Codex baseline installed before the Claude Code and Antigravity source adapters were added. The additional adapters and their changes to shared code have not been built or tested. A complete first installation on a separate Windows machine is also pending.
+**The final 0.1.0 installer has not completed real installation/control acceptance and is not published.** The checks below apply to the current source or identified encoder bytes; they do not certify an unreleased package.
 
-The development evaluation used four public tasks—three from OSWorld and one from WebVoyager—plus eight Flower-specific workflow tests. The model was GPT-6.1 Sol at Medium reasoning. Computer comparisons used Codex's native Computer Use on the same Windows desktop. This was a Windows product evaluation with independent output checks, not a run of the upstream virtual-machine suite or a leaderboard reproduction.
+## Checks completed
 
-Completed workflows included spreadsheet spacing and formulas, two charts, Paint-to-Writer delivery, arXiv research, webpage editing and actual Python execution, exact download/upload contents, a desktop virtual list and owned dialog, control rebuild and continuation, and Jev-enabled/disabled operation in Web, App, and Computer.
+| Area | Evidence and scope |
+| --- | --- |
+| Windows version metadata | Native helper, App worker, WGC worker, signer probe and Setup were built and their PE/assembly versions examined: product 0.1.0, file/assembly 0.1.0.0. This verifies compilation and metadata, not High/UAC operation. |
+| Installation and local state | Source/isolated checks cover root discovery, original-plan binding, local entry admission, Stop retention, ordinary-preference drafts, storage review and controlled personal-data recycling. Fixtures do not establish a real user installation or foreground task. |
+| Release material binding | The builder checks the fixed encoder, license, NOTICE, source ZIP, input lock and recipe before building and before archiving. Public source export includes the eight encoder-build files. |
+| Minimal recording encoder | Exact FFmpeg 8.1.1-flower-minimal-1 bytes run with a System32-only PATH. Three complete source archives match all 10,633 files in the recorded build tree; original component/runtime notices are retained. Short synthetic frames exercise production encoding/timeline options, four PTS values, decode, padding and progress completion against the admitted reference encoder. |
 
-Jev selections were executed directly in the tool call. In three interruption variants, the Jev request really reached the service; disabling it while waiting prevented the late result from driving the old action. A separate real in-flight Stop test rejected the late result and subsequently completed a new save after normal resume and fresh observation.
+The encoder fixture verifies no output-size-limit behavior or actual screen capture. Its MP4 container duration differs from the final presentation timestamp in both builds; the timestamp/decode results are the comparison, not a claim that container duration exactly equals the request. The source/build inventory supports traceability; it is not an independent rebuild or a blanket legal-compliance conclusion.
 
-## Issues kept in the results
+## Still unverified for the final installer
 
-- The document-color task classified all 52 words correctly but selected shades that missed the fixed color-precision criterion. It was not counted as a passed task.
-- An old closed AI profile initially rejected a normally updated Brave executable. The fix was subsequently installed and the AI browser reopened through actual native Flower tools. A readable X public page still displayed login prompts; this does not establish an authenticated X session.
-- Owned modal dialogs initially lost the Computer border. The installed-source driver now retained four borders on the parent, owned modal, and restored parent, and showed zero borders on an unrelated same-process window.
-- Computer's existing region selection lacked usable public argument documentation. After the fix, one actual Jev HTTP request produced one click, confirmed by an independent counter.
-- Four chats each completed their work, but natural overlapping foreground queue contention did not occur. This remains an untested case, not a concurrency pass.
-- The personal profile was not exercised in that benchmark chat because it lacked the user's permission. A clean-PC source install also remains a release check.
+- Real first installation, cancellation/recovery, update/same-version maintenance and uninstall using the final 0.1.0 package, including a separate clean/offline Windows environment.
+- Actual ordinary/High operation, UAC handoff, host enablement and Hook trust, new-chat loading, and complete Web/App/Computer tasks with this package.
+- Foreground recording and input, all Stop buttons/hotkeys, drag results and the combined focus/DPI/multiple-display/lock/sleep paths.
 
-Observed timings came from individual runs with recovery and preparation differences. They do not establish a general speedup, a universal reliability percentage, or a guarantee that Jev returns in 0.5 seconds.
+File verification, a successful process exit and a status handshake do not prove these outcomes. [Installer instructions](INSTALLER.md) explain what users must confirm. A human release label is separate from the installed runtime's content fingerprint.
 
-The small regression subset shipped with this source preview covers the repaired modal-layout and closed-browser identity logic. Run it after installing the locked dependencies:
+## Earlier task evidence
 
-```powershell
-.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
-```
+Earlier Codex installations completed spreadsheet, document, drawing, public-web, transfer and owned-dialog workflows, including optional Jev checks. A document-color task missed its precision criterion; natural overlapping foreground contention was not exercised. These results keep their original installed-version scope. The [preview.3 validation snapshot](https://github.com/fallen-blossom/flower-control/blob/00632f9f186609ccee4334a84dd44b237f6c372e/docs/VALIDATION.md) retains the detailed record; it is not final 0.1.0 acceptance or a leaderboard reproduction.
 
-These tests do not launch a browser or send desktop input. They do not replace the workflow acceptance above.
+## Release identity and reporting
 
-## Later source updates
-
-A later source update (installed as `bf71808c0d154a054fd4d112210eb68d`) restored the moving Computer frame when another topmost window covers it or when the scoped app opens an unowned visible top-level panel, restored the optional `next_step` HUD line on `observe`/`activate`/`input`, and widened Web request validation to the Chromium-family Brave, Chrome, and Edge. The frame re-raise and the restored `next_step` display have offline and self-window evidence, and a fresh connection shows `next_step` in the computer tool schemas; a real user-foreground border observation and real Chrome/Edge sessions are still pending verification.
+Version 0.1.0 will be unsigned (`signed: false`). Official GitHub assets, matching source/dependency build inputs and SHA-256s identify the published bytes without providing a trusted publisher signature. Private vulnerability reporting is enabled through [Report a vulnerability](https://github.com/fallen-blossom/flower-control/security/advisories/new). For ordinary faults, use [troubleshooting](TROUBLESHOOTING.md) and include the actual version, status, error and minimal reproduction without private data.

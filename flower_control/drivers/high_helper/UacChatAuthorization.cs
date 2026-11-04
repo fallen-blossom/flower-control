@@ -67,7 +67,7 @@ internal static class UacChatAuthorization
             ValidateContext(policy.UserSid, session, sessionHash, "codex");
             if (policy.Fixture || policy.Schema != 1 || policy.Mode != "high" || !Hex(policy.Version, 16, 64))
                 throw new Boundary("uac_chat_context_rejected");
-            Root = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper");
+            Root = InstallationLocation.Current().ProgramRoot;
             var expectedDirectory = System.IO.Path.GetFullPath(System.IO.Path.Combine(Root, "versions", policy.Version));
             if (!System.IO.Path.GetFullPath(policy.Directory).Equals(expectedDirectory, StringComparison.OrdinalIgnoreCase)
                 || !System.IO.Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(System.IO.Path.DirectorySeparatorChar)

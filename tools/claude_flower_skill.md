@@ -22,7 +22,8 @@ mechanical steps run without adding an extra model review to every action.
 
 The AI Brave profile is dedicated to agent use. For the user's personal profile,
 request Flower's per-chat approval. App and Computer need a selected window.
-Claude's normal tool permissions still apply. Ctrl+Alt+9 stops Flower writes;
+Claude's normal tool permissions still apply. Ctrl+Alt+9 stops Computer input;
+the current candidate adds separate Ctrl+Alt+Shift+9 for all-channel Stop. Check registration status;
 Stop, pause, and input release are shared with the helper across hosts. Do not
 automatically clear Stop, install a new helper, expand the host allowlist, reset
 profiles, or upload local data to overcome an error.

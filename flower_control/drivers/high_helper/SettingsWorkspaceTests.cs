@@ -138,6 +138,21 @@ internal static partial class SettingsWorkspace
             var monitor = new MonitorInfo { Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MonitorInfo>() };
             Check(GetMonitorInfoW(MonitorFromWindow(window, 2), ref monitor) && monitor.Work.Right > monitor.Work.Left && monitor.Work.Bottom > monitor.Work.Top && monitor.Work.Left >= monitor.Monitor.Left && monitor.Work.Bottom <= monitor.Monitor.Bottom, "native_monitor_work_area_layout");
             Capture("overview");
+            Rect ActualPageBounds(int id)
+            {
+                GetWindowRect(PageHandle(id), out var bounds);
+                MapWindowPoints(IntPtr.Zero, window, ref bounds, 2); return bounds;
+            }
+            Check(PageHandle(EmergencyStopId) != IntPtr.Zero && IsWindowEnabled(PageHandle(EmergencyStopId))
+                && PageHandle(ResumeAllId) != IntPtr.Zero && !IsWindowEnabled(PageHandle(ResumeAllId)),
+                "overview_preview_has_emergency_stop_and_never_enables_real_resume");
+            Check(new[] { FirstRunGuideId, EmergencyStopId, ResumeAllId }.All(id => ActualPageBounds(id).Bottom <= Layout.Notice.Top),
+                "overview_product_actions_keep_clear_of_fixed_footer");
+            var beforeEmergency = model.Draft;
+            Click(EmergencyStopId);
+            Check(SettingsWorkspaceModel.Same(beforeEmergency, model.Draft) && preview && core is null,
+                "preview_emergency_stop_does_not_change_policy_or_real_stop");
+            notice = ""; UpdateChrome();
             Check(PetalAnnotations.Length == 5 && PetalAnnotations[2] == "02  普通控制"
                 && PetalAnnotations[3] == "04  管理员执行" && PetalAnnotations[4] == PetalAnnotations[3], "both_lower_petals_show_admin_execution");
             Check(!UserFacingError("jev_disabled").Contains("jev_disabled", StringComparison.Ordinal)
@@ -212,6 +227,9 @@ internal static partial class SettingsWorkspace
             Click(SaveId); Check(model.EffectiveTier == 1 && !Dirty && saved.HudCompact && words.Text.Contains("synthetic-secret"), "preview_save_commits_same_snapshot");
             Check(preview && core is null, "no_live_broker_or_policy_write");
             Click(NavBase + 4); SetFocus(window); Capture("diagnostics");
+            Check(new[] { ReadOnlyCheckId, RepairSurfaceId, ExportDiagnosticsId, ExportSettingsId, ImportSettingsId,
+                StorageUsageId, CacheCleanupId }.All(id => PageHandle(id) != IntPtr.Zero
+                    && ActualPageBounds(id).Bottom <= Layout.Notice.Top), "diagnostic_maintenance_actions_keep_clear_of_footer");
             int firstLine = SendMessageW(PageHandle(486), 0xCE, IntPtr.Zero, IntPtr.Zero).ToInt32();
             SendMessageW(PageHandle(486), 0xB6, IntPtr.Zero, new IntPtr(3));
             Check(SendMessageW(PageHandle(486), 0xCE, IntPtr.Zero, IntPtr.Zero).ToInt32() > firstLine, "decorated_scrollbar_keeps_native_edit_scrolling");

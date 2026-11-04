@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from xml.sax.saxutils import escape
 import xml.etree.ElementTree as ET
 
@@ -36,6 +37,14 @@ def digest(path):
 
 def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def system_powershell_path():
+    """System host discovery must not execute a caller's SystemRoot override."""
+    buffer=ctypes.create_unicode_buffer(32768)
+    length=ctypes.WinDLL('kernel32',use_last_error=True).GetSystemDirectoryW(buffer,len(buffer))
+    if not 0 < length < len(buffer):raise OSError('system_directory_unavailable')
+    return Path(buffer.value)/'WindowsPowerShell/v1.0/powershell.exe'
 
 
 def media_encoder_license(media_encoder: Path) -> Path:
@@ -217,6 +226,16 @@ def native_binary_hashes(repository, directory, bundle_names=NATIVE_BUNDLE_NAMES
     if any((Path(repository) / "flower_control/drivers/high_helper" / name).is_file()
            for name in ("program_identity_native.cpp", "uac_native.cpp")):
         names += (UAC_NATIVE_NAME,)
+    directory = Path(directory)
+    if (directory / "coreclr.dll").is_file():
+        # A self-contained .NET publish carries the runtime closure, not just
+        # the four apphost files. Build evidence must bind this entire set.
+        extras = tuple(sorted(p.name for p in directory.iterdir()
+            if p.is_file() and p.suffix.lower() in {".dll", ".exe", ".json"}
+            and not p.name.endswith("build-evidence.json")))
+        if any((directory / name).is_symlink() or (directory / name).is_junction() for name in extras):
+            raise ValueError("native_runtime_link_rejected")
+        names = tuple(dict.fromkeys((*names, *extras)))
     return {name: digest(Path(directory) / name) for name in names}
 
 
@@ -317,19 +336,55 @@ def add_native_snapshot_inputs(repository, source_hashes, rows):
     return rows
 
 
-def render_install_scripts(package, production, version, task_name):
+def render_installer_type(name, production):
+    """Seal the selected root into installer-only Framework-compatible code."""
+    source = (Path(__file__).with_name("high_broker_install") / name).read_text(encoding="utf-8")
+    literal = str(production).replace("\\", "\\\\").replace('"', '\\"')
+    return source.replace("@@PREPARED_PROGRAM_ROOT@@", literal)
+
+
+def render_install_scripts(package, production, version, task_name, *, task_xml_hash=None):
     """Fixed scripts only; no execution or caller-supplied PowerShell code."""
     values = {"PACKAGE": package, "BROKER": production, "VERSION": version, "TASK": task_name,
-              "TASKXMLHASH": digest(package / "task.xml")}
+              "TASKXMLHASH": digest(package / "task.xml") if task_xml_hash is None else task_xml_hash,
+              "LOCATIONHASH": digest(package / "installation-location.request.json")
+                  if (package / "installation-location.request.json").is_file() else "",
+              "PACKAGEACTIVEHASH": digest(package / "active.json")}
     templates = Path(__file__).with_name("high_broker_install")
+    plan_basis = {key: str(value) for key,value in values.items()}
+    plan_basis["active_sha256"] = digest(package / "active.json")
+    plan_basis["templates"] = {name: digest(templates / name) for name in
+        ("InstallCommon.ps1.template","ApplyInstall.ps1.template","RecoveryProtection.cs","PinnedDelivery.cs")}
+    plan_hash = hashlib.sha256(json.dumps(plan_basis,sort_keys=True).encode()).hexdigest()
+    values.update(INSTALL_OPERATION=plan_hash[:32],INSTALL_PLAN_HASH=plan_hash)
     scripts = {}
     for name in ("InstallCommon.ps1", "ApplyInstall.ps1", "Disable.ps1", "CheckRollbackSource.ps1"):
         content = (templates / (name + ".template")).read_text(encoding="utf-8")
-        content = content.replace("@@RECOVERY_PROTECTION_TYPE@@", (templates / "RecoveryProtection.cs").read_text(encoding="utf-8"))
+        content = content.replace("@@RECOVERY_PROTECTION_TYPE@@", render_installer_type("RecoveryProtection.cs", production))
+        content = content.replace("@@PINNED_DELIVERY_TYPE@@", render_installer_type("PinnedDelivery.cs", production))
         for key, value in values.items():
             content = content.replace("@@" + key + "@@", "'" + str(value).replace("'", "''") + "'")
         scripts[name] = content
     return scripts
+
+
+def preparation_location(install_root=None, *, user_sid="", data_root=None, cache_root=None):
+    """Resolve one layout without registering, migrating or trusting caller text."""
+    from flower_control.install_location import discover_installation, prepare_location
+    current = discover_installation(user_sid or None)
+    selected = prepare_location(install_root, user_sid=user_sid) if install_root is not None else current
+    if not current.legacy and selected.program_root == current.program_root:
+        selected = current
+    if (current.program_root / "active.json").exists() and selected.program_root != current.program_root:
+        raise ValueError("existing_installation_root_changed")
+    if not selected.legacy:
+        if data_root is not None and Path(data_root).absolute() != selected.data_root:
+            raise ValueError("installation_data_root_changed")
+        if cache_root is not None and Path(cache_root).absolute() != selected.cache_root:
+            raise ValueError("installation_cache_root_changed")
+    elif cache_root is not None:
+        raise ValueError("legacy_cache_root_override_rejected")
+    return selected
 
 
 def save_source_snapshot(repository, package, sources):
@@ -447,7 +502,7 @@ def copy_uac_allowlist_fixture(built, evidence, source, version, target):
     return pairs
 
 
-def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_evidence, output=None, codex_roots=(), claude_images=(), antigravity_images=(), local_mcp_images=(), runtime_repository=None, data_root=None, freeze_runtime=False, media_encoder=None, wgc_bin=None, wgc_build_evidence=None, dsh_images=(), preserve_existing_native_host_pins=False):
+def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_evidence, output=None, codex_roots=(), claude_images=(), antigravity_images=(), local_mcp_images=(), runtime_repository=None, data_root=None, freeze_runtime=False, media_encoder=None, wgc_bin=None, wgc_build_evidence=None, dsh_images=(), preserve_existing_native_host_pins=False, install_root=None, cache_root=None):
     if preserve_existing_native_host_pins and any((claude_images, antigravity_images, local_mcp_images, dsh_images)):
         raise ValueError("preserved_native_hosts_conflict_with_new_images")
     sys.path.insert(0, str(repository))
@@ -457,8 +512,12 @@ def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_ev
     import win32api
     import win32con
     peer, _ = _process(win32api.GetCurrentProcessId())
-    preserved_hosts = (ExistingNativeHostPins(Path(os.environ.get("ProgramFiles", "C:/Program Files")) /
-        "FlowerControl/HighHelper", peer["User"]) if preserve_existing_native_host_pins else None)
+    location = preparation_location(install_root, user_sid=peer["User"], data_root=data_root, cache_root=cache_root)
+    production = location.program_root
+    if not location.legacy:
+        data_root = location.data_root
+    preserved_hosts = (ExistingNativeHostPins(production, peer["User"])
+                       if preserve_existing_native_host_pins else None)
     # A frozen package carries the recipient's complete runtime and therefore
     # needs a concrete local data root. An update must retain the existing
     # ledger/profile root; switching roots would split user permissions and
@@ -571,7 +630,8 @@ def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_ev
                for p in (repository / "flower_control").rglob("*.py") if "__pycache__" not in p.parts}
     sources.update({p.relative_to(repository).as_posix(): digest(p)
                     for p in (repository / "hooks").glob("*.py")})
-    sources["tools/open_flower_browser.py"] = digest(repository / "tools/open_flower_browser.py")
+    from flower_control.source_contract import tool_entry_sources
+    sources.update({name: digest(repository / name) for name in tool_entry_sources(repository)})
     sources["@bootstrap"] = digest(bootstrap)
     app_files = dict(current_app_binary)
     python_files = [runtime / f"python{sys.version_info.major}{sys.version_info.minor}.dll", runtime / "python3.dll"]
@@ -632,7 +692,6 @@ def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_ev
     version = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()[:32]
     source = package / "versions" / version
     source.mkdir(parents=True)
-    production = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "FlowerControl/HighHelper"
     target = production / "versions" / version
     actual_repository = target / "python-source" if freeze_runtime else runtime_repository
     runtime_hashes, runtime_manifest_hash = ({}, "")
@@ -757,10 +816,30 @@ def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_ev
                 "args": ["-B", str(actual_repository / "tools/open_flower_browser.py"),
                          "--kind", kind, "--window-mode", "visible", "--data-root", pinned_data_root],
                 "cwd": str(actual_repository)} for kind in ("ai", "luohua", "temporary")}})
-    for name, content in render_install_scripts(package, production, version, task_name).items():
+    if not location.legacy:
+        installed_location = production / "installation-location.json"
+        if location.installation_id:
+            # Root identity is stable across host enrollment and upgrades.
+            # discover_installation already verified this protected manifest.
+            shutil.copyfile(installed_location,package / "installation-location.request.json")
+        else:
+            write_json(package / "installation-location.request.json", dict(schema=1,
+                installation_id=uuid.uuid4().hex, user_sid=peer["User"],
+                **{key: str(getattr(location, key)) for key in
+                   ("root", "program_root", "data_root", "cache_root", "packages_root")}, host_bindings=[]))
+    install_scripts=render_install_scripts(package, production, version, task_name)
+    install_operation=re.search(r"(?m)^\$installOperation = '([a-f0-9]{32})'$",install_scripts['InstallCommon.ps1']).group(1)
+    install_plan_hash=re.search(r"(?m)^\$installPlanHash = '([a-f0-9]{64})'$",install_scripts['InstallCommon.ps1']).group(1)
+    for name, content in install_scripts.items():
         (package / name).write_text(content, encoding="utf-8-sig")
     write_json(package / "preparation.json", dict(schema=1, version=version, package=str(package), production_root=str(production),
         source_root=str(repository), source_files=len(sources)-1, task_name=task_name, system_changed=False,
+        install_operation_id=install_operation, install_plan_sha256=install_plan_hash,
+        install_stage_receipt=str(package/('install-stage-'+install_operation+'.json')),
+        installation_layout="legacy" if location.legacy else "root-v1",
+        installation_root=str(location.root) if not location.legacy else None,
+        data_root=pinned_data_root, cache_root=str(location.cache_root),
+        location_request_sha256=digest(package / "installation-location.request.json") if not location.legacy else "",
         installed=False, elevated=False, ui_access=False, codex_hard_sha_pinned=False, app_worker_files=len(app_files),
         existing_runtime=str(runtime), existing_site_packages=str(site), fresh_injection_verified=False,
         runtime_dependency_tree_fully_hash_pinned=freeze_runtime, native_hosts=native_hosts,
@@ -782,7 +861,7 @@ def prepare(native_bin, repository, app_bin, app_build_evidence, native_build_ev
 
 固定 Flower Python 是实际 CPython backend 改名副本，避开 venv redirector；实际客户端父进程是固定 launcher。{runtime_note} 无 PYTHONPATH、user site、sitecustomize 或自由 argv。没有下载／升级／联网安装依赖。可选固定 MP4 encoder：{bool(media_hash)}，只使用版本内已核 ffmpeg 字节与 LICENSE，不搜索 PATH，不处理远程媒体。
 
-根审查 active/broker/task/ApplyInstall.ps1、最终源 SHA 与 Program Files 父链无 reparse。ApplyInstall 默认仅首次安装，已有同名任务或版本拒绝；若 active 发布后注册任务失败，保留全部文件，-CompleteTaskRegistration 只在任务确实缺失、同版本字节与固定 ACL 全部匹配时续完注册；InteractiveToken/Highest，非 SYSTEM，无 UIAccess。注册后仍须根显式启动并验实际 token/session。非管理员当前用户不能获得 High，必须失败，不伪造 ready。
+审查 active/broker/task/ApplyInstall.ps1、最终源 SHA 与准确安装根父链无 reparse。ApplyInstall 默认仅首次安装；失败保留文件与准确 install-stage 回执，向导复用原计划和脚本加 -Resume 续完，不能另建升级计划。续完只补缺失文件，匹配已发布文件的摘要与 ACL，拒绝覆盖变化内容；同一准确任务已经注册时只核实完成，不重复注册。InteractiveToken/Highest，非 SYSTEM，无 UIAccess；注册后仍须显式启动并验实际角色/token/session。非管理员当前用户不能获得 High，必须失败，不伪造 ready。
 
 F5 的固定 --flower-probe flower-web|flower-app|flower-computer 走实际 Codex 来源及同一隔离 bootstrap；内置 Python audit 拒外联／子进程，允许 asyncio 回环。stderr 首条含 probe_guard_active:true、source_root/cwd/PID；stdout 为原 MCP。它不验证生产输入／浏览器／UIA，也不是全路径网络监测。
 
@@ -801,6 +880,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--native-bin", type=Path, default=Path(tempfile.gettempdir()) / "flower-high-global-core/bin")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--install-root", type=Path, help="Exact local installation root; Program/Data/Cache/Packages stay together. Never migrates an existing installation.")
+    parser.add_argument("--cache-root", type=Path, help="Validate the exact selected root's Cache binding; cannot redirect an existing installation.")
     parser.add_argument("--runtime-repository", type=Path,
                         help="Pin the existing install repository while building from an isolated candidate; does not copy source or install anything.")
     parser.add_argument("--data-root", type=Path,
@@ -834,7 +915,8 @@ def main():
                       args.native_build_evidence, args.output, args.codex_root, args.claude_image, args.antigravity_image, args.local_mcp_image,
                       runtime_repository=args.runtime_repository, data_root=args.data_root, freeze_runtime=args.freeze_runtime,
                       media_encoder=args.media_encoder, wgc_bin=args.wgc_bin, wgc_build_evidence=args.wgc_build_evidence,
-                      dsh_images=args.dsh_image, preserve_existing_native_host_pins=args.preserve_existing_native_host_pins)
+                      dsh_images=args.dsh_image, preserve_existing_native_host_pins=args.preserve_existing_native_host_pins,
+                      install_root=args.install_root, cache_root=args.cache_root)
     print(json.dumps({"package": str(package), "system_changed": False, "installed": False}, ensure_ascii=False))
 
 

@@ -38,7 +38,7 @@ Bind a target window for ordinary control; pointer and keyboard input stay scope
 
 Use ordinary windows and a public page first; administrator rules, work authorization, and optional decision providers are unnecessary.
 
-1. **You choose the tier:** find the flower icon under **^ Show hidden icons**, right-click → **Settings / 设置**, choose actual **02 Ordinary control** on the left, and wait for the saved tier to update. Tier changes are immediate; list drafts use Ctrl+S. A fresh policy defaults to 03; existing policies are retained.
+1. **You choose the tier:** find the flower icon under **^ Show hidden icons**, right-click → **Settings / 设置**, choose actual **02 Ordinary control** on the left, and wait for the saved tier to update. Tier changes are immediate; list drafts use Ctrl+S. A fresh candidate policy defaults to 02; existing policies are retained. The original preview.3 snapshot had a different default and an update does not change your tier.
 2. **You open a test document:** start Notepad and create a blank document, separate from important work.
 3. **In a new Codex chat, send:**
 
@@ -65,7 +65,7 @@ The request expresses ordinary temporary-browser task consent; it requires no Lu
 
 App and Computer each use `pause(mode='finish')`; Web finishes an explicit inventory of temporary sessions. These are separate boundaries. Finishing control does not save/close Notepad or exit the tray helper, which remains available for later tasks. Decide yourself whether to save or discard the test document. Closing a chat alone is not verified cleanup.
 
-Choose actual tier **01 Fully stopped** to block new dispatch while away, or use the tray pause to block only Computer. See [permissions](PERMISSIONS.md) for recovery and [profile revocation](BROWSER_PROFILES.md#revoke-personal-profile-access) for removing a personal grant.
+Use **Emergency stop all Flower / Ctrl+Alt+Shift+9**, or choose actual tier **01 Fully stopped**, to block new dispatch while away, or use the tray pause to block only Computer. See [permissions](PERMISSIONS.md) for recovery and [profile revocation](BROWSER_PROFILES.md#revoke-personal-profile-access) for removing a personal grant.
 
 ## First requests to try
 
@@ -94,6 +94,7 @@ Before a real action, Flower checks the current tier, target identity, deny list
 | Control | Effect |
 | --- | --- |
 | **01 fully stopped** | Web, App, and Computer stop dispatching. Tray and settings remain available. |
+| **Ctrl+Alt+Shift+9 / Emergency stop all Flower** | Applies all-channel Stop and blocks later writes. Check registration failures in diagnostics; resume requires an explicit local choice. |
 | **Ctrl+Alt+9** | Ends the current Computer input and releases held keys; it does not change the saved tier or create a global Stop. |
 | **HUD Stop** | Ends the current Computer cycle and releases held input. |
 | **Tray Stop Computer Use** | Ends the current Computer operation; App and Web do not inherit a new grant from that Stop. |

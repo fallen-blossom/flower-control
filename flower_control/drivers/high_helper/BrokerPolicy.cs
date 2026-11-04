@@ -58,10 +58,13 @@ internal sealed record BrokerPolicy
         if (!fixture)
         {
             var expected = Path.Combine(AppContext.BaseDirectory, "broker.json");
-            var production = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "versions");
+            var location = InstallationLocation.Discover(value.UserSid);
+            var production = Path.Combine(location.ProgramRoot, "versions", value.Version, "broker.json");
             if (!path.Equals(Path.GetFullPath(expected), StringComparison.OrdinalIgnoreCase)
-                || !path.StartsWith(production + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                || !path.Equals(production, StringComparison.OrdinalIgnoreCase)
+                || !location.Legacy && !Path.GetFullPath(value.DataRoot).Equals(location.DataRoot, StringComparison.OrdinalIgnoreCase))
                 throw new Boundary("production_path_rejected");
+            InstallationLocation.RequireProtectedPath(path);
             RejectLinks(path);
             if (!Path.IsPathFullyQualified(value.Python.Path) || !Regex.IsMatch(value.Python.Sha256, "^[a-f0-9]{64}$")
                 || !Path.GetDirectoryName(value.Python.Path)!.Equals(value.Directory, StringComparison.OrdinalIgnoreCase)
@@ -120,6 +123,7 @@ internal sealed record BrokerPolicy
             var bootstrap = Path.Combine(value.Directory, "flower_bootstrap.py");
             if (!value.SourceHashes.TryGetValue("@bootstrap", out var digest) || Native.Digest(bootstrap) != digest)
                 throw new Boundary("bootstrap_changed");
+            InstallationLocation.Bind(location, value.UserSid, value.Directory, value.Version);
         }
         return value;
     }

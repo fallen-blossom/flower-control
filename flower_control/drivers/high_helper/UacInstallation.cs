@@ -368,7 +368,7 @@ internal static class UacInstallation
                             {
                                 XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
                                 var action = XDocument.Parse((string)task.Xml).Descendants(ns + "Command").SingleOrDefault()?.Value;
-                                var versions = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "versions");
+                                var versions = Path.Combine(InstallationLocation.Current().ProgramRoot, "versions");
                                 var version = Path.GetFileName(Path.GetDirectoryName(action ?? ""));
                                 if (action is null || !System.Text.RegularExpressions.Regex.IsMatch(version ?? "", "\\A[a-f0-9]{16,64}\\z")
                                     || !action.Equals(Path.Combine(versions, version!, "Flower.HighHelper.exe"), StringComparison.OrdinalIgnoreCase))
@@ -421,7 +421,7 @@ internal static class UacInstallation
                         // A prior version's task may already have been replaced
                         // while its separate worker still exists. Inventory the
                         // protected installation rather than trusting task paths.
-                        var versions = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "versions");
+                        var versions = Path.Combine(InstallationLocation.Current().ProgramRoot, "versions");
                         if (!peer.Image.StartsWith(versions + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) continue;
                         BrokerPolicy.RejectLinks(peer.Image);
                         var oldDirectory = Path.GetDirectoryName(peer.Image)!;

@@ -194,7 +194,8 @@ class BrowserWindowPolicy:
         family = browser_family(image)
         browser_ai = direct_path(root / "profiles" / f"ai-{family}-v1").resolve() if family != "brave" else ai
         browser_private = direct_path(root / "profiles" / f"luohua-{family}-v1").resolve() if family != "brave" else private
-        temp_root = Path(tempfile.gettempdir()).resolve()
+        from flower_control.data_paths import runtime_temp_root
+        temp_root = runtime_temp_root().resolve()
         if family != "brave" and profile in {private, (root / "profiles" / "luohua-v1").resolve()}:
             raise ControlError("browser_profile_browser_mismatch")
         if profile in {private, (root / "profiles" / "luohua-v1").resolve(), browser_private}:

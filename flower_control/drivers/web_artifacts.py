@@ -41,7 +41,8 @@ def _check_no_reparse(path: Path) -> None:
 
 def artifact_path(output_path: str | None, *, suffix: str, suggested: str = "web", recording_budget=False) -> Path:
     if output_path is None:
-        root = Path(tempfile.gettempdir()) / "flower-web-artifacts"
+        from flower_control.data_paths import runtime_temp_root
+        root = runtime_temp_root() / "flower-web-artifacts"
         _check_no_reparse(root)
         if recording_budget:
             from .recording_storage import recording_write_errors

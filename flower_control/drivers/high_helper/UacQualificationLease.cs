@@ -40,7 +40,7 @@ internal sealed partial class UacQualificationLeaseStore
 
     internal static UacQualificationLeaseStore Open(BrokerPolicy policy, int session)
     {
-        var install = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper");
+        var install = InstallationLocation.Current().ProgramRoot;
         string directory = Path.Combine(install, "versions", policy.Version);
         if (policy.Fixture || policy.Schema != 1 || policy.Mode != "high" || session <= 0
             || !Sid(policy.UserSid) || !Hex(policy.Version, 16, 64)

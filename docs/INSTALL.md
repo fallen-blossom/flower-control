@@ -1,8 +1,12 @@
 # Install Flower Control on Windows
 
+> 0.1.0 release preparation: ordinary users follow [the offline installer guide](INSTALLER.md) without the compilers in this development tutorial. The matching 0.1.0 Release/binaries are not published yet; source, final artifacts and real acceptance stay separate.
+
 [简体中文](INSTALL.zh-CN.md)
 
-This page is the complete source-preview installation path for **Flower Control 0.1.0-preview.3**. A GitHub Release contains source and checksums, not a signed one-click installer.
+**Ordinary users should start with the [offline installer candidate guide](INSTALLER.md)** after receiving a real Setup.exe; compilers are unnecessary there. The candidate is unpublished, unsigned, and not clean-PC accepted. Published preview.3 still contains source and checksums.
+
+The revised **source development/local build route** below applies to a checkout containing these tools, not to installer recipients. Old tags retain their original snapshots. For an existing install, start at section 8 instead of overwriting it with first-install steps.
 
 The developer build and Codex plugin flow have been used on Windows. A clean Windows account, a second PC, and every third-party application are not implied to have been tested.
 
@@ -65,7 +69,7 @@ If a lock file fails verification, stop. Do not regenerate the lock file to make
 
 ```powershell
 dotnet restore .\flower_control\drivers\app_native\Flower.AppWorker.csproj --locked-mode --source https://api.nuget.org/v3/index.json
-dotnet restore .\flower_control\drivers\high_helper\Flower.HighHelper.csproj --locked-mode
+dotnet restore .\flower_control\drivers\high_helper\Flower.HighHelper.csproj --locked-mode --source https://api.nuget.org/v3/index.json
 ```
 
 Create a fresh output directory under the operating-system temp root and build there:
@@ -88,7 +92,8 @@ Create the `$flowerBuild` parent first; builders create the `native` and `app` c
 $flowerPackage = Join-Path $env:LOCALAPPDATA ('FlowerControl\source-install\' + [guid]::NewGuid().ToString('N'))
 if ($flowerPackage -match '[^\x00-\x7f]') { throw 'Choose an accessible stable ASCII package path before continuing.' }
 & $flowerPython -B -m tools.prepare_high_broker_install `
-  --data-root "$env:LOCALAPPDATA\FlowerControl" `
+  --install-root "D:\FlowerControl" `
+  --data-root "D:\FlowerControl\Data" `
   --native-bin "$flowerBuild\native" `
   --app-bin "$flowerBuild\app" `
   --native-build-evidence "$flowerBuild\native-evidence.json" `
@@ -96,22 +101,12 @@ if ($flowerPackage -match '[^\x00-\x7f]') { throw 'Choose an accessible stable A
   --output "$flowerPackage"
 ```
 
-Generate a recipient-local Codex marketplace. The output directory must be new:
-
 `--data-root` pins the user-data root, whose children include `state-v1`. Do not pass the `state-v1` child as the root. Ordinary roles 01/02 require this pinned root; an existing installation must retain its original root.
-
-```powershell
-& $flowerPython -B -m tools.configure_local_plugin --package "$flowerPackage" --output .flower-local
-$flowerPackage | Set-Content .\.flower-local\install-package-path.txt
-```
-
-This step only writes files. It does not install the helper, register a scheduled task, write Codex configuration, or grant Hook trust.
 
 Before continuing, inspect:
 
 ```powershell
 Get-ChildItem "$flowerPackage"
-Get-ChildItem .flower-local -Recurse
 Get-Content -Raw "$flowerPackage\preparation.json"
 ```
 
@@ -119,7 +114,7 @@ Keep the exact `$flowerPackage` path. It contains `ApplyInstall.ps1`, `Disable.p
 
 ## 5. Install the administrator helper
 
-The helper is installed under `%ProgramFiles%\FlowerControl\HighHelper` and registers an interactive task for the current Windows account. Codex itself does not need to run as administrator. The helper does not disable Defender, the firewall, or UAC.
+The candidate example above installs under `D:\FlowerControl\Program`, alongside Data/Cache/Packages. Without a selected new root, use protected registration or the legacy ProgramFiles fallback. Do not override ProgramFiles through an environment variable. The full parent chain/ACL must prevent replacement; the installer does not change volume-wide ACLs. The helper registers an interactive task for the current Windows account. Codex itself does not need to run as administrator. The helper does not disable Defender, the firewall, or UAC.
 
 Run the generated installer with one explicit UAC approval:
 
@@ -135,6 +130,18 @@ Approve the Windows prompt only if you started this command from the source dire
 
 ## 6. Add the plugin to Codex
 
+After successful file installation, generate the source-development plugin against the registered actual root. The frozen installer already supplies the complete plugin and Skill; it does not need this source branch.
+
+Generate a recipient-local Codex marketplace. The output directory must be new:
+
+```powershell
+& $flowerPython -B -m tools.configure_local_plugin --package "$flowerPackage" --output .flower-local
+$flowerPackage | Set-Content .\.flower-local\install-package-path.txt
+```
+
+This step only writes files. It does not install the helper, register a scheduled task, write Codex configuration, or grant Hook trust.
+
+
 ```powershell
 codex plugin marketplace add .\.flower-local
 codex plugin add flower-control@flower-control-local
@@ -148,7 +155,7 @@ Open Codex and review the Flower Hook definition before trusting it. In the Code
 
 After starting the scheduled task, find the flower icon in the notification area, possibly under **^ Show hidden icons**. Right-click → **Settings / 设置**, choose **02 Ordinary control / 普通控制** with the actual tier buttons on the left, and wait for the saved tier to read 02. Tier changes apply immediately; list drafts use Ctrl+S. Moving from an ordinary role to 03/04 may request Windows UAC. Permission-page list-layer tabs only change the view.
 
-A fresh policy defaults to **03**, while existing installations retain their policy. Explicitly choose 02 for the first ordinary trial. No administrator launch rules, work authorization, or optional decision provider are needed. See [first use](USAGE.md#first-use-after-installation) for a complete trial and [tray troubleshooting](TROUBLESHOOTING.md#missing-tray-or-recovery) if the icon is absent.
+A fresh candidate policy defaults to **02 Ordinary control**; existing installations retain their policy. The original preview.3 default of 03 is historical. Check the actual saved tier before the first task. No administrator launch rules, work authorization, or optional decision provider are needed. See [first use](USAGE.md#first-use-after-installation) for a complete trial and [tray troubleshooting](TROUBLESHOOTING.md#missing-tray-or-recovery) if the icon is absent.
 
 Open a new Codex chat. Ask for a read-only status check first:
 
@@ -170,13 +177,13 @@ A successful status probe does not prove every target or action. Test one tempor
 
 ## 8. Update an existing installation
 
-Stop the first-install route if Flower is already installed. This public snapshot lacks a complete live-update procedure: the retained-High-client path imports `tools.prepare_stopped_host_update`, absent from the archive, and the generated plugin's version-specific MCP paths also need regeneration and refresh after updating.
+The complete candidate Setup detects and retains the real root, backs up ordinary settings, and preserves failure-recovery material; see [update/recovery](INSTALLER.md#update-and-recover-a-failure). The source export now includes `prepare_work_authority_update`, `prepare_stopped_host_update`, `prepare_offline_continuation`, and matching templates rather than referencing an updater absent from the archive.
 
-Keep the old package, data root, and state. Report the old version and error in [Issues](https://github.com/fallen-blossom/flower-control/issues) for matching update steps. A normal idle helper should be drained by the updater; busy requests, identity changes, or Stop conflicts require resolution first. Do not overwrite an existing installation with `ApplyInstall.ps1`, delete state, or uninstall merely to bypass checks.
+For source development, first have Codex inspect this checkout's `--help`, installed version/actual root/pause/unfinished state, then prepare the exact package and update plan for your final UAC review. An old incompatible protocol needs matched migration instructions. Do not use first-install ApplyInstall as an updater, replay a consumed operation, clear state, or uninstall merely to bypass checks. Source, installed files, host loading, and real actions are separate checks.
 
 ## 9. Disable or remove
 
-**This preview provides a disable script and a plugin-removal command, not a complete one-click uninstaller.** Tier 01 temporarily blocks dispatch; Disable disables the scheduled task and attempts a normal helper shutdown. It retains installed files, profiles, and action data. Removing the plugin does not replace disabling the helper.
+**The complete candidate supports Windows Apps or the Packages maintenance uninstaller**, retaining Data/Cache/recovery by default; see [uninstall](INSTALLER.md#uninstall). The source-development disable route follows. Tier 01 temporarily blocks dispatch; Disable disables the scheduled task and attempts a normal helper shutdown. It retains installed files, profiles, and action data. Removing the plugin does not replace disabling the helper.
 
 The generated `Disable.ps1` is in the stable `$flowerPackage` directory recorded by `.flower-local\install-package-path.txt`, not `%ProgramFiles%`. Using your normal Windows account, open a visible PowerShell with **Run as administrator**, change to the source root, and run this block. It displays the receipt and saves a new log:
 
@@ -190,7 +197,7 @@ $flowerDisableLog = Join-Path $flowerPackage ('disable-result-' + [guid]::NewGui
 
 Require `task_state` to be `disabled` or `absent`. `instance_stopped: true` confirms only that instance's exit; exit code alone does not prove it stopped.
 
-**In ordinary roles 01/02, the current Disable script disables autostart but cannot stop the ordinary instance through the High management interface.** It can return `instance_stopped: false`. Use **Exit / 退出** in the tray, then ask Codex to verify the original helper's exact process identity has exited. Preserve unknown results as unknown. Exiting retains your applications and results. If another role also remains unconfirmed, use tray Exit and verify rather than force-killing or deleting state.
+The revised disable path handles ordinary and High roles separately with bounded graceful exit. Read the exact receipt: `instance_stopped: false` or unknown remains unresolved. Use tray Exit and read-only verification of the original identity; do not force-kill or erase ledgers.
 
 After checking the disable result, return to **ordinary PowerShell** to remove the plugin:
 
@@ -198,9 +205,9 @@ After checking the disable result, return to **ordinary PowerShell** to remove t
 codex plugin remove flower-control@flower-control-local
 ```
 
-This command removes only the Codex plugin. It does **not** disable the scheduled task, stop the administrator helper, remove files under `%ProgramFiles%\FlowerControl`, or delete browser and action data. Run `Disable.ps1` too when you intend to stop Flower. Delete retained data only after identifying the exact local paths and keeping anything you still need.
+This command removes only the Codex plugin. It does **not** disable the scheduled task, stop the administrator helper, remove files under the actual registered Flower root, or delete browser and action data. Run `Disable.ps1` too when you intend to stop Flower. Delete retained data only after identifying the exact local paths and keeping anything you still need.
 
-For complete removal, finish these steps and keep their output, then have Codex inventory the exact installed version, task name, package path, and data directories. Decide which data to retain before removal. This guide supplies no recursive whole-root deletion command.
+A source-development installation can use `tools.prepare_uninstall --output <new-local-plan.json>` to inventory and generate the matching `.ApplyUninstall.ps1`. Review counts/bytes, host entries, retained paths, and blockers. Execute only the exact generated script after confirming that plan. Do not bypass blockers, replay unknown results, or recursively remove the entire root. Retained personal-data deletion needs a separate explicit decision.
 
 ## What this preview does not claim
 

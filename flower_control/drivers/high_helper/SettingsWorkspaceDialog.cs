@@ -68,7 +68,8 @@ internal static partial class SettingsWorkspace
             dialog.Body = CreateWindowExW(0, "EDIT", text, 0x50010000 | 0x200000 | 4 | 0x40 | 0x800,
                 D(28), D(76), client.Right - D(56), fields is null ? client.Bottom - D(164) : D(65), dialog.Window, new IntPtr(1001), instance, IntPtr.Zero);
             if (dialog.Body == IntPtr.Zero) throw new Boundary("settings_dialog_unavailable");
-            SetWindowTheme(dialog.Body, "DarkMode_CFD", "");
+            SendMessageW(dialog.Body, 0xC5, new IntPtr(1000000), IntPtr.Zero);
+            SetWindowTheme(dialog.Body, HighContrast() ? "" : "DarkMode_CFD", "");
             SetWindowSubclass(dialog.Body, ScrollThemeProcedure, new UIntPtr(2), UIntPtr.Zero);
             SendMessageW(dialog.Body, 0x30, dialog.Font, new IntPtr(1));
             if (fields is not null)

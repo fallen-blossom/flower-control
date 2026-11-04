@@ -1,3 +1,4 @@
+param([string]$ResultPath = '')
 . (Join-Path $PSScriptRoot 'InstallCommon.ps1')
 $task = Get-FlowerTask
 $taskState = 'absent'
@@ -8,18 +9,27 @@ if ($task) {
     $taskState = 'disabled'
 }
 # Startup disable succeeds independently of pipe/instance state.
-$result = [ordered]@{ task_name = $taskName; task_state = $taskState; broker_state = 'unknown'; instance_stopped = $false }
+$result = [ordered]@{ schema=1; operation='disable'; utc=[DateTime]::UtcNow.ToString('o');
+    program_root=$brokerRoot; task_name = $taskName; task_state = $taskState; broker_state = 'unknown'; instance_stopped = $false }
 try {
+    $result['bound_exit_writer']=Initialize-FlowerExitWriter ([Guid]::NewGuid().ToString('N'))
     $reply = Invoke-FlowerAdmin 'status'
-    if ($reply.Phase -ne 'status' -or $reply.Status.pid -le 0 -or $reply.Status.created -le 0 -or !$reply.Status.high_verified) { throw 'broker_status_unconfirmed' }
+    $ordinary = $reply.Status.PSObject.Properties.Name -contains 'ordinary_verified' -and $reply.Status.ordinary_verified -eq $true
+    if ($reply.Phase -ne 'status' -or $reply.Status.pid -le 0 -or $reply.Status.created -le 0 -or
+        ($ordinary -and ($reply.Status.high_verified -or $reply.Status.broker_role -cne 'ordinary' -or $reply.Status.maintenance_protocol -ne 2)) -or
+        (!$ordinary -and !$reply.Status.high_verified)) { throw 'broker_status_unconfirmed' }
     $instancePid = [int]$reply.Status.pid
     $instanceCreated = [long]$reply.Status.created
     $result['instance_pid'] = $instancePid
     $result['instance_created'] = $instanceCreated
-    $paused = Invoke-FlowerAdmin 'pause'
-    if ($paused.Phase -ne 'control' -or $paused.Command -ne 'pause' -or
+    $result['broker_role'] = if ($ordinary) { 'ordinary' } else { 'high' }
+    $paused = $reply
+    if (!$reply.Status.paused) {
+        $paused = Invoke-FlowerAdmin 'pause' $reply.Status
+    }
+    if ((!$reply.Status.paused -and ($paused.Phase -ne 'control' -or $paused.Command -ne 'pause')) -or
         $paused.Status.pid -ne $instancePid -or $paused.Status.created -ne $instanceCreated) { throw 'broker_pause_unconfirmed' }
-    $shutdown = Invoke-FlowerAdmin 'shutdown'
+    $shutdown = Invoke-FlowerAdmin 'shutdown' $paused.Status
     if ($shutdown.Phase -ne 'control' -or $shutdown.Command -ne 'shutdown' -or
         $shutdown.Status.pid -ne $instancePid -or $shutdown.Status.created -ne $instanceCreated) { throw 'broker_shutdown_unconfirmed' }
     $result['broker_state'] = 'shutdown_pending'
@@ -39,6 +49,17 @@ try {
     } while ($deadline.ElapsedMilliseconds -lt 8000)
 } catch {
     $result['instance_error'] = $_.Exception.Message
+} finally {
+    try{Close-FlowerExitWriter}catch{$result['exit_writer_close_error']=$_.Exception.Message}
 }
 # No deletion, Stop-Process, task removal or global policy change.
-$result | ConvertTo-Json -Compress
+if (!$ResultPath) { $ResultPath = Join-Path $packageRoot ('disable-result-' + [DateTime]::UtcNow.Ticks + '.json') }
+try {
+    $ResultPath = [IO.Path]::GetFullPath($ResultPath)
+    Assert-FlowerNoLinks $ResultPath -Shallow
+    if (Test-Path -LiteralPath $ResultPath) { throw 'disable_result_path_exists' }
+    $result['result_path'] = $ResultPath
+    $json = $result | ConvertTo-Json -Depth 8 -Compress
+    [IO.File]::WriteAllText($ResultPath,$json,[Text.UTF8Encoding]::new($false))
+} catch { $result['result_write_error'] = $_.Exception.Message }
+$result | ConvertTo-Json -Depth 8 -Compress

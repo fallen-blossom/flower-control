@@ -241,7 +241,7 @@
         "licenses/third-party/pywin32/win32comext/mapi/MAPIStubLibrary-License.txt",
         "licenses/third-party/pywin32/win32comext/mapi/NOTICE.md"
       ],
-      "component_license_note": "BSD-style Win32/COM bindings; separate PSF, MIT, Scintilla and LGPL-2.1 adodbapi notices. Flower has no adodbapi or Pythonwin import.",
+      "component_license_note": "BSD-style Win32/COM and Pythonwin; separate Scintilla, IDLE, MAPI and LGPL-2.1 adodbapi notices. Flower capture imports Pythonwin's win32ui. The source ZIP carries notices, not the installed wheel runtime; the full-site offline runtime includes the wheel components and unmodified adodbapi Python source/license although Flower does not call adodbapi. Flower MIT does not replace component licenses or restrict their modification/rebuild/redistribution rights.",
       "upstream_metadata_license": "PSF"
     },
     {

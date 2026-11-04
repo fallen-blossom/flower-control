@@ -73,7 +73,7 @@ internal static partial class UserPermissions
     // No environment override and no named-pipe/MCP write operation.
     internal static string? FixturePath { get; set; }
     private static string ProtectedPath(string sid) => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper",
+        InstallationLocation.Current(sid).ProgramRoot,
         "permissions", sid + ".json");
     internal static string FilePath => FixturePath ?? ProtectedPath(WindowsIdentity.GetCurrent().User!.Value);
     private static string UacPath(string path) => Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + ".uac.json");
@@ -251,6 +251,11 @@ internal static partial class UserPermissions
                             && !System.Text.RegularExpressions.Regex.IsMatch(stored.CommonRevision, "\\A[a-f0-9]{64}\\z"))
                         throw new Boundary("user_policy_invalid");
                     var merged = value with { UserSid = stored.UserSid, UacMode = stored.UacMode == "full" ? "off" : stored.UacMode,
+                        // Existing old sidecars may bind CommonRevision=absent
+                        // and omit a tier. Preserve their historical admin-on
+                        // baseline only for that exact validated identity.
+                        AdminWindows = common is null && stored.UserSid == sid && stored.CommonRevision == "absent"
+                            && stored.AuthorityTier is null ? true : value.AdminWindows,
                         UacAllowlist = stored.UacAllowlist, AdminLaunchEnabled = stored.AdminLaunchEnabled,
                         AdminLaunchAllowlist = root.TryGetProperty("AdminLaunchAllowlist", out var launchRows)
                             && launchRows.ValueKind == JsonValueKind.Null ? throw new Boundary("user_policy_invalid") : stored.AdminLaunchAllowlist ?? [],
@@ -321,7 +326,8 @@ internal static partial class UserPermissions
             or ArgumentException or InvalidOperationException or System.Security.SecurityException)
         { throw new Boundary("user_policy_unavailable"); }
     }
-    private static UserPermissionSettings Defaults(string sid) => new() { Revision = "absent", UserSid = sid };
+    private static UserPermissionSettings Defaults(string sid) => new() {
+        Revision = "absent", UserSid = sid, AuthorityTier = 0, AdminWindows = false, AdminLaunchEnabled = false };
     internal static UserPermissionSettings Decode(JsonDocument document)
     {
         static void Keys(JsonElement element, string[] required, params string[] optional)

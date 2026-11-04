@@ -18,8 +18,8 @@ chats relying on different private window permissions.
 Never set flower_origin. The local adapter supplies it after independently
 verifying the actual Antigravity process through the administrator helper.
 Observe the target, use the current revision, dispatch once, and check the new
-state. Query action_id before replaying an unknown action. Ctrl+Alt+9 stops writes
-across hosts. Stop, pause, input release and optional Jev keep their existing
+state. Query action_id before replaying an unknown action. Ctrl+Alt+9 stops Computer input;
+the current candidate's Ctrl+Alt+Shift+9 is the separate all-channel Stop. Check hotkey registration status in diagnostics. Stop, pause, input release and optional Jev keep their existing
 behavior; mechanical steps do not require an extra model review each time.
 
 No Flower telemetry or cloud bridge is added. Results still enter the configured

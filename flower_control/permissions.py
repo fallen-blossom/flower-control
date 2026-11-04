@@ -44,10 +44,9 @@ def user_sid():
         token.Close()
 
 
-@lru_cache(maxsize=1)
 def production_path():
-    return Path(shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAM_FILES, None, 0)) / \
-        "FlowerControl" / "HighHelper" / "permissions" / (user_sid() + ".json")
+    from flower_control.install_location import discover_installation
+    return discover_installation(user_sid()).program_root / "permissions" / (user_sid() + ".json")
 
 
 def uac_policy_path(path):
@@ -307,8 +306,9 @@ def uac_allowlisted(value, actual):
 
 
 def default_policy(sid):
-    # Preserve the existing administrator capability. New UAC capability stays off.
-    return dict(Schema=2, Revision="absent", UserSid=sid, AdminWindows=True,
+    # Only absence gets the new ordinary default. Existing records keep their
+    # saved fields/legacy derivation; reading does not rewrite those records.
+    return dict(Schema=2, Revision="absent", UserSid=sid, AdminWindows=False, AuthorityTier=0,
                 AdminScope="all", UacMode="off", UacAllowlist=[], AdminLaunchEnabled=False, AdminLaunchAllowlist=[],
                 UacCancellationScope="task", JevEnabled=True,
                 DeniedApplications=[], AllowedAdminApplications=[], Masks=[],
@@ -437,6 +437,12 @@ class PolicyReader:
                     elif uac["CommonRevision"] != common_revision:
                         uac_error = "uac_policy_common_changed"
                     else:
+                        # Old protected sidecars could validly bind an absent
+                        # common file, whose historical default was admin-on.
+                        # Retain that existing implicit tier only after exact
+                        # SID/revision validation; an explicit tier/off wins.
+                        if physical is None and normalized["AuthorityTier"] is None:
+                            value = dict(value, AdminWindows=True)
                         value = dict(value, UacMode=normalized["UacMode"], UacAllowlist=normalized["UacAllowlist"],
                                      AdminLaunchEnabled=normalized["AdminLaunchEnabled"],
                                      AdminLaunchAllowlist=normalized["AdminLaunchAllowlist"],

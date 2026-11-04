@@ -238,7 +238,7 @@ internal static class OrdinaryMaintenance
         return Protocol.Decode<OrdinaryMaintenanceCompleted>(document);
     }
 
-    internal static int Client(BrokerPolicy policy, OrdinaryMaintenanceCommand command)
+    internal static int Client(BrokerPolicy policy, OrdinaryMaintenanceCommand command, string? maintenanceOperation = null)
     {
         command.RequireValid();
         var own = Native.Process(Environment.ProcessId).Identity;
@@ -246,7 +246,11 @@ internal static class OrdinaryMaintenance
         NativeRoleIdentity.Require(own, policy, 12288);
         // Keep the original Codex/native-host ancestry admission. This is not
         // the UI writer's exceptional, nonce-bound flower-local-ui channel.
-        if (!ClientAdmission.Verify(own.Pid, policy).Admin) throw new Boundary("maintenance_local_high_required");
+        if (maintenanceOperation is not null) {
+            var writer=BoundMaintenanceWriter.Verify(own.Pid, maintenanceOperation, policy, own);
+            BoundMaintenanceWriter.RequireCommandForPurpose(writer.Evidence.Source == "bound-maintenance-exit-writer" ? "exit" : null,command.Command);
+        }
+        else if (!ClientAdmission.Verify(own.Pid, policy).Admin) throw new Boundary("maintenance_local_high_required");
         command.Expected.RequirePolicy(UserPermissions.Read());
         if (BrokerPipe.Present(BrokerPipe.Name(own))) throw new Boundary("executor_role_ambiguous");
         using var pipe = new NamedPipeClientStream(".", BrokerPipe.OrdinaryName(own), PipeDirection.InOut,
@@ -259,7 +263,7 @@ internal static class OrdinaryMaintenance
         if (server.User != own.User || server.Session != own.Session || server.ImageDigest != own.ImageDigest)
             throw new Boundary("server_identity_mismatch");
         command.Expected.RequireProcess(server, policy);
-        Protocol.Write(pipe, new { Phase = "hello", Parent = own, Channel = "flower-admin" });
+        Protocol.Write(pipe, new { Phase = "hello", Parent = own, Channel = "flower-admin", MaintenanceOperation = maintenanceOperation });
         using var hello = Protocol.Read(pipe, 3000);
         AdminHandshake.RequireHello(hello);
         if (hello!.RootElement.GetProperty("Version").GetString() != policy.Version
@@ -269,6 +273,7 @@ internal static class OrdinaryMaintenance
         bool attemptedResume = false;
         try
         {
+            if (maintenanceOperation is not null) BoundMaintenanceWriter.Verify(own.Pid, maintenanceOperation, policy, own);
             Protocol.Write(pipe, command);
             if (command.Command == "resume")
             {
@@ -285,6 +290,7 @@ internal static class OrdinaryMaintenance
                 RequireAuthority(command.Expected.Stop, ReadAuthority(own));
                 // Set this before the first write: even an exception during
                 // write/readback can leave running authority on disk.
+                if (maintenanceOperation is not null) BoundMaintenanceWriter.Verify(own.Pid, maintenanceOperation, policy, own);
                 attemptedResume = true;
                 ProtectedStop.Set(own.User, own.Session, false, command.Expected.Stop.Protected.Epoch);
                 OrdinaryStopJournal.Acknowledge(own, command.Expected.Stop.Ordinary);
@@ -321,13 +327,14 @@ internal static class OrdinaryMaintenance
         }
     }
 
-    internal static void RequireCaller(NamedPipeServerStream pipe, BrokerPolicy policy, Peer own)
+    internal static void RequireCaller(NamedPipeServerStream pipe, BrokerPolicy policy, Peer own, string? maintenanceOperation = null)
     {
         if (policy.Fixture || own.Integrity != 8192) throw new Boundary("maintenance_role_rejected");
         NativeRoleIdentity.Require(own, policy, 8192);
         if (!Native.GetNamedPipeClientProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out uint pid))
             throw new Boundary("client_identity_unavailable");
-        var admission = ClientAdmission.Verify((int)pid, policy);
+        var admission = maintenanceOperation is null ? ClientAdmission.Verify((int)pid, policy)
+            : BoundMaintenanceWriter.Verify((int)pid, maintenanceOperation, policy, own);
         if (!admission.Admin || admission.Peer.Integrity != 12288 || admission.Peer.User != own.User
             || admission.Peer.Session != own.Session) throw new Boundary("maintenance_local_high_required");
         NativeRoleIdentity.Require(admission.Peer, policy, 12288);
@@ -339,10 +346,10 @@ internal sealed partial class BrokerState
     // Resume writes its own final response under the maintenance/shared locks.
     // The outer handler must not write a second response for that command.
     internal object MaintainOrdinary(string command, OrdinaryMaintenanceBinding expected, BrokerPolicy policy, Peer own,
-        NamedPipeServerStream pipe)
+        NamedPipeServerStream pipe, string? maintenanceOperation = null)
     {
         expected.RequireValid(command); expected.RequireProcess(own, policy);
-        OrdinaryMaintenance.RequireCaller(pipe, policy, own);
+        OrdinaryMaintenance.RequireCaller(pipe, policy, own, maintenanceOperation);
         if (!OrdinaryResident) throw new Boundary("maintenance_role_rejected");
         bool changed = false, failureLatched = false, shutdownPrepared = false;
         void CloseAfterFailure()
@@ -378,6 +385,7 @@ internal sealed partial class BrokerState
                     RequireUnchanged();
                     expected.RequirePolicy(UserPermissions.Read());
                     expected.RequireSnapshot(JsonSerializer.SerializeToElement(Snapshot(policy, own)));
+                    if (maintenanceOperation is not null) OrdinaryMaintenance.RequireCaller(pipe, policy, own, maintenanceOperation);
                     if (command == "shutdown")
                     {
                         BeginMaintenanceShutdown();
@@ -407,7 +415,7 @@ internal sealed partial class BrokerState
                         Protocol.Write(pipe, new OrdinaryMaintenanceReady("maintenance_ordinary_ready", nonce, expected));
                         using var completed = Protocol.Read(pipe, 15000, Shutdown.Token);
                         if (completed is null) throw new Boundary("maintenance_resume_unconfirmed");
-                        OrdinaryMaintenance.RequireCaller(pipe, policy, own);
+                        OrdinaryMaintenance.RequireCaller(pipe, policy, own, maintenanceOperation);
                         var value = OrdinaryMaintenance.DecodeCompleted(completed);
                         OrdinaryMaintenance.RequireCompleted(value, nonce, expected);
                         RequireUnchanged();

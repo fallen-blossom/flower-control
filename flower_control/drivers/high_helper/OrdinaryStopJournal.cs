@@ -32,7 +32,7 @@ internal static class OrdinaryStopJournal
         internal long Checked, CachedCount = -1, CachedAcknowledged, AckReadAt;
     }
     private static readonly ConcurrentDictionary<string, Lazy<Reader>> readers = new(StringComparer.OrdinalIgnoreCase);
-    private static string DirectoryPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "recovery", "ordinary-stop");
+    private static string DirectoryPath => Path.Combine(InstallationLocation.Current().ProgramRoot, "recovery", "ordinary-stop");
     private static string FilePath(string sid, int session, bool computer)
     {
         if (session <= 0 || new SecurityIdentifier(sid).Value != sid || !sid.StartsWith("S-1-5-21-")) throw new Boundary("ordinary_stop_context_rejected");
@@ -63,9 +63,9 @@ internal static class OrdinaryStopJournal
             Check(path, own.User); _ = Read(own.User, own.Session, computer);
         }
     }
-    private static void Check(string path, string sid)
+    private static void Check(string path, string sid, string? retainedDirectory = null)
     {
-        UacClaimJournal.CheckParent(DirectoryPath, true); BrokerPolicy.RejectLinks(path);
+        UacClaimJournal.CheckParent(retainedDirectory ?? DirectoryPath, true); BrokerPolicy.RejectLinks(path);
         var descriptor = new FileInfo(path).GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access);
         var raw = new RawSecurityDescriptor(descriptor.GetSecurityDescriptorBinaryForm(), 0);
         if (raw.Owner?.Value is not ("S-1-5-18" or "S-1-5-32-544") || raw.DiscretionaryAcl is null
@@ -86,6 +86,15 @@ internal static class OrdinaryStopJournal
         var bytes = new byte[labels[0].BinaryLength]; labels[0].GetBinaryForm(bytes, 0);
         if (bytes.Length < 20 || BitConverter.ToInt32(bytes, 4) != 1 || new SecurityIdentifier(bytes, 8).Value != "S-1-16-8192")
             throw new Boundary("ordinary_stop_label_rejected");
+    }
+    internal static void ValidateRetained(string path,string sid)
+    {
+        if(!System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(path),
+            "\\A"+System.Text.RegularExpressions.Regex.Escape(sid)+"\\.[1-9][0-9]*\\.(?:computer|global)\\.bin\\z"))
+            throw new Boundary("ordinary_stop_context_rejected");
+        Check(path,sid,Path.GetDirectoryName(path)!);
+        using var file=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite);
+        _=ReadValidatedTail(file,0);
     }
     internal static long ReadValidatedTail(FileStream file, long validated)
     {

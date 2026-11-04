@@ -91,15 +91,25 @@ internal static partial class BrowserProfileOpen
         var policy = BrokerPolicy.Load(Path.Combine(AppContext.BaseDirectory, "broker.json"), false);
         if (policy.RuntimeInventorySha256 == "" || policy.DataRoot == "")
             throw new Boundary("browser_profile_bundle_unavailable");
+        List<string> args = ["--kind", kind, "--window-mode", "visible", "--data-root", policy.DataRoot];
+        if (browser is not null) { args.Add(kind == "display-preferences" ? "--language" : "--browser"); args.Add(browser); }
+        if (revision is not null) { args.Add("--expected-revision"); args.Add(revision); }
+        return StartFixedPython(policy, "tools/open_flower_browser.py", kind, args);
+    }
+
+    // Only fixed, hash-pinned internal tools call this helper. It is not a
+    // command/script surface and does not inherit the settings window's High.
+    private static Pending StartFixedPython(BrokerPolicy policy, string relative, string kind, List<string> arguments)
+    {
+        if (relative is not ("tools/open_flower_browser.py" or "tools/settings_portability.py" or "tools/storage_maintenance.py"))
+            throw new Boundary("maintenance_tool_rejected");
         policy.VerifySource("flower-web");
-        string script = Path.Combine(policy.Repository, "tools", "open_flower_browser.py");
+        string script = Path.Combine(policy.Repository, relative.Replace('/', Path.DirectorySeparatorChar));
         BrokerPolicy.RejectLinks(script); BrokerPolicy.RejectLinks(policy.Python.Path);
-        // Protected bundle files cannot be changed by the ordinary child. Keep
-        // the exact entry objects pinned through creation and token verification.
         using var scriptPin = new FileStream(script, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var pythonPin = new FileStream(policy.Python.Path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (!policy.SourceHashes.TryGetValue("tools/open_flower_browser.py", out var expected)
-            || Native.Digest(script) != expected) throw new Boundary("browser_profile_bundle_unavailable");
+        if (!policy.SourceHashes.TryGetValue(relative, out var expected) || Native.Digest(script) != expected)
+            throw new Boundary("maintenance_tool_unavailable");
         var own = Native.Process(Environment.ProcessId, false).Identity;
         IntPtr shellWindow = GetShellWindow();
         if (shellWindow == IntPtr.Zero || Native.GetWindowThreadProcessId(shellWindow, out var shellPid) == 0)
@@ -116,12 +126,14 @@ internal static partial class BrowserProfileOpen
         BrokerPolicy.RejectLinks(Path.GetTempPath());
         Directory.CreateDirectory(directory); BrokerPolicy.RejectLinks(directory);
         string receipt = Path.Combine(directory, "result.json");
-        List<string> argv = [policy.Python.Path, "-I", "-B", script, "--kind", kind, "--window-mode", "visible",
-            "--data-root", policy.DataRoot, "--request-id", id, "--result-path", receipt];
-        if (browser is not null) { argv.Add(kind == "display-preferences" ? "--language" : "--browser"); argv.Add(browser); }
-        if (revision is not null) { argv.Add("--expected-revision"); argv.Add(revision); }
+        List<string> argv = [policy.Python.Path, "-I", "-B", script];
+        argv.AddRange(arguments);
+        argv.AddRange(["--request-id", id, "--result-path", receipt]);
         var environment = AdminProgramLaunch.OrdinaryEnvironment(Environment.GetEnvironmentVariables()
             .Cast<System.Collections.DictionaryEntry>().Select(pair => new KeyValuePair<string, string>((string)pair.Key, (string)pair.Value!)));
+        // Legacy package file views may have a different physical DataRoot.
+        // This value comes from the protected policy, overriding parent env.
+        environment["FLOWER_DATA_ROOT"] = policy.DataRoot;
         var block = string.Join('\0', environment.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
             .Select(pair => pair.Key + "=" + pair.Value)) + "\0\0";
         IntPtr env = Marshal.StringToHGlobalUni(block), size = IntPtr.Zero, attributes = IntPtr.Zero, parentValue = IntPtr.Zero;

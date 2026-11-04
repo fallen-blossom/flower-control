@@ -59,7 +59,7 @@ internal sealed class ExecutionAudit
 
     internal static ExecutionAudit Open(BrokerPolicy policy, Peer own, bool create = true)
     {
-        var install = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper");
+        var install = InstallationLocation.Current().ProgramRoot;
         if (policy.Fixture || policy.Mode != "high" || own.Integrity != 12288 || own.User != policy.UserSid
             || own.Session <= 0 || Native.UiAccess(own.Pid)
             || !Path.GetFullPath(policy.Directory).TrimEnd('\\').Equals(Path.Combine(install, "versions", policy.Version), StringComparison.OrdinalIgnoreCase)

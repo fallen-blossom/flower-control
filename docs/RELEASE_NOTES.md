@@ -1,41 +1,25 @@
-# Flower Control 0.1.0-preview.3
+# Flower Control 0.1.0
 
 [简体中文](RELEASE_NOTES.zh-CN.md)
 
-**Windows 11 x64 source preview. Not a signed one-click installer.**
+**Release preparation; Setup and its assets are not published yet.** Start with [installation](INSTALLER.md), then [first use](USAGE.md#first-use-after-installation).
 
-This release makes the B46-r6 source line available as a complete public repository and source archive. It includes the local Codex plugin generator, administrator-helper build/install tools, three MCP channels, documentation, tests, licenses, and a per-file source manifest.
+## Changes in this version
 
-## Highlights
+- A complete offline Setup with Python and .NET runtime dependencies. A new installation uses one selected Program/Data/Cache/Packages root; existing installations retain their registered location and data.
+- Local status/settings access, read-only integrity checks, redacted diagnostic export, ordinary-preference backup/draft import and storage review.
+- Tier 02 for a new policy; existing tiers and Stop are preserved. Separate all-channel emergency Stop (**Ctrl+Alt+Shift+9**) and Computer-only Stop (**Ctrl+Alt+9**).
+- Maintenance keeps the original plan and receipt for interrupted work. Uninstall reviews the exact scope and retains personal data and protected recovery state by default; Data/Cache recycling requires separate confirmation.
+- A fixed minimal FFmpeg recording encoder, with matching FFmpeg/x264/zlib source archives, build recipes and original notices. It retains the local PNG/concat/pad/H.264/MP4 path and disables network protocols.
 
-- **Four selectable permission tiers:** 01 fully stopped, 02 ordinary control, 03 administrator windows, 04 administrator execution.
-- **A clear 03/04 boundary:** 03 can operate an already-open elevated window; 04 can additionally start an exact program through local policy. UAC secure desktop automation and the legacy system-takeover path are frozen.
-- **Three channels:** Web for managed Chromium-family pages, App for Windows accessibility controls, Computer for selected-window capture and input.
-- **Local settings:** deny lists, administrator-window rules, administrator launch records, privacy masks, Stop, and Computer pause.
-- **Recovery-safe input:** Ctrl+Alt+9, HUD Stop, tray Stop, re-observation before resume, and no automatic replay of uncertain input.
-- **Rewritten documentation:** separate installation, permission, usage, troubleshooting, and browser-profile guides in English and Simplified Chinese.
+Web, App and Computer remain the three task channels. Codex is the main entry; additional host adapters keep their own documented scope. Optional external decision services require local enablement. Flower adds no telemetry or automatic updates.
 
-## Install from source
+## Verification and distribution
 
-Start with [installation](INSTALL.md), then [permissions](PERMISSIONS.md) and [usage](USAGE.md).
+Source/isolated checks, Windows version-resource checks and short synthetic-frame encoder tests have passed. Final matching 0.1.0 installation, real High control, host trust/loading, update recovery and uninstall remain unverified. See [validation](VALIDATION.md) for the scope; no clean-PC or overall success-rate claim is made.
 
-The release archive is source code plus checksums. You build the native helper and Python environment locally, approve the generated helper installation through UAC, add the local Codex marketplace, and trust the generated Hook before use.
+The release will be unsigned (`signed: false`). Use the official GitHub Release, its SHA-256s and matching source/build inputs to check file identity; these do not provide a trusted publisher signature. Windows UAC remains a manual decision. [Private vulnerability reporting](https://github.com/fallen-blossom/flower-control/security/advisories/new) is enabled.
 
-## Validation boundary
+## Earlier previews
 
-The development machine has an installed helper, a local Codex plugin publication, and three-channel load evidence. This release records source/export consistency and the checked build/install tooling. It does not claim:
-
-- a completed clean-PC or second-account first install;
-- universal website or third-party application support;
-- UAC secure-desktop automation;
-- signed binaries or silent updates;
-- a general success rate.
-
-A successful status probe or one harmless target test is not proof that every later target and action is safe.
-
-## Files
-
-- `flower-control-0.1.0-preview.3-source.zip`: full public source tree.
-- `SHA256SUMS.txt`: checksum for the source archive.
-
-Use the checksum before extracting or building. Do not download an unverified helper binary from an issue or mirror.
+[Preview.3 and its original assets](https://github.com/fallen-blossom/flower-control/releases/tag/v0.1.0-preview.3) remain unchanged. Their source-only installation instructions and historical test results belong to that snapshot, not to the 0.1.0 installer.

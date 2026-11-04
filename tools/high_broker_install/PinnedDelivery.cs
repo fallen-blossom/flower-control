@@ -11,6 +11,10 @@ using Microsoft.Win32.SafeHandles;
 // or environment acquisition; only exact prepared files can be copied.
 public static class FlowerPinnedDelivery
 {
+    // Replaced only while sealing a prepared script, never from environment.
+    private const string PreparedProgramRoot = "@@PREPARED_PROGRAM_ROOT@@";
+    private static string ProgramRoot { get { return PreparedProgramRoot[0] == '@'
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper") : PreparedProgramRoot; } }
     private static readonly Dictionary<string, SafeFileHandle> Parents = new Dictionary<string, SafeFileHandle>(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, FileStream> Files = new Dictionary<string, FileStream>(StringComparer.OrdinalIgnoreCase);
     private static IntPtr GateMapping, GateMutex;
@@ -42,6 +46,17 @@ public static class FlowerPinnedDelivery
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateDirectoryW(string path, ref Attributes attributes);
     [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr pointer);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] private static extern uint GetNamedSecurityInfoW(string path, int type, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+    [DllImport("advapi32.dll")] private static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
+    private static System.Security.AccessControl.RawSecurityDescriptor DirectoryAccess(string path)
+    {
+        IntPtr owner,group,dacl,sacl,descriptor;
+        uint error=GetNamedSecurityInfoW(path,1,5,out owner,out group,out dacl,out sacl,out descriptor);
+        if(error!=0) throw new Win32Exception((int)error,"delivery_log_acl_unreadable");
+        try { byte[] bytes=new byte[GetSecurityDescriptorLength(descriptor)]; Marshal.Copy(descriptor,bytes,0,bytes.Length);
+            return new System.Security.AccessControl.RawSecurityDescriptor(bytes,0); }
+        finally { LocalFree(descriptor); }
+    }
 
     public static bool ExistingWriteGatePresent(string sid)
     {
@@ -223,7 +238,7 @@ public static class FlowerPinnedDelivery
     }
     public static void CreateNewVersionDirectory(string path, string sid)
     {
-        string versions = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"FlowerControl","HighHelper","versions");
+        string versions = Path.Combine(ProgramRoot,"versions");
         string full = Path.GetFullPath(path), leaf = Path.GetFileName(full);
         Guid version;
         if (sid != System.Security.Principal.WindowsIdentity.GetCurrent().User.Value ||
@@ -245,7 +260,7 @@ public static class FlowerPinnedDelivery
         Guid id;
         if (!Guid.TryParseExact(operation, "N", out id) || sid != System.Security.Principal.WindowsIdentity.GetCurrent().User.Value)
             throw new IOException("delivery_log_identity_rejected");
-        string parent = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "recovery");
+        string parent = Path.Combine(ProgramRoot, "recovery");
         PinDirectory(parent);
         string path = Path.Combine(parent, "installation-" + operation);
         IntPtr descriptor; uint length;
@@ -265,13 +280,13 @@ public static class FlowerPinnedDelivery
         Guid id;
         if (!Guid.TryParseExact(operation, "N", out id) || sid != System.Security.Principal.WindowsIdentity.GetCurrent().User.Value)
             throw new IOException("delivery_log_identity_rejected");
-        string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper", "recovery", "installation-" + operation);
+        string path = Path.Combine(ProgramRoot, "recovery", "installation-" + operation);
         PinDirectory(path);
         var sections = System.Security.AccessControl.AccessControlSections.Owner | System.Security.AccessControl.AccessControlSections.Access;
         var expected = new System.Security.AccessControl.DirectorySecurity();
         expected.SetSecurityDescriptorSddlForm("O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;" + sid + ")", sections);
-        var actual = Directory.GetAccessControl(path, sections);
-        if (!actual.AreAccessRulesProtected || actual.GetSecurityDescriptorSddlForm(sections) != expected.GetSecurityDescriptorSddlForm(sections))
+        var actual = DirectoryAccess(path);
+        if ((actual.ControlFlags & System.Security.AccessControl.ControlFlags.DiscretionaryAclProtected) == 0 || actual.GetSddlForm(sections) != expected.GetSecurityDescriptorSddlForm(sections))
             throw new IOException("delivery_protected_log_changed");
         return path;
     }

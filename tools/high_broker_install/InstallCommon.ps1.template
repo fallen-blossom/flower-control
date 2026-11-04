@@ -2,17 +2,29 @@ $ErrorActionPreference = 'Stop'
 # Windows PowerShell's function autoload can otherwise land Get-FileHash in
 # a short-lived nested scope. Load its built-in module before helper functions.
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Global -ErrorAction Stop
+Import-Module (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\Modules\ScheduledTasks\ScheduledTasks.psd1') -Global -ErrorAction Stop
 $packageRoot = @@PACKAGE@@
 $brokerRoot = @@BROKER@@
 $version = @@VERSION@@
 $taskName = @@TASK@@
 $taskXmlHash = @@TASKXMLHASH@@
+$locationRequestHash = @@LOCATIONHASH@@
+$packageActiveSha256 = @@PACKAGEACTIVEHASH@@
+$installOperation = @@INSTALL_OPERATION@@
+$installPlanHash = @@INSTALL_PLAN_HASH@@
+$script:FlowerExitWriterOperation=''
+$script:FlowerExitWriterPath=''
 $versionSource = Join-Path $packageRoot ('versions\' + $version)
 $versionTarget = Join-Path $brokerRoot ('versions\' + $version)
 $command = Join-Path $versionTarget 'Flower.HighHelper.exe'
 if ($null -eq ('FlowerRecoveryProtection' -as [type])) {
     Add-Type -TypeDefinition @'
 @@RECOVERY_PROTECTION_TYPE@@
+'@
+}
+if ($null -eq ('FlowerPinnedDelivery' -as [type])) {
+    Add-Type -TypeDefinition @'
+@@PINNED_DELIVERY_TYPE@@
 '@
 }
 function Initialize-FlowerRecovery {
@@ -113,6 +125,7 @@ function Assert-FlowerProtectionPath([string]$path) {
     if ($path -cne $full -or ($full -ine $brokerRoot -and
         $full -ine (Join-Path $brokerRoot 'versions') -and
         $full -ine (Join-Path $brokerRoot 'active.json') -and
+        $full -ine (Join-Path $brokerRoot 'installation-location.json') -and
         $full -ine $versionTarget -and !$full.StartsWith($versionTarget + '\', [StringComparison]::OrdinalIgnoreCase))) {
         throw 'installation_protection_scope_rejected'
     }
@@ -184,7 +197,7 @@ function Assert-FlowerIntegrity([string]$path) {
 }
 
 function Set-FlowerHighLabel([string]$path) {
-    & (Join-Path $env:SystemRoot 'System32\icacls.exe') $path /setintegritylevel H | Out-Null
+    & (Join-Path ([Environment]::SystemDirectory) 'icacls.exe') $path /setintegritylevel H | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'installation_high_label_not_applied' }
 }
 
@@ -194,18 +207,31 @@ function Set-FlowerProtection([string]$path) {
     $item = Get-Item -LiteralPath $path -Force
     Set-Acl -LiteralPath $path -AclObject (New-FlowerAcl $item.PSIsContainer)
     if (!(Test-FlowerUnlabelledImage $path)) {
-        Set-FlowerHighLabel $path
+        $label=Get-FlowerIntegritySddl $path
+        if(!(Test-FlowerIntegrityLabel $label $false)) {
+            if(!(Test-FlowerIntegrityLabel $label $true)){throw 'installation_high_label_changed'}
+            Set-FlowerHighLabel $path
+        }
     }
     # Fail closed on copied explicit image labels; do not remove labels or
     # request SeRelabelPrivilege/SYSTEM to repair an unexpected source layout.
     Assert-FlowerAcl $path
 }
 
+function Get-FlowerPreparedActive {
+    $expected=([FlowerPinnedDelivery]::ReadText((Join-Path $packageRoot 'active.json'),$packageActiveSha256))|ConvertFrom-Json
+    if($expected.schema -ne 1 -or $expected.version -cne $version){throw 'package_version_changed'}
+    return $expected
+}
+function Get-FlowerPreparedPolicy {
+    $expected=Get-FlowerPreparedActive
+    return (([FlowerPinnedDelivery]::ReadText((Join-Path $versionSource 'broker.json'),[string]$expected.hashes.'broker.json'))|ConvertFrom-Json)
+}
 function Assert-FlowerVersion([string]$directory) {
     Assert-FlowerNoLinks $directory
-    $expected = Get-Content -LiteralPath (Join-Path $packageRoot 'active.json') -Raw | ConvertFrom-Json
+    $expected = Get-FlowerPreparedActive
     if ($expected.schema -ne 1 -or $expected.version -ne $version) { throw 'package_version_changed' }
-    $policy = Get-Content -LiteralPath (Join-Path $versionSource 'broker.json') -Raw | ConvertFrom-Json
+    $policy = Get-FlowerPreparedPolicy
     $known = @('installation.json') + @($expected.hashes.PSObject.Properties.Name) + @($policy.AppWorkerHashes.PSObject.Properties | ForEach-Object { 'app\' + $_.Name })
     $wgcProperties = @()
     if ($policy.PSObject.Properties.Name -contains 'WgcWorkerHashes') {
@@ -248,7 +274,7 @@ function Assert-FlowerVersion([string]$directory) {
 }
 
 function Assert-FlowerSource([string]$directory = $versionSource) {
-    $policy = Get-Content -LiteralPath (Join-Path $versionSource 'broker.json') -Raw | ConvertFrom-Json
+    $policy = Get-FlowerPreparedPolicy
     $sourceRoot = $policy.Repository
     if ($policy.PSObject.Properties.Name -contains 'RuntimeInventorySha256' -and $policy.RuntimeInventorySha256) {
         if ((Get-FileHash -LiteralPath (Join-Path $directory 'runtime-inventory.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $policy.RuntimeInventorySha256) { throw 'runtime_snapshot_manifest_changed' }
@@ -260,7 +286,7 @@ function Assert-FlowerSource([string]$directory = $versionSource) {
     }
 }
 
-function Invoke-FlowerAdmin([string]$operation) {
+function Invoke-FlowerAdmin([string]$operation, $expected = $null) {
     if (!(Test-Path -LiteralPath $command -PathType Leaf)) { throw 'fixed_admin_entry_missing' }
     if ($operation -notin @('status','pause','resume','shutdown')) { throw 'fixed_admin_operation_rejected' }
     # Windows PowerShell does not reliably update LASTEXITCODE for a GUI exe.
@@ -268,6 +294,31 @@ function Invoke-FlowerAdmin([string]$operation) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $command
     $start.Arguments = '--flower-admin ' + $operation
+    if ($null -ne $expected) {
+        if ($operation -notin @('pause','shutdown')) { throw 'maintenance_binding_rejected' }
+        if ($expected.ordinary_verified -eq $true -and !$expected.high_verified -and
+            $expected.broker_role -ceq 'ordinary' -and $expected.maintenance_protocol -eq 2) {
+            $binding = [ordered]@{ Version=$expected.version; Pid=$expected.pid; Created=$expected.created;
+                PolicyRevision=$expected.policy_revision; Tier=$expected.authority_tier; Stop=$expected.role_stop;
+                Paused=$expected.paused; ComputerPaused=$expected.computer_paused }
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($binding | ConvertTo-Json -Depth 12 -Compress)))
+            $start.Arguments = '--flower-maintenance-ordinary ' + $operation + ' ' + $encoded
+        } elseif ($expected.high_verified -eq $true -and !$expected.ordinary_verified -and $expected.maintenance_protocol -eq 1) {
+            $culture=[Globalization.CultureInfo]::InvariantCulture
+            $start.Arguments='--flower-maintenance '+$operation+' '+$expected.pid.ToString($culture)+' '+
+                $expected.created.ToString($culture)+' '+$expected.global_stop_epoch.ToString($culture)+' '+
+                $expected.protected_stop_epoch.ToString($culture)+' '+$expected.paused.ToString().ToLowerInvariant()+' '+
+                $expected.computer_paused.ToString().ToLowerInvariant()
+        } else { throw 'maintenance_binding_unsupported' }
+    }
+    if($script:FlowerExitWriterOperation){
+        if($operation -ceq 'status'){$start.Arguments='--flower-update-status '+$script:FlowerExitWriterOperation}
+        elseif($start.Arguments.StartsWith('--flower-maintenance-ordinary ',[StringComparison]::Ordinal)){
+            $start.Arguments='--flower-update-maintenance-ordinary '+$script:FlowerExitWriterOperation+' '+$start.Arguments.Substring('--flower-maintenance-ordinary '.Length)
+        } elseif($start.Arguments.StartsWith('--flower-maintenance ',[StringComparison]::Ordinal)){
+            $start.Arguments='--flower-update-maintenance '+$script:FlowerExitWriterOperation+' '+$start.Arguments.Substring('--flower-maintenance '.Length)
+        } else{throw 'exit_writer_operation_rejected'}
+    }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
@@ -278,7 +329,7 @@ function Invoke-FlowerAdmin([string]$operation) {
         if (!$process.Start()) { throw 'broker_admin_start_failed' }
         $outputRead = $process.StandardOutput.ReadToEndAsync()
         $errorRead = $process.StandardError.ReadToEndAsync()
-        if (!$process.WaitForExit(12000)) { throw 'broker_admin_timeout_outcome_unknown' }
+        if (!$process.WaitForExit(25000)) { throw 'broker_admin_timeout_outcome_unknown' }
         $outputText = $outputRead.GetAwaiter().GetResult()
         $errorText = $errorRead.GetAwaiter().GetResult()
         if ($process.ExitCode -ne 0) { throw 'broker_admin_unconfirmed' }
@@ -287,4 +338,388 @@ function Invoke-FlowerAdmin([string]$operation) {
         if ($lines.Count -ne 1) { throw 'broker_admin_reply_unconfirmed' }
         return ($lines[0] | ConvertFrom-Json)
     } finally { $process.Dispose() }
+}
+
+function Initialize-FlowerExitWriter([string]$operation) {
+    if($operation -cnotmatch '^[a-f0-9]{32}$'){throw 'exit_writer_operation_invalid'}
+    $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$command;$start.Arguments='--flower-capabilities'
+    $start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+    $child=[Diagnostics.Process]::new();$child.StartInfo=$start
+    try{
+        if(!$child.Start()){throw 'exit_capabilities_start_failed'}
+        $out=$child.StandardOutput.ReadToEndAsync();$err=$child.StandardError.ReadToEndAsync()
+        if(!$child.WaitForExit(20000)){throw 'exit_capabilities_unconfirmed'}
+        $text=$out.GetAwaiter().GetResult();$null=$err.GetAwaiter().GetResult()
+        if($child.ExitCode -ne 0){return $false}
+        $caps=$text|ConvertFrom-Json
+        if($caps.schema -ne 1 -or $caps.AuthorityGranted -ne $false -or $caps.InputDispatched -ne $false){throw 'exit_capabilities_rejected'}
+        if($caps.bound_exit_maintenance_protocol -ne 1){return $false}
+    }finally{$child.Dispose()}
+    $own=[Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal=[Security.Principal.WindowsPrincipal]::new($own)
+    if(!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'exit_writer_explicit_elevation_required'}
+    Assert-FlowerInstallParent $brokerRoot
+    Initialize-FlowerRecovery
+    $directory=Join-Path $brokerRoot ('recovery\installation-'+$operation)
+    if(Test-Path -LiteralPath $directory){$directory=[FlowerPinnedDelivery]::RequireLogDirectory($operation,$own.User.Value)}
+    else{$directory=[FlowerPinnedDelivery]::CreateLogDirectory($operation,$own.User.Value)}
+    $path=Join-Path $directory 'maintenance-writer.json'
+    if(Test-Path -LiteralPath $path){
+        [FlowerRecoveryProtection]::RequireProtectedFile($path)
+        $previous=Get-Content -LiteralPath $path -Raw -Encoding UTF8|ConvertFrom-Json
+        if($previous.Schema -ne 2 -or $previous.Purpose -cne 'exit' -or $previous.OperationId -cne $operation -or
+            $previous.UserSid -cne $own.User.Value -or $previous.OldVersion -cne $version -or $previous.NewVersion -cne $version){throw 'exit_writer_resume_marker_changed'}
+        $errors=@();$oldWriter=Get-Process -Id ([int]$previous.WriterPid) -ErrorAction SilentlyContinue -ErrorVariable errors
+        foreach($errorItem in $errors){if($errorItem.FullyQualifiedErrorId -notlike 'NoProcessFoundForGivenId*'){throw 'exit_writer_previous_process_unknown'}}
+        if($null -ne $oldWriter -and $oldWriter.StartTime.ToUniversalTime().ToFileTimeUtc() -eq [long]$previous.WriterCreated){throw 'exit_writer_previous_process_still_running'}
+    }
+    $writer=[Diagnostics.Process]::GetCurrentProcess()
+    try{$marker=[ordered]@{Schema=2;State='active';Purpose='exit';OperationId=$operation;UserSid=$own.User.Value;
+        Session=[int]$writer.SessionId;OldVersion=$version;NewVersion=$version;WriterPid=[int]$PID;
+        WriterCreated=[long]$writer.StartTime.ToUniversalTime().ToFileTimeUtc();WriterImage=$writer.MainModule.FileName;
+        WriterImageSha256=(Get-FileHash -LiteralPath $writer.MainModule.FileName -Algorithm SHA256).Hash.ToLowerInvariant()}}
+    finally{$writer.Dispose()}
+    [IO.File]::WriteAllText($path,($marker|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+    Set-Acl -LiteralPath $path -AclObject (New-FlowerAcl $false)
+    Set-FlowerHighLabel $path
+    [FlowerRecoveryProtection]::RequireProtectedFile($path)
+    $script:FlowerExitWriterOperation=$operation;$script:FlowerExitWriterPath=$path
+    return $true
+}
+
+function Close-FlowerExitWriter {
+    if(!$script:FlowerExitWriterPath){return}
+    try{
+        [FlowerRecoveryProtection]::RequireProtectedFile($script:FlowerExitWriterPath)
+        $marker=Get-Content -LiteralPath $script:FlowerExitWriterPath -Raw -Encoding UTF8|ConvertFrom-Json
+        if($marker.OperationId -cne $script:FlowerExitWriterOperation -or $marker.WriterPid -ne $PID){throw 'exit_writer_close_binding_changed'}
+        $marker.State='closed'
+        [IO.File]::WriteAllText($script:FlowerExitWriterPath,($marker|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+    }finally{
+        $script:FlowerExitWriterOperation='';$script:FlowerExitWriterPath=''
+        [FlowerPinnedDelivery]::Close()
+    }
+}
+
+function Get-FlowerMachineBinding {
+    $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,[Microsoft.Win32.RegistryView]::Registry64)
+    try{
+        $key=$base.OpenSubKey('SOFTWARE\Microsoft\Cryptography',$false)
+        if($null -eq $key){throw 'installation_machine_binding_unavailable'}
+        try{$value=[string]$key.GetValue('MachineGuid')}finally{$key.Dispose()}
+    }finally{$base.Dispose()}
+    $guid=[Guid]::Empty
+    if(![Guid]::TryParse($value,[ref]$guid)){throw 'installation_machine_binding_unavailable'}
+    $hash=[Security.Cryptography.SHA256]::Create()
+    try{return [BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes('FlowerControl|'+$guid.ToString('N')))).Replace('-','').ToLowerInvariant()}
+    finally{$hash.Dispose()}
+}
+
+function Get-FlowerInstallOwnerPath {
+    return Join-Path $brokerRoot ('recovery\installation-'+$installOperation+'\install-owner.json')
+}
+function Write-FlowerInstallOwner {
+    Initialize-FlowerRecovery
+    $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $directory=Join-Path $brokerRoot ('recovery\installation-'+$installOperation)
+    if(Test-Path -LiteralPath $directory){$directory=[FlowerPinnedDelivery]::RequireLogDirectory($installOperation,$sid)}
+    else{$directory=[FlowerPinnedDelivery]::CreateLogDirectory($installOperation,$sid)}
+    $path=Get-FlowerInstallOwnerPath
+    $owner=[ordered]@{schema=1;operation_id=$installOperation;plan_sha256=$installPlanHash;package_active_sha256=$packageActiveSha256;
+        user_sid=$sid;program_root=$brokerRoot;package_root=$packageRoot;version=$version;machine_binding_sha256=(Get-FlowerMachineBinding)}
+    if(Test-Path -LiteralPath $path){Assert-FlowerInstallOwner;return}
+    [IO.File]::WriteAllText($path,($owner|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+    Set-Acl -LiteralPath $path -AclObject (New-FlowerAcl $false);Set-FlowerHighLabel $path
+    [FlowerRecoveryProtection]::RequireProtectedFile($path)
+}
+function Assert-FlowerInstallOwner {
+    $path=Get-FlowerInstallOwnerPath
+    [FlowerRecoveryProtection]::RequireProtectedFile($path)
+    $owner=Get-Content -LiteralPath $path -Raw -Encoding UTF8|ConvertFrom-Json
+    if($owner.schema -ne 1 -or $owner.operation_id -cne $installOperation -or $owner.plan_sha256 -cne $installPlanHash -or
+        $owner.package_active_sha256 -cne $packageActiveSha256 -or $owner.user_sid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -or
+        $owner.program_root -ine $brokerRoot -or $owner.package_root -ine $packageRoot -or $owner.version -cne $version -or
+        $owner.machine_binding_sha256 -cne (Get-FlowerMachineBinding)){throw 'install_resume_owner_changed'}
+}
+function Test-FlowerRetainedRoot {
+    $location=Get-FlowerLocationRequest
+    if($null -eq $location){return $false}
+    if((Test-Path -LiteralPath (Join-Path $brokerRoot 'active.json')) -or
+        (Test-Path -LiteralPath (Join-Path $brokerRoot 'installation-location.json'))){return $false}
+    Assert-FlowerInstallParent $brokerRoot
+    if(!(Test-Path -LiteralPath $brokerRoot -PathType Container)){return $false}
+    Assert-FlowerAcl $brokerRoot
+    Assert-FlowerRetainedProcessesExited
+    foreach($child in Get-ChildItem -LiteralPath $location.root -Force){
+        if(!$child.PSIsContainer -or $child.Name -cnotin @('Program','Data','Cache','Packages')){return $false}
+    }
+    $states=@('permissions','privacy','work-authority','audit','execution-bindings','recovery')
+    foreach($file in Get-ChildItem -LiteralPath $brokerRoot -Recurse -File -Force){
+        $relative=$file.FullName.Substring($brokerRoot.Length+1)
+        if($states -notcontains $relative.Split('\')[0]){return $false}
+    }
+    if((Test-Path -LiteralPath $location.packages_root) -and @(Get-ChildItem -LiteralPath $location.packages_root -Recurse -File -Force).Count -ne 0){return $false}
+    $recovery=Join-Path $brokerRoot 'recovery'
+    if(!(Test-Path -LiteralPath $recovery)){return $false}
+    $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $machine=Get-FlowerMachineBinding
+    foreach($directory in Get-ChildItem -LiteralPath $recovery -Directory -Force){
+        if($directory.Name -cnotmatch '^installation-([a-f0-9]{32})$'){continue}
+        $path=Join-Path $directory.FullName 'resume-anchor.json'
+        if(!(Test-Path -LiteralPath $path)){continue}
+        [FlowerRecoveryProtection]::RequireProtectedFile($path)
+        $anchor=Get-Content -LiteralPath $path -Raw -Encoding UTF8|ConvertFrom-Json
+        if($anchor.schema -eq 1 -and $anchor.kind -ceq 'uninstall' -and $anchor.state -ceq 'completed' -and
+            $anchor.user_sid -ceq $sid -and $anchor.program_root -ieq $brokerRoot -and $anchor.root -ieq $location.root -and
+            $anchor.installation_id -cmatch '^[a-f0-9]{32}$' -and $anchor.operation_id -ceq $directory.Name.Substring(13) -and
+            $anchor.machine_binding_sha256 -ceq $machine){return $true}
+    }
+    return $false
+}
+
+function Assert-FlowerRetainedProcessesExited {
+    $names=@('Flower.HighHelper.exe','flower-python.exe','Flower.AppWorker.exe','Flower.ComputerWgc.exe')
+    foreach($process in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)){
+        if($names -notcontains [string]$process.Name){continue}
+        if(!$process.ExecutablePath){throw 'retained_installation_process_identity_unconfirmed'}
+        if(([string]$process.ExecutablePath).StartsWith($brokerRoot+'\',[StringComparison]::OrdinalIgnoreCase)){
+            throw 'retained_installation_process_still_running'
+        }
+    }
+}
+
+function Assert-FlowerRetainedMetadata {
+    $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$command
+    $start.Arguments='--flower-validate-retained-installation "'+$brokerRoot+'"'
+    $start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+    $child=[Diagnostics.Process]::new();$child.StartInfo=$start
+    try{
+        if(!$child.Start()){throw 'retained_metadata_validator_start_failed'}
+        $out=$child.StandardOutput.ReadToEndAsync();$err=$child.StandardError.ReadToEndAsync()
+        if(!$child.WaitForExit(120000)){throw 'retained_metadata_validation_unconfirmed'}
+        $text=$out.GetAwaiter().GetResult();$null=$err.GetAwaiter().GetResult()
+        if($child.ExitCode -ne 0){throw 'retained_metadata_rejected'}
+        $result=$text|ConvertFrom-Json
+        if($result.schema -ne 1 -or $result.valid -ne $true -or $result.AuthorityGranted -ne $false -or
+            $result.InputDispatched -ne $false -or $result.StateChanged -ne $false){throw 'retained_metadata_rejected'}
+    }finally{$child.Dispose()}
+}
+
+function Write-FlowerResumeAnchor([string]$Kind,[string]$OperationId,[string]$PlanPath,[string]$PlanSha256,
+    [string]$ScriptPath,[string]$ScriptSha256,[string]$State='incomplete',[string]$ResultPath='') {
+    if($Kind -notin @('setup','uninstall') -or $State -notin @('incomplete','completed') -or
+        $OperationId -cnotmatch '^[a-f0-9]{32}$' -or $PlanSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        $ScriptSha256 -cnotmatch '^[a-f0-9]{64}$'){throw 'resume_anchor_binding_rejected'}
+    foreach($path in @($PlanPath,$ScriptPath)){
+        if($path -cne [IO.Path]::GetFullPath($path)){throw 'resume_anchor_material_path_rejected'}
+        Assert-FlowerNoLinks $path -Shallow
+    }
+    $plan=([FlowerPinnedDelivery]::ReadText($PlanPath,$PlanSha256))|ConvertFrom-Json
+    [FlowerPinnedDelivery]::VerifyFile($ScriptPath,$ScriptSha256)
+    $expectedRoot=[IO.Path]::GetDirectoryName($brokerRoot)
+    $location=Get-FlowerLocationRequest
+    $installationId=if($null -ne $location){$expectedRoot=$location.root;$location.installation_id}else{''}
+    if($Kind -ceq 'uninstall'){
+        $expectedRoot=$plan.installation_root;$installationId=$plan.installation_id
+        $expectedProgram=Join-Path $expectedRoot $(if($plan.legacy){'HighHelper'}else{'Program'})
+        if($expectedProgram -ine $brokerRoot){throw 'resume_anchor_uninstall_root_rejected'}
+    }
+    if($plan.operation_id -cne $OperationId -or $plan.program_root -ine $brokerRoot){throw 'resume_anchor_plan_identity_rejected'}
+    if($Kind -ceq 'setup' -and ($plan.root -ine $expectedRoot -or $plan.elevated_script -ine $ScriptPath -or
+        $plan.elevated_script_sha256 -cne $ScriptSha256 -or $plan.version -cne $version)){throw 'resume_anchor_setup_identity_rejected'}
+    Assert-FlowerInstallParent $brokerRoot
+    Assert-FlowerAcl $brokerRoot
+    Initialize-FlowerRecovery
+    $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $directory=Join-Path $brokerRoot ('recovery\installation-'+$OperationId)
+    if(Test-Path -LiteralPath $directory){$directory=[FlowerPinnedDelivery]::RequireLogDirectory($OperationId,$sid)}
+    else{$directory=[FlowerPinnedDelivery]::CreateLogDirectory($OperationId,$sid)}
+    $path=Join-Path $directory 'resume-anchor.json'
+    $anchor=[ordered]@{schema=1;kind=$Kind;state=$State;operation_id=$OperationId;user_sid=$sid;program_root=$brokerRoot;
+        machine_binding_sha256=(Get-FlowerMachineBinding);
+        installation_id=$installationId;root=$expectedRoot;plan_path=$PlanPath;plan_sha256=$PlanSha256;
+        script_path=$ScriptPath;script_sha256=$ScriptSha256;result_path=$ResultPath;version=$version;utc=[DateTime]::UtcNow.ToString('o')}
+    $hasAnchor=Test-Path -LiteralPath $path
+    if($Kind -ceq 'uninstall' -and !$hasAnchor -and $installationId){
+        $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,[Microsoft.Win32.RegistryView]::Registry64)
+        try{
+            $subpath='SOFTWARE'
+            foreach($part in @('FlowerControl','Installations',$sid)){
+                $subpath+='\'+$part
+                $acl=Get-Acl -LiteralPath ('Registry::HKEY_LOCAL_MACHINE\'+$subpath)
+                $trusted=@('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+                if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted){throw 'resume_anchor_registry_owner_rejected'}
+                foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){
+                    if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $trusted -and
+                        ([int]$rule.RegistryRights -band 0x500D0026) -ne 0){throw 'resume_anchor_registry_unprotected'}
+                }
+            }
+            $key=$base.OpenSubKey($subpath,$false)
+            if($null -eq $key){throw 'resume_anchor_registration_missing'}
+            try{$record=([string]$key.GetValue('Record'))|ConvertFrom-Json}finally{$key.Dispose()}
+            if($record.schema -ne 1 -or $record.installation_id -cne $installationId -or $record.user_sid -cne $sid -or
+                $record.root -ine $expectedRoot -or $record.manifest_sha256 -cnotmatch '^[a-f0-9]{64}$'){throw 'resume_anchor_registration_changed'}
+            $manifest=Join-Path $brokerRoot 'installation-location.json';Assert-FlowerAcl $manifest
+            $bytes=[IO.File]::ReadAllBytes($manifest);$hash=[Security.Cryptography.SHA256]::Create()
+            try{$sha=[BitConverter]::ToString($hash.ComputeHash($bytes)).Replace('-','').ToLowerInvariant()}finally{$hash.Dispose()}
+            $registered=[Text.Encoding]::UTF8.GetString($bytes)|ConvertFrom-Json
+            if($sha -cne $record.manifest_sha256 -or $registered.installation_id -cne $installationId -or
+                $registered.user_sid -cne $sid -or $registered.program_root -ine $brokerRoot){throw 'resume_anchor_manifest_changed'}
+        }finally{$base.Dispose()}
+    }
+    if($hasAnchor){
+        [FlowerRecoveryProtection]::RequireProtectedFile($path)
+        $previous=Get-Content -LiteralPath $path -Raw -Encoding UTF8|ConvertFrom-Json
+        foreach($field in @('schema','kind','operation_id','user_sid','program_root','installation_id','root','plan_path','plan_sha256','script_path','script_sha256','version','machine_binding_sha256')){
+            if($previous.$field -cne $anchor[$field]){throw 'resume_anchor_existing_binding_changed'}
+        }
+    }
+    $temporary=Join-Path $directory ([Guid]::NewGuid().ToString('N')+'.resume.tmp')
+    [IO.File]::WriteAllText($temporary,($anchor|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+    Set-Acl -LiteralPath $temporary -AclObject (New-FlowerAcl $false)
+    Set-FlowerHighLabel $temporary
+    [FlowerRecoveryProtection]::RequireProtectedFile($temporary)
+    if(Test-Path -LiteralPath $path){[IO.File]::Replace($temporary,$path,[System.Management.Automation.Language.NullString]::Value)}else{[IO.File]::Move($temporary,$path)}
+    [FlowerRecoveryProtection]::RequireProtectedFile($path)
+    return $path
+}
+
+function Get-FlowerLocationRequest {
+    if (!$locationRequestHash) { return $null }
+    $path = Join-Path $packageRoot 'installation-location.request.json'
+    Assert-FlowerNoLinks $path -Shallow
+    $location = ([FlowerPinnedDelivery]::ReadText($path,$locationRequestHash)) | ConvertFrom-Json
+    if ($location.schema -ne 1 -or $location.installation_id -cnotmatch '^[a-f0-9]{32}$' -or
+        $location.user_sid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -or
+        $location.program_root -ine $brokerRoot -or $brokerRoot -ine (Join-Path $location.root 'Program')) { throw 'installation_location_request_rejected' }
+    foreach ($pair in @(@('data_root','Data'),@('cache_root','Cache'),@('packages_root','Packages'))) {
+        if ($location.($pair[0]) -ine (Join-Path $location.root $pair[1])) { throw 'installation_location_layout_rejected' }
+    }
+    return $location
+}
+
+function Assert-FlowerInstallParent([string]$path) {
+    Assert-FlowerNoLinks $path -Shallow
+    $cursor = [IO.DirectoryInfo]::new($path).Parent
+    while ($null -ne $cursor) {
+        if ($cursor.Exists) {
+            $acl = Get-Acl -LiteralPath $cursor.FullName
+            $trusted = @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+            if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) { throw 'installation_parent_owner_rejected' }
+            # A drive root may allow creating independent directories. It must
+            # never permit replacing this protected child or rewriting its ACL.
+            $mask = if ($null -eq $cursor.Parent) { 0x100C0040 } else { 0x500D0156 }
+            foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+                if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $trusted -and
+                    ([int]$rule.FileSystemRights -band $mask) -ne 0 -and
+                    ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -eq 0) { throw 'installation_parent_writable' }
+            }
+        }
+        $cursor = $cursor.Parent
+    }
+}
+
+function Initialize-FlowerInstallLayout([switch]$Resume) {
+    $location = Get-FlowerLocationRequest
+    if ($null -eq $location) { return }
+    Assert-FlowerInstallParent $location.root
+    Assert-FlowerNoLinks $location.root
+    if (!$Resume -and (Test-Path -LiteralPath $location.root) -and @(Get-ChildItem -LiteralPath $location.root -Force).Count -ne 0) { throw 'installation_root_not_empty' }
+    if(Test-Path -LiteralPath $location.root){Assert-FlowerInstallParent $brokerRoot}
+    else{[FlowerRecoveryProtection]::CreateInstallRoot($location.root)}
+    Assert-FlowerInstallParent $brokerRoot
+    foreach ($path in @($location.data_root,$location.cache_root,$location.packages_root)) {
+        $acl = New-FlowerAcl $true
+        if ($path -ine $location.packages_root) {
+            $acl.SetOwner([Security.Principal.SecurityIdentifier]::new($location.user_sid))
+            $acl.RemoveAccessRuleAll([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'),'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow'))
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($location.user_sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+        }
+        if(Test-Path -LiteralPath $path) {
+            Assert-FlowerNoLinks $path -Shallow
+            $actual=Get-Acl -LiteralPath $path
+            if(!$Resume -or !(Get-Item -LiteralPath $path -Force).PSIsContainer){throw 'installation_user_directory_changed'}
+            if($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -or
+                (Get-FlowerAclRules $actual) -cne (Get-FlowerAclRules $acl)) {
+                if($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne 'S-1-5-32-544' -or
+                    @(Get-ChildItem -LiteralPath $path -Force).Count -ne 0){throw 'installation_user_directory_changed'}
+                Assert-FlowerInstallParent $path
+                Set-Acl -LiteralPath $path -AclObject $acl
+            }
+        } else {
+            New-Item -ItemType Directory -Path $path | Out-Null
+            Set-Acl -LiteralPath $path -AclObject $acl
+        }
+    }
+}
+
+function Register-FlowerInstallLocation {
+    $location = Get-FlowerLocationRequest
+    if ($null -eq $location) { return }
+    Assert-FlowerInstallParent $brokerRoot
+    $manifest = Join-Path $brokerRoot 'installation-location.json'
+    if (Test-Path -LiteralPath $manifest) {
+        if ((Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $locationRequestHash) { throw 'installation_location_manifest_changed' }
+    } else {
+        Copy-FlowerInstallFile (Join-Path $packageRoot 'installation-location.request.json') $manifest $locationRequestHash
+    }
+    Assert-FlowerAcl $manifest
+    $record = [ordered]@{schema=1;installation_id=$location.installation_id;user_sid=$location.user_sid;root=$location.root;manifest_sha256=$locationRequestHash} | ConvertTo-Json -Compress
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,[Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $subpath = 'SOFTWARE'
+        foreach ($part in @('FlowerControl','Installations',$location.user_sid)) {
+            $subpath += '\' + $part
+            $key = $base.OpenSubKey($subpath,$true)
+            $created = $null -eq $key
+            if ($created) { $key = $base.CreateSubKey($subpath) }
+            try {
+                $acl = [Security.AccessControl.RegistrySecurity]::new()
+                $acl.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)')
+                $registryPath = 'Registry::HKEY_LOCAL_MACHINE\' + $subpath
+                if ($created) { Set-Acl -LiteralPath $registryPath -AclObject $acl }
+                $actual = Get-Acl -LiteralPath $registryPath
+                if ($actual.GetSecurityDescriptorSddlForm('Owner,Group,Access') -cne $acl.GetSecurityDescriptorSddlForm('Owner,Group,Access')) { throw 'installation_registry_unprotected' }
+                if ($part -ceq $location.user_sid) {
+                    $previous = $key.GetValue('Record',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                    if ($null -ne $previous -and $previous -cne $record) { throw 'existing_installation_registration_changed' }
+                    $key.SetValue('Record',$record,[Microsoft.Win32.RegistryValueKind]::String)
+                    if ($key.GetValue('Record') -cne $record) { throw 'installation_registration_unconfirmed' }
+                }
+            } finally { $key.Dispose() }
+        }
+    } finally { $base.Dispose() }
+}
+
+function Assert-FlowerCopiedFileAccess([string]$path) {
+    $actual=Get-Acl -LiteralPath $path
+    $expected=New-FlowerAcl $false
+    if(!$actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne 'S-1-5-32-544' -or
+        (Get-FlowerAclRules $actual) -cne (Get-FlowerAclRules $expected)){throw 'installation_acl_changed'}
+}
+
+function Copy-FlowerInstallFile([string]$source,[string]$target,[string]$expectedHash) {
+    Assert-FlowerProtectionPath $target
+    Assert-FlowerNoLinks $source -Shallow
+    Assert-FlowerNoLinks $target -Shallow
+    if($expectedHash -cnotmatch '^[a-f0-9]{64}$' -or
+        (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedHash){throw 'install_source_file_changed'}
+    if(Test-Path -LiteralPath $target) {
+        if((Get-Item -LiteralPath $target -Force).PSIsContainer -or
+            (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedHash){throw 'install_existing_file_changed'}
+        Assert-FlowerCopiedFileAccess $target
+        Set-FlowerProtection $target
+        return
+    }
+    $staging=Join-Path $brokerRoot ('.install-staging-'+$installOperation)
+    Assert-FlowerNoLinks $staging
+    if(!(Test-Path -LiteralPath $staging)){New-Item -ItemType Directory -Path $staging|Out-Null}
+    Set-Acl -LiteralPath $staging -AclObject (New-FlowerAcl $true)
+    $temporary=Join-Path $staging ([Guid]::NewGuid().ToString('N')+'.partial')
+    [IO.File]::Copy($source,$temporary,$false)
+    if((Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedHash){throw 'install_staged_file_changed'}
+    Set-Acl -LiteralPath $temporary -AclObject (New-FlowerAcl $false)
+    Assert-FlowerCopiedFileAccess $temporary
+    [IO.File]::Move($temporary,$target)
+    Set-FlowerProtection $target
 }

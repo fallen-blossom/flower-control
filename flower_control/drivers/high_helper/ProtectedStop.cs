@@ -16,7 +16,7 @@ internal static class ProtectedStop
         if (Native.UiAccess(own.Pid) || !(own.User == sid && (own.Integrity == 12288 || !create && own.Integrity == 8192)
             || own.User == "S-1-5-18" && own.Integrity == 16384))
             throw new Boundary("protected_stop_role_required");
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowerControl", "HighHelper");
+        var root = InstallationLocation.Current().ProgramRoot;
         UacClaimJournal.CheckParent(Path.GetDirectoryName(root)!, false); UacClaimJournal.CheckParent(root, false);
         var recovery = Path.Combine(root, "recovery");
         try { UacClaimJournal.CheckParent(recovery, false); }
