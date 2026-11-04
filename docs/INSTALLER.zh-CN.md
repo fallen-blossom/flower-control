@@ -35,10 +35,12 @@ Start-Process -FilePath 'D:\Downloads\FlowerControl-Setup.exe' -Wait
 ## 安装窗口里做什么
 
 1. 以日常 Windows 账号运行。安装器先在本地解包、核摘要，并读取本机受保护安装登记。
-2. 新安装选择盘根下一个**尚未由普通用户创建**的专用目录，例如 **D:\FlowerControl**，由安装器建立受保护根。可编辑位置或选择父目录；不要先建普通用户可写的空根，也不要选 Downloads/Documents、网络目录、junction 或可被普通用户替换的中间目录。已有未受保护目录会在提权前拒绝，不接管其 ACL。
+2. 新安装在**已存在的受保护父目录下**选择一个尚未创建的专用目录，例如 **D:\FlowerControl** 或 **C:\Program Files\FlowerControl**，由安装器建立受保护根。可编辑位置或选择父目录；不要先建普通用户可写的空根，也不要选 Downloads/Documents、网络目录、junction 或可被普通用户替换的中间目录。已有未受保护目录会在提权前拒绝，不接管其 ACL。
 3. 勾选要生成的宿主接入。Codex 入口默认提供；DSH 需要选择这台电脑实际安装的 `DeepSeek Harness.exe`，不沿用另一台机器的宿主路径或身份。
 4. 检查目录和计划，再点击安装。需要你自己确认一次 Windows UAC；取消会保留已准备材料，不代你批准管理员权限。
 5. 等待安装文件、实际执行器连接和设置打开请求的各自结果。**文件安装成功不等于插件已启用，也不等于真实窗口已经操作成功。** 保留安装器最后显示的回执与恢复材料路径。
+
+如果检查提示目录所有者或上级权限不满足保护条件，换一个受保护本地卷下的新目录；可用盘的条件不同，不要只换同一盘中的文件夹名字。某些新卷经 Windows 存储服务格式化后，盘根所有者是 `NetworkService`，也会被拒绝。安装器不会自动接管整盘。没有合适的数据盘时，可使用 `C:\Program Files\FlowerControl`；已有安装仍沿用原登记根。不要为通过安装而给普通用户扩大系统目录权限。
 
 新布局如下：
 
@@ -72,6 +74,8 @@ codex plugin marketplace add '<安装器显示的实际本地市场路径>'
 不要手写旧版本路径，不要把“市场已登记”当成“当前聊天已加载”。先建新聊天，让 Codex 报三个 status、loaded/on-disk source 和实际普通执行器。在 02 下 High 能力不可用是正常结果。
 
 ## 装完怎么用
+
+安装器的“使用说明与 AI 提示词”会打开本地开始说明。完整中英教程随载荷保存于安装后的 `<Root>\Packages\<实际维护子目录>\Help\Guides`，安装前也可从已解包材料的 `Guides` 阅读；其中 `docs\USAGE.zh-CN.md`、`docs\PERMISSIONS.zh-CN.md` 和 `docs\TROUBLESHOOTING.zh-CN.md` 可直接用记事本打开。查基本使用和卸载方法无需再下载源码。
 
 先亲自打开一份空白记事本文档，然后在新聊天发送：
 

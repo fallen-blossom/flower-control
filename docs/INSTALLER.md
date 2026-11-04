@@ -35,10 +35,12 @@ Use `Get-FileHash -LiteralPath 'D:\Downloads\FlowerControl-Setup.exe' -Algorithm
 ## In the installer
 
 1. Run under your everyday Windows account. Setup extracts and verifies its local payload, then reads protected machine registration.
-2. For a new installation, choose a **new dedicated directory directly below a drive root**, such as **D:\FlowerControl**, and let Setup create/protect it. Do not pre-create an ordinary-user-writable empty root or place it under Downloads/Documents. Network locations, junctions and replaceable intermediate directories are rejected before elevation; Setup does not take over an existing directory's ACL.
+2. For a new installation, choose a **new dedicated directory under an existing protected parent**, such as **D:\FlowerControl** or **C:\Program Files\FlowerControl**, and let Setup create/protect it. Do not pre-create an ordinary-user-writable empty root or place it under Downloads/Documents. Network locations, junctions and replaceable intermediate directories are rejected before elevation; Setup does not take over an existing directory's ACL.
 3. Select host integrations. Codex is offered by default. DSH needs this PC's installed `DeepSeek Harness.exe`; another machine's host paths or identity do not transfer.
 4. Review the directory and plan, then install. Confirm Windows UAC yourself. Cancelling retains preparation material without approving an administrator operation.
 5. Read the separate file-install, executor-connection, and settings-open results. **Installed files do not mean an enabled host plugin or successful real window control.** Keep the receipt/recovery directory shown at the end.
+
+If preflight rejects the directory owner or ancestor permissions, choose a new directory on another protected local volume; renaming a folder on the same volume does not change its parent security. Some volumes formatted through Windows storage services have a `NetworkService` volume-root owner and are also rejected. Setup does not take ownership of an entire drive. If no suitable data volume is available, use `C:\Program Files\FlowerControl`; an existing installation still retains its registered root. Do not broaden ordinary-user access to system directories to pass installation.
 
 The new layout is:
 
@@ -72,6 +74,8 @@ Marketplace registration does not grant control permissions. In Codex's plugin U
 Use the generated path rather than typing an old version. Marketplace registration does not prove loading in the current chat. Start a new chat and check three status responses, loaded/on-disk source, and the real ordinary executor. High control being unavailable under tier 02 is expected.
 
 ## Use it after installation
+
+Setup's usage/AI-prompt button opens the local getting-started text. The complete bilingual guides are shipped under `<Root>\Packages\<actual maintenance directory>\Help\Guides` after installation, and under `Guides` in extracted setup material before installation. Open `docs\USAGE.md`, `docs\PERMISSIONS.md` or `docs\TROUBLESHOOTING.md` with Notepad; basic usage and uninstall instructions do not require another source download.
 
 Open a blank Notepad document yourself, then send in the new chat:
 

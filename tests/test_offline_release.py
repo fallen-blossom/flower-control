@@ -59,6 +59,24 @@ class OfflinePayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "offline_payload_manifest_invalid"):
             verify_payload(self.root)
 
+    def test_unprotected_destination_rejected_before_payload_scan_or_preparation_writes(self):
+        from tools import offline_install
+        from flower_control.install_location import InstallLocationError
+        work = self.root / "UncreatedWork"
+        # A user's temporary directory is a real unsupported parent for
+        # protected executable installation, rather than a simulated disk ACL.
+        target = self.root / "FlowerControl"
+        absent = SimpleNamespace(program_root=self.root / "NotInstalled")
+        with patch.object(offline_install, "ROOT", self.root / "Source"), \
+             patch.object(offline_install.sys, "base_prefix", str(self.root / "Python")), \
+             patch.object(offline_install, "existing_location", return_value=absent), \
+             patch.object(offline_install, "verify_payload", side_effect=AssertionError("must reject path first")) as scan:
+            with self.assertRaisesRegex(InstallLocationError, "installation_unprotected"):
+                offline_install.prepare(self.root, target, work, codex=False)
+        scan.assert_not_called()
+        self.assertFalse(work.exists())
+        self.assertFalse(target.exists())
+
     def test_release_label_is_required_and_is_not_a_runtime_content_identity(self):
         for version in (None, True, "", "a" * 32, "0.1", "0.1.0\nrun code", "0.1.0';write-host injected"):
             with self.subTest(version=version):

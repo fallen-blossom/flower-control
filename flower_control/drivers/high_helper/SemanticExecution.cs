@@ -562,9 +562,12 @@ internal sealed class SemanticExecution : IDisposable
                 var binding = Protocol.Decode<Binding>(document);
                 if (binding.Schema != 1 || binding.TaskId != previous.TaskId || binding.RequestId != previous.RequestId
                     || binding.ProgramRef != previous.ProgramRef || binding.Target != previous.Target || binding.Target != target
-                    || binding.ExecutionKey != key || binding.WorkId == query.WorkId || binding.GrantRevision <= 0
+                    || binding.ExecutionKey != key || binding.GrantRevision <= 0
                     || binding.Entry.Kind is not ("native_image" or "file" or "inline_argv")
-                    || !AdminProgramLaunch.Digest(binding.Audit.Hash) || binding.Audit.Sequence <= 0) return null;
+                    || !AdminProgramLaunch.Digest(binding.Audit.Hash) || binding.Audit.Sequence <= 0)
+                    throw new Boundary("program_launch_new_run_exit_binding_rejected");
+                if (binding.WorkId == query.WorkId)
+                    throw new Boundary("program_launch_new_run_independent_work_required");
                 bindings.Add((previous, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()));
             }
             var evidence = JsonSerializer.SerializeToUtf8Bytes(new { Kind = "flower-independent-root-exit-tracking-lost-v1",
@@ -577,6 +580,8 @@ internal sealed class SemanticExecution : IDisposable
                 ProofKind = "root_exit_tracking_lost", TreeEvidence = "helper_restart_workload_tracking_unavailable",
                 PreviousBusinessState = "unknown", AuthorityTransferred = false };
         }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        { return new { Eligible = false, Reason = "program_launch_execution_binding_missing", AuthorityTransferred = false }; }
         catch (Exception error) when (error is Boundary or IOException or UnauthorizedAccessException or JsonException)
         { return new { Eligible = false, Reason = Program.Code(error), AuthorityTransferred = false }; }
     }

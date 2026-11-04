@@ -321,8 +321,10 @@ internal sealed class SetupWindow : Form
         if (process.ExitCode != 0)
         {
             string message = await error;
-            string reason = message.Contains("installation_unprotected") || message.Contains("installation_parent_")
-                ? "此目录或它的上级允许普通用户修改，不能放管理员组件。请选择盘根下尚未创建的新目录，例如 D:\\FlowerControl；无需提前建文件夹。"
+            string reason = message.Contains("installation_unprotected")
+                ? "此位置的目录所有者或上级权限不满足受保护安装条件，不能放管理员组件。盘根由 NetworkService 所有时也会被拒绝。请选择其他受保护本地磁盘下的新目录，例如 F:\\FlowerControl，或 C:\\Program Files\\FlowerControl；安装器不会接管现有目录或更改整盘权限。"
+                : message.Contains("installation_parent_must_exist")
+                ? "安装位置的上级目录不存在。请选择已存在的本地磁盘或受保护父目录，再填写尚未创建的 FlowerControl 子目录；无需提前创建安装目录。"
                 : message.Contains("offline_existing_root_requires_explicit_migration")
                 ? "已发现其他位置的现有安装。升级会保留原资料目录；迁移需通过单独的明确迁移流程。"
                 : "本地检查或准备未完成，请保留回执与恢复材料。";

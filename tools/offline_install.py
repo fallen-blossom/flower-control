@@ -255,7 +255,6 @@ def relocated_evidence(payload: Path, work: Path) -> dict:
 
 
 def prepare(payload: Path, root: Path, work: Path, *, dsh_image: Path | None = None, installer: Path | None = None, codex=True) -> dict:
-    manifest = verify_payload(payload)
     if ROOT != (payload / "Source").resolve() or Path(sys.base_prefix).resolve() != (payload / "Python").resolve():
         raise ValueError("offline_bundled_interpreter_required")
     reject_links(work)
@@ -271,6 +270,10 @@ def prepare(payload: Path, root: Path, work: Path, *, dsh_image: Path | None = N
         selected = existing
     else:
         validate_preparation_path(root)
+    # Reject an unusable destination before scanning the full offline payload.
+    # These are read-only checks; payload verification still precedes every
+    # directory creation, copy, seal and installation operation below.
+    manifest = verify_payload(payload)
     work.mkdir(parents=True)
     binaries = relocated_evidence(payload, work)
     from tools.prepare_high_broker_install import prepare as seal

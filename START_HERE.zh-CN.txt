@@ -30,6 +30,13 @@ Windows TEMP 解包、系统登记和宿主缓存仍可能使用系统盘。取�
 默认保留个人资料、缓存、权限、Stop、unknown、审计和恢复记录；程序文件按准确范围进入回收站，失败不会改永久删除。新布局完成卸载后，可另行审阅确认 Data/Cache 回收；Program 内的受保护状态仍保留。取消个人回收会停止后续项，不强杀正在处理的一项。
 
 验证状态：源码/隔离检查和短合成帧编码器测试已做；最终 0.1.0 安装、真实 High 控制、宿主信任/加载、升级恢复与卸载尚未验证。历史预览实测不代表本版已通过。
-完整指南：https://github.com/fallen-blossom/flower-control
+完整离线指南就在本文件同目录，可用记事本打开：
+- docs\USAGE.zh-CN.md：第一次使用、目标绑定、任务结束与日常例句。
+- docs\PERMISSIONS.zh-CN.md：档位、名单、授权与停止的区别。
+- docs\BROWSER_PROFILES.zh-CN.md：临时、AI 与个人浏览器资料。
+- docs\TROUBLESHOOTING.zh-CN.md：按实际错误排查。
+- docs\INSTALLER.zh-CN.md：安装、恢复、更新和卸载。
+同目录还包含英文版本、README、隐私/许可和其他宿主说明；部分上游与开发资料链接需要联网，或使用源码发行包。
+在线指南：https://github.com/fallen-blossom/flower-control
 私密漏洞报告：https://github.com/fallen-blossom/flower-control/security/advisories/new
 公开报告不要附凭据、浏览器资料、私人截图或权限绕过细节。

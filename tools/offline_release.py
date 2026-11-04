@@ -40,6 +40,15 @@ ENTRY_TOOLS = (
     "prepare_work_authority_update", "prepare_stopped_host_update",
     "prepare_uninstall", "settings_portability", "storage_maintenance",
 )
+GUIDE_FILES = (
+    "VERSION", "LICENSE", "THIRD_PARTY_NOTICES.md", "PRIVACY.md", "PRIVACY.zh-CN.md",
+    "SECURITY.md", "START_HERE.zh-CN.txt", "README.md", "README.zh-CN.md",
+    *("docs/" + name + suffix for name in (
+        "ANTIGRAVITY", "BROWSER_PROFILES", "CLAUDE_CODE", "INSTALL_WITH_CODEX", "INSTALL",
+        "INSTALLER", "LOCAL_CLIENTS", "PERMISSIONS", "RELEASE_NOTES", "TROUBLESHOOTING",
+        "USAGE", "VALIDATION") for suffix in (".md", ".zh-CN.md")),
+    "docs/SHARING.md",
+)
 
 
 def validate_release_versions(repository: Path) -> str:
@@ -257,8 +266,13 @@ def build(repository: Path, runtime: Path, site: Path, output: Path, *, media_en
     payload = output / "Payload"
     payload.mkdir()
     presentation = repository / "release/github" if (repository / "release/github/LICENSE").is_file() else repository
-    for name in ("VERSION", "LICENSE", "THIRD_PARTY_NOTICES.md", "PRIVACY.zh-CN.md", "SECURITY.md", "START_HERE.zh-CN.txt"):
+    for name in GUIDE_FILES:
         copy_file(presentation / name, payload / "Guides" / name)
+    # Public source exports already contain the reviewed dependency inventory.
+    # A private developer tree may omit it; no local environment scan is added.
+    inventory = repository / "dependency-inventory.json"
+    if inventory.is_file():
+        copy_file(inventory, payload / "Guides/dependency-inventory.json")
     rows = inventory_runtime(repository, runtime, site)
     for name, item in rows.items():
         relative = (Path("Python") / name.removeprefix("runtime/") if name.startswith("runtime/")

@@ -339,7 +339,10 @@ internal static class AdminProgramLaunch
                         var rootReview = execution!.IndependentRootExitReview(policy, own, target, workGrant!, blockers, ProcessState,
                             requestId => Workloads.ContainsKey(requestId), out var rootReference);
                         rootExitReference = rootReference;
-                        if (rootExitReference is not null) independentNewRunReview = rootReview;
+                        // An ineligible review explains why recovery cannot
+                        // proceed. Keep it too; an absent exit reference must
+                        // never hide missing or mismatched durable evidence.
+                        if (rootReview is not null) independentNewRunReview = rootReview;
                     }
                     if (execution!.HasNewRun)
                         execution!.RequireFreshExecution(policy, own, target, workGrant, rootExitReference);

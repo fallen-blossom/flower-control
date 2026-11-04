@@ -223,13 +223,13 @@
     },
     {
       "path": "docs/INSTALLER.md",
-      "bytes": 13030,
-      "sha256": "ff0fa691c42ab6982fa3e24946a6854c7b145b5c6d182de88a6dbcc5a72a8e5f"
+      "bytes": 14097,
+      "sha256": "940884b742ec6cf50338b3b4175d01854666c1e97600d74e1879086d271631da"
     },
     {
       "path": "docs/INSTALLER.zh-CN.md",
-      "bytes": 12002,
-      "sha256": "752c5960a0ae9ed0aef47f687c6f34bc98d16be368abe7eaaa13dff7b4d76488"
+      "bytes": 12981,
+      "sha256": "abcbc3f0e190b3c70e7155efc1e3e7b9592a66e1da822c935fae179778b3a584"
     },
     {
       "path": "docs/LOCAL_CLIENTS.md",
@@ -1073,8 +1073,8 @@
     },
     {
       "path": "flower_control/drivers/high_helper/AdminProgramLaunch.cs",
-      "bytes": 82237,
-      "sha256": "6355c700b89f06728654ab30ae8b7862017a40e5bc305053cff9728f47c5010f"
+      "bytes": 82464,
+      "sha256": "424dec911d67170eaee0abed56dd638067afb09adbe2207236fef80f4749e5ab"
     },
     {
       "path": "flower_control/drivers/high_helper/AdminProgramLaunchTests.cs",
@@ -1523,8 +1523,8 @@
     },
     {
       "path": "flower_control/drivers/high_helper/SemanticExecution.cs",
-      "bytes": 46997,
-      "sha256": "42af1436073bc3374c925a1d98411fa89830fb96852b8ba2fe25f9c0e7fc060a"
+      "bytes": 47410,
+      "sha256": "ebe9912f65eb92fdc1d4c1a2d3e318ffd8246c83d462ead6314dbab8d21aff6c"
     },
     {
       "path": "flower_control/drivers/high_helper/SemanticLaunchPolicy.cs",
@@ -2693,13 +2693,18 @@
     },
     {
       "path": "START_HERE.zh-CN.txt",
-      "bytes": 3491,
-      "sha256": "9ce5d6a075efe8c5f03494a2c172b2bef2de56325a0b663294b18f443f237fb7"
+      "bytes": 4079,
+      "sha256": "0c0653ca67169cfe5da8b9a869066e91aa18e4d1e13c44b2ff4ccbf07ae55bd7"
     },
     {
       "path": "tests/fixtures/dynamic_host_identity/Program.cs",
       "bytes": 6672,
       "sha256": "491e1ed5d8cc16fa36fb08e5a375c6ad720e763c85b7cc9a4a2b7a6ac9243ce5"
+    },
+    {
+      "path": "tests/fixtures/execution_forms/Program.cs",
+      "bytes": 21088,
+      "sha256": "2b0343cd73a02c91a4db437888c5f214e6ccb69efb48ae9c2efa43bf7b7848f4"
     },
     {
       "path": "tests/fixtures/install_location/Checks.csproj",
@@ -2803,13 +2808,18 @@
     },
     {
       "path": "tests/test_offline_release.py",
-      "bytes": 19258,
-      "sha256": "14c7b1be2ed321dd9a2c358dd4ff956c31ad58c0c6b139548fa5be274f40c303"
+      "bytes": 20446,
+      "sha256": "27aecc0b177e0b66f3084f196fa13280d639246efaa6390208aa22e57f4371da"
     },
     {
       "path": "tests/test_public_plugin_configuration.py",
       "bytes": 5882,
       "sha256": "554ee61ab99ae44d3c8ebc998820a0efda3103c10817b7c90494cded1d0c3210"
+    },
+    {
+      "path": "tests/test_semantic_execution_forms.py",
+      "bytes": 22600,
+      "sha256": "ecefd938cb9d7ce950be41445831be65a32631157f793751200d95cbd0ceab3c"
     },
     {
       "path": "tests/test_settings_portability.py",
@@ -3033,8 +3043,8 @@
     },
     {
       "path": "tools/installer/Program.cs",
-      "bytes": 42860,
-      "sha256": "e55dc9cd46d6321c2ebb9480ea9e3bb2aa48776dc9b497f34d5806242edc9536"
+      "bytes": 43240,
+      "sha256": "d6f1ad1ca61118c4251e6e0e33aa1566c97c6cea9f6f9d8e42f90ecefb6f46fb"
     },
     {
       "path": "tools/installer/setup.manifest",
@@ -3048,13 +3058,13 @@
     },
     {
       "path": "tools/offline_install.py",
-      "bytes": 49870,
-      "sha256": "3ef22d2ec25c1c71056939d92d89a47874c3573cd842e4da3f59471d6f3a4f79"
+      "bytes": 50096,
+      "sha256": "9b56b931b4f0797c2f6c84654a63875dafa66232f6d9094e1370af3663aaa6e5"
     },
     {
       "path": "tools/offline_release.py",
-      "bytes": 24030,
-      "sha256": "f0d4f3b9b8e3f0617059bce09b63ccb8f9406319f35cf70ae7b1b383ba80a598"
+      "bytes": 24747,
+      "sha256": "251427799a9fed734fdafb6b47d80c02a368b5bd541a4c8403faf3726d59c1bf"
     },
     {
       "path": "tools/open_flower_browser.py",
