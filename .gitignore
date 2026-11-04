@@ -1,6 +1,7 @@
 # Only public source categories may enter this repository.
 /*
 !/.gitignore
+!/.gitattributes
 !/VERSION
 !/*.md
 !/LICENSE

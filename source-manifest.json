@@ -8,6 +8,11 @@
       "sha256": "6a9380dd55995983b4bbd3f32f618b0c8eed249dcc6a439c1fd6a770160354bf"
     },
     {
+      "path": ".gitattributes",
+      "bytes": 132,
+      "sha256": "6fe86c4650e242d873b776d33fdfc7e74cf8a346b59bf18f66c759c60a13b316"
+    },
+    {
       "path": ".github/ISSUE_TEMPLATE/bug.yml",
       "bytes": 912,
       "sha256": "553dbf1e7ea57a1cb36757f67079b9a7e32244a3e76e527450e0360a69681d46"
@@ -19,8 +24,8 @@
     },
     {
       "path": ".gitignore",
-      "bytes": 589,
-      "sha256": "fafb7119e5970bd6fe3a3485ab2a62886e1595b9e026a980b1cc84a8d181256a"
+      "bytes": 606,
+      "sha256": "2913d84733259b80e2407ba57f00a51a286e08dccb40c92f20ce5e6dfc9191a1"
     },
     {
       "path": "assets/branding/flower-control-icon.ico",
