@@ -5,16 +5,20 @@ using System.Text.Json;
 // The legacy SnapshotBuilder's breadth/depth and per-page budgets are retained.
 // Disposable workers cannot retain COM elements: carry ancestor RuntimeIds and
 // lazy sibling branches instead of the legacy numeric skip-from-root cursor.
-internal sealed class TreeCursorChanged : Exception { }
+internal sealed class TreeCursorChanged : Exception
+{
+    internal string Cause { get; }
+    internal TreeCursorChanged(string cause = "branch_unavailable") => Cause = cause;
+}
 internal sealed class ProviderIdentityUnavailable : Exception
 {
     public ProviderIdentityUnavailable(Exception? cause = null) : base("RuntimeId unavailable", cause) { }
 }
 internal sealed class TreePages : BoundedTreePages<AutomationElement>
 {
-    public TreePages(ITreeWalker walker, AutomationElement root, JsonElement? cursor)
+    public TreePages(ITreeWalker walker, AutomationElement root, JsonElement? cursor, Action? beforeRead = null)
         : base(root, cursor, element => ReadRuntimeId(() => element.Properties.RuntimeId.Value),
-            walker.GetFirstChild, walker.GetNextSibling) { }
+            walker.GetFirstChild, walker.GetNextSibling, beforeRead) { }
 
     internal static int[] ReadRuntimeId(Func<int[]?> read)
     {
@@ -43,10 +47,12 @@ internal class BoundedTreePages<T> where T : class
     public int Count => pending.Count;
 
     public BoundedTreePages(T root, JsonElement? cursor, Func<T, int[]> id,
-        Func<T, T?> firstChild, Func<T, T?> nextSibling)
+        Func<T, T?> firstChild, Func<T, T?> nextSibling, Action? beforeRead = null)
     {
         this.root = root;
-        Id = id; FirstChild = firstChild; NextSibling = nextSibling;
+        Id = element => { beforeRead?.Invoke(); return id(element); };
+        FirstChild = element => { beforeRead?.Invoke(); return firstChild(element); };
+        NextSibling = element => { beforeRead?.Invoke(); return nextSibling(element); };
         Scope = cursor is null ? new[] { Id(root) } : ReadPath(cursor.Value.GetProperty("scope"));
         Resolve(Scope);
         if (cursor is null) Enqueue(Scope);
@@ -79,7 +85,7 @@ internal class BoundedTreePages<T> where T : class
     {
         var key = JsonSerializer.Serialize(path);
         if (bound.TryGetValue(key, out var cached)) return cached;
-        if (!Id(root).SequenceEqual(path[0])) throw new TreeCursorChanged();
+        if (!Id(root).SequenceEqual(path[0])) throw new TreeCursorChanged("root_changed");
         var current = root;
         for (int i = 1; i < path.Length; i++)
         {
@@ -87,10 +93,10 @@ internal class BoundedTreePages<T> where T : class
             int checkedSiblings = 0;
             while (child is not null && !Id(child).SequenceEqual(path[i]))
             {
-                if (++checkedSiblings > 2048) throw new TreeCursorChanged();
+                if (++checkedSiblings > 2048) throw new TreeCursorChanged("lookup_limit");
                 child = NextSibling(child);
             }
-            current = child ?? throw new TreeCursorChanged();
+            current = child ?? throw new TreeCursorChanged("branch_unavailable");
         }
         bound[key] = current;
         return current;
@@ -109,17 +115,22 @@ internal class BoundedTreePages<T> where T : class
     // when byte/time/node limits end a page before its entry is retained.
     public bool Commit(T element, int maxDepth)
     {
-        var path = pending.Dequeue();
+        var path = pending.Peek();
+        T? sibling = null;
+        int[][]? siblingPath = null;
         if (path.Length > Scope.Length)
         {
-            var sibling = NextSibling(element);
-            if (sibling is not null) Enqueue(path[..^1].Append(Id(sibling)).ToArray(), sibling);
+            sibling = NextSibling(element);
+            if (sibling is not null) siblingPath = path[..^1].Append(Id(sibling)).ToArray();
         }
         var child = FirstChild(element);
-        if (child is null) return false;
-        if (path.Length - Scope.Length >= maxDepth) return true;
-        Enqueue(path.Append(Id(child)).ToArray(), child);
-        return false;
+        bool depthLimited = child is not null && path.Length - Scope.Length >= maxDepth;
+        var childPath = child is null || depthLimited ? null : path.Append(Id(child)).ToArray();
+        // A budget/provider failure cannot silently dequeue a continuation.
+        pending.Dequeue();
+        if (siblingPath is not null) Enqueue(siblingPath, sibling);
+        if (childPath is not null) Enqueue(childPath, child);
+        return depthLimited;
     }
     public object Cursor(long now) => new { scope = Scope,
         pending = pending.UnorderedItems.OrderBy(x => x.Priority).Select(x => x.Element).ToArray(),

@@ -8,10 +8,142 @@ internal static class SelfTests
     internal static object Run()
     {
         int assertions = 0;
-        void Require(bool value) { ++assertions; if (!value) throw new Boundary("selftest_failed"); }
+        void Require(bool value) { ++assertions; if (!value) throw new Boundary("selftest_failed_" + assertions); }
+        string absent = Path.Combine(Path.GetTempPath(), "flower-absent-" + Guid.NewGuid().ToString("N") + ".json");
+        try { BrokerPolicy.RejectLinks(absent); Require(false); }
+        catch (FileNotFoundException) { Require(true); }
+        BrokerPolicy.RejectLinks(Path.GetTempPath()); Require(true);
+        for (int tier = 0; tier < 3; tier++)
+        {
+            Require(TrayStateIcons.Select(tier, true, false) == tier + 1);
+            Require(TrayStateIcons.DisplayName(TrayStateIcons.Select(tier, true, false)) == new[] { "02-normal", "03-admin-window", "04-admin-launch" }[tier]);
+            Require(TrayStateIcons.Select(tier, false, false) == 5);
+            Require(TrayStateIcons.Select(tier, true, true) == 5);
+        }
+        Require(TrayStateIcons.Select(-1, true, false) == 4);
+        Require(TrayStateIcons.Select(3, true, false) == 5);
+        Require(TrayStateIcons.Select(-1, true, true) == 5);
+        for (int index = 0; index < 4; index++)
+        {
+            Require(AuthorityPresentation.ButtonTier(index) == index - 1);
+            Require(AuthorityPresentation.Label(index - 1).StartsWith((index + 1).ToString("00") + " "));
+        }
+        Require(!AuthorityPresentation.Selectable(3));
+        Require(AuthorityPresentation.Label(3).Contains("冻结"));
+        Require(AuthorityPresentation.FlowerState(-1) == -1);
+        Require(AuthorityPresentation.FlowerState(0) == 0 && AuthorityPresentation.FlowerState(1) == 1);
+        Require(AuthorityPresentation.FlowerState(2) == 3);
+        Require(AuthorityPresentation.Ink(-1) == 0xF2F2F2 && AuthorityPresentation.Ink(0) == 0xFFB778
+            && AuthorityPresentation.Ink(1) == 0x5CB1FF && AuthorityPresentation.Ink(2) == 0x6B6BFF);
+        Require(TrayStateIcons.Select(9, true, false) == 5);
+        for (int index = 0; index < 6; index++) Require(TrayStateIcons.Load(index, 24, 24) != IntPtr.Zero);
+        TrayStateIcons.Release();
+        var permissionRoot = new IntPtr(101); var ownedFileDialog = new IntPtr(102); var ordinaryRoot = new IntPtr(103);
+        IntPtr Owner(IntPtr value) => value == ownedFileDialog ? permissionRoot : IntPtr.Zero;
+        Require(Native.ProtectedOwnerChain(permissionRoot, value => value == permissionRoot, Owner));
+        Require(Native.ProtectedOwnerChain(ownedFileDialog, value => value == permissionRoot, Owner));
+        Require(!Native.ProtectedOwnerChain(ordinaryRoot, value => value == permissionRoot, Owner));
+        Require(!Native.ProtectedOwnerChain(IntPtr.Zero, _ => true, Owner));
+        Require(!Native.ProtectedOwnerChain(ordinaryRoot, _ => false, value => value)); // A cyclic owner cannot hang input cleanup.
+        Require(InputActivityLatch.OwnTag.ToUInt64() is > 0 and <= uint.MaxValue);
+        var defaultSettings = new UserPermissionSettings { UserSid = System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value };
+        // Semantic tiers grant execution as a whole, so the policy must still
+        // refuse the effects nobody asked for and honour every blacklist.
+        var semantic = UserPermissions.Effective(defaultSettings with { AuthorityTier = 2, AdminLaunchMode = "semantic" });
+        void SemanticRejects(string path, string arguments = "", string? expected = null)
+        {
+            try { SemanticLaunchPolicy.RequireAllowed(semantic, path, arguments); Require(false); }
+            catch (Boundary error) { Require(expected is null || error.Code == expected); }
+        }
+        SemanticLaunchPolicy.RequireAllowed(semantic, @"C:\Work\tool.exe", "");
+        SemanticLaunchPolicy.RequireAllowed(semantic, @"C:\Program Files\Python\python.exe", "script.py --flag");
+        SemanticRejects(@"C:\Program Files\Huorong\Sysdiag\huorong.exe", "", "program_launch_security_software_blocked");
+        SemanticRejects(@"C:\Windows\System32\runas.exe", "", "program_launch_cross_user_blocked");
+        SemanticRejects(@"C:\Tools\mimikatz.exe", "", "program_launch_credential_tool_blocked");
+        SemanticRejects(@"C:\Windows\System32\reg.exe", "add HKLM\\SOFTWARE\\x /v EnableLUA /d 0",
+            "program_launch_uac_policy_change_blocked");
+        SemanticRejects("tool.exe");
+        SemanticRejects(@"C:\Work\tool.exe", "a\nb");
+        var denied = semantic with { DeniedAdminLaunchApplications = [new(@"C:\Work\tool.exe", "sha256", new string('a', 64), "x")] };
+        try { SemanticLaunchPolicy.RequireAllowed(denied, @"C:\Work\tool.exe", ""); Require(false); }
+        catch (Boundary error) { Require(error.Code == "window_disabled_by_user"); }
+        try { SemanticLaunchPolicy.RequireAllowed(UserPermissions.Effective(defaultSettings with { AuthorityTier = 1 }), @"C:\Work\tool.exe", ""); Require(false); }
+        catch (Boundary error) { Require(error.Code == "program_launch_disabled"); }
+        var serializedSettings = JsonSerializer.Serialize(defaultSettings);
+        Require((UserPermissions.PolicyMutationRights & (int)System.Security.AccessControl.FileSystemRights.DeleteSubdirectoriesAndFiles) != 0);
+        Require(PermissionSettingsWindow.LayoutScale(192, 3840) == 2);
+        Require(PermissionSettingsWindow.LayoutScale(96, 1920) == 1);
+        // Narrow work areas reflow controls instead of shrinking readable text.
+        Require(PermissionSettingsWindow.LayoutScale(192, 1024) == 2);
+        UserPermissions.RequireCurrentRevision("absent", "absent"); Require(true);
+        UserPermissions.RequireCurrentRevision("current", "current"); Require(true);
+        try { UserPermissions.RequireCurrentRevision("before-tray-revoke", "revoked"); Require(false); }
+        catch (Boundary e) { Require(e.Code == "user_policy_changed_reopen_settings"); }
+        foreach (var label in new[] { "S:(ML;;NW;;;HI)", "S:(ML;;NW;;;SI)",
+            "S:PAI(ML;;NW;;;HI)", "S:P(ML;OICI;NW;;;HI)", "S:AI(ML;ID;NW;;;HI)" })
+        { SecurityLabel.RequireHigh(label); Require(true); }
+        foreach (var label in new[] { "", "S:", "S:AINO_ACCESS_CONTROL", "S:PAINO_ACCESS_CONTROL" })
+        { SecurityLabel.RequireUnlabelledExecutable(label); Require(true); }
+        {
+            var name = "Flower.Uac.OwnDuplexTest." + Guid.NewGuid().ToString("N");
+            using var server = new System.IO.Pipes.NamedPipeServerStream(name, System.IO.Pipes.PipeDirection.InOut,
+                1, System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous);
+            using var client = UacSystemPipe.OpenClient(name);
+            var connected = server.WaitForConnectionAsync(); client.Connect(2000); connected.GetAwaiter().GetResult();
+            Require(client.IsAsync);
+            var read = client.ReadAsync(new byte[1]).AsTask();
+            var received = new byte[1]; var serverRead = server.ReadAsync(received).AsTask();
+            var write = client.WriteAsync(new byte[] { 42 }).AsTask();
+            Require(write.Wait(2000) && !read.IsCompleted);
+            server.Write([17]);
+            Require(read.Wait(2000) && serverRead.Wait(2000) && received[0] == 42);
+        }
+        var originalQueryAcl = new System.Security.AccessControl.RawSecurityDescriptor("D:(A;;GA;;;SY)(A;;GA;;;BA)").DiscretionaryAcl!;
+        foreach (var queryRights in new[] { 0x1000, 8 })
+        {
+            var augmented = UacPeerReadAccess.QueryAcl(originalQueryAcl, "S-1-5-21-1-2-3-1001", queryRights);
+            Require(originalQueryAcl.Count == 2 && augmented.Count == 3);
+            for (int i = 0; i < 2; i++) Require(originalQueryAcl[i].Equals(augmented[i]));
+            Require(((System.Security.AccessControl.CommonAce)augmented[2]).AccessMask == queryRights);
+        }
+        try { UacPeerReadAccess.QueryAcl(originalQueryAcl, "S-1-5-21-1-2-3-1001", 0x1fffff); Require(false); }
+        catch (Boundary e) { Require(e.Code == "uac_peer_query_acl_rejected"); }
+        foreach (var label in new[] { "S:(ML;;NW;;;HI)", "S:(ML;ID;NW;;;HI)", "S:(ML;;NW;;;ME)" })
+        { try { SecurityLabel.RequireUnlabelledExecutable(label); Require(false); } catch (Boundary e) { Require(e.Code == "uac_image_label_would_demote_system"); } }
+        foreach (var label in new[] { "S:", "S:(ML;;NW;;;ME)", "S:(ML;;NR;;;HI)",
+            "S:PAI(ML;IO;NW;;;HI)", "S:(ML;OICIIO;NW;;;HI)",
+            "S:(ML;;NW;;;HI)(ML;;NW;;;SI)" })
+        { try { SecurityLabel.RequireHigh(label); Require(false); } catch (Boundary e) { Require(e.Code == "user_policy_unprotected"); } }
+        try { UserPermissions.RequirePasswordFocus([new Step(new Native.Input { Type = 1 })], new([], null, true), false); Require(false); }
+        catch (Boundary e) { Require(e.Code == "privacy_keyboard_focus_unverified"); }
+        using (var full = JsonDocument.Parse(serializedSettings)) { UserPermissions.Validate(UserPermissions.Decode(full)); Require(true); }
+        foreach (var key in new[] { "Schema", "Revision", "UserSid", "AdminWindows", "AdminScope", "UacMode", "JevEnabled",
+                                   "DeniedApplications", "AllowedAdminApplications", "Masks", "SmoothPointer", "HudCompact", "HudPosition" })
+        {
+            var value = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(serializedSettings)!;
+            value.Remove(key);
+            using var missing = JsonDocument.Parse(JsonSerializer.Serialize(value));
+            try { UserPermissions.Decode(missing); Require(false); }
+            catch (Boundary error) { Require(error.Code == "user_policy_invalid"); }
+        }
         Require(BrokerPolicy.ConnectionHostImageAllowed("Cursor.exe"));
         Require(BrokerPolicy.ConnectionHostImageAllowed("Code - Insiders.exe"));
         Require(BrokerPolicy.ConnectionHostImageAllowed("opencode.exe"));
+        Require(BrokerHost.AdministrativeChannel("flower-app"));
+        foreach (var channel in new string?[] { null, "", "flower-web", "flower-computer", "flower-admin", "fixture" })
+            Require(!BrokerHost.AdministrativeChannel(channel));
+        using (var wgcPolicy = JsonDocument.Parse("{\"WgcWorkerHashes\":{\"Flower.ComputerWgc.dll\":\"" + new string('a',64) + "\"}}"))
+        {
+            var decoded = Protocol.Decode<BrokerPolicy>(wgcPolicy);
+            Require(decoded.WgcWorkerHashes.Count == 1);
+            Require(decoded.WgcWorkerHashes["Flower.ComputerWgc.dll"] == new string('a',64));
+        }
+        using (var oldPolicy = JsonDocument.Parse("{}")) Require(Protocol.Decode<BrokerPolicy>(oldPolicy).WgcWorkerHashes.Count == 0);
+        using (var unknownPolicy = JsonDocument.Parse("{\"WgcWorkerHash\":{}}"))
+        {
+            try { Protocol.Decode<BrokerPolicy>(unknownPolicy); Require(false); }
+            catch (JsonException) { Require(true); }
+        }
         foreach (var image in new[] { "node.exe", "python.exe", "pwsh.exe", "powershell.exe", "cmd.exe", "unknown.exe" })
             Require(!BrokerPolicy.ConnectionHostImageAllowed(image));
         long waitElapsed = 1999;
@@ -73,6 +205,40 @@ internal static class SelfTests
         var balanced = new InputLedger(inputs => (uint)inputs.Length);
         result = new Receipt(); balanced.Send(pair, result); balanced.Release(result);
         Require(balanced.State == "released" && result.SentEvents == 2 && result.ReleaseEvents == 0);
+        var dispatchOrder = new List<string>(); long lastReceiver = 10;
+        var guardedSegment = new InputLedger(inputs => { dispatchOrder.Add("send"); return (uint)inputs.Length; });
+        guardedSegment.PrivacyCheck = _ => { dispatchOrder.Add("privacy"); lastReceiver = 20; };
+        result = new Receipt();
+        var actualReceiver = ComputerPlans.DispatchSegment(pair, guardedSegment, result, () => {
+            dispatchOrder.Add("final"); return lastReceiver;
+        });
+        Require(actualReceiver == 20 && dispatchOrder.SequenceEqual(new[] { "privacy", "final", "send" }));
+        Require(result.BusinessEvents == 2 && guardedSegment.State == "released");
+        using (var isolatedStop = new SharedWriteGate("segment_" + Guid.NewGuid().ToString("N")))
+        {
+            int finalChecks = 0, sendsAfterStop = 0;
+            var stoppedDuringPrivacy = new InputLedger(inputs => { sendsAfterStop++; return (uint)inputs.Length; }, isolatedStop);
+            stoppedDuringPrivacy.PrivacyCheck = _ => isolatedStop.Stop();
+            result = new Receipt();
+            try { ComputerPlans.DispatchSegment(pair, stoppedDuringPrivacy, result, () => { finalChecks++; return 10; }); Require(false); }
+            catch (Boundary error) { Require(error.Code == "global_write_stopped"); }
+            Require(finalChecks == 0 && sendsAfterStop == 0 && result.RequestedEvents == 0 && stoppedDuringPrivacy.State == "released");
+        }
+        foreach (var failure in new[] { "input_stopped", "target_identity_changed", "geometry_changed", "input_context_changed" })
+        {
+            bool becameInvalid = false; int physicalSends = 0;
+            var guardedFailure = new InputLedger(inputs => { physicalSends++; return (uint)inputs.Length; });
+            guardedFailure.PrivacyCheck = _ => becameInvalid = true;
+            result = new Receipt();
+            try {
+                ComputerPlans.DispatchSegment(pair, guardedFailure, result, () => {
+                    if (becameInvalid) throw new Boundary(failure); return 10;
+                });
+                Require(false);
+            }
+            catch (Boundary error) { Require(error.Code == failure); }
+            Require(physicalSends == 0 && !result.BusinessAttempted && result.RequestedEvents == 0 && guardedFailure.State == "released");
+        }
         Require(System.Runtime.InteropServices.Marshal.SizeOf<Native.Input>() == (IntPtr.Size == 8 ? 40 : 28));
         Require(ResourceLocks.Name("desktop-foreground-input-v1") == "Local\\FlowerControl.Resource.v1.b6918b905f1abda1b0a99f406ff6e6ecbe11115e12b0330c5d0e5bf4bb9fe65c");
 
@@ -128,17 +294,90 @@ internal static class SelfTests
         var planElement = JsonSerializer.SerializeToElement(planObject);
         var parsed = ComputerPlans.Parse(planElement);
         Require(parsed.Binding.Generation?.Length == 260 && parsed.Plans[0].Segments[0].Steps.Length == 2);
+        Require(!parsed.SuppressPointerApproach);
+        foreach (bool suppress in new[] { false, true })
+        {
+            var desktopPlan = JsonSerializer.SerializeToNode(planObject)!.AsObject();
+            desktopPlan["suppress_pointer_approach"] = suppress;
+            Require(ComputerPlans.Parse(JsonSerializer.SerializeToElement(desktopPlan)).SuppressPointerApproach == suppress);
+        }
+        foreach (var invalid in new object?[] { 1, "true", null })
+        {
+            var malformedFlag = JsonSerializer.SerializeToNode(planObject)!.AsObject();
+            malformedFlag["suppress_pointer_approach"] = JsonSerializer.SerializeToNode(invalid);
+            try { ComputerPlans.Parse(JsonSerializer.SerializeToElement(malformedFlag)); Require(false); }
+            catch (Boundary error) { Require(error.Code == "input_plan_rejected"); }
+        }
+        for (int index = 0; index < 8; index++)
+        {
+            var sequencePlan = JsonSerializer.SerializeToElement(new { planObject.kind, planObject.schema_version,
+                planObject.command, binding = new { planObject.binding.task_id, planObject.binding.action_id,
+                    planObject.binding.observation_id, planObject.binding.generation, sequence_step = index },
+                planObject.desktop, planObject.plans });
+            Require(ComputerPlans.Parse(sequencePlan).Binding.SequenceStep == index);
+        }
+        foreach (int index in new[] { -1, 8 })
+        {
+            var invalidSequence = JsonSerializer.SerializeToElement(new { planObject.kind, planObject.schema_version,
+                planObject.command, binding = new { planObject.binding.task_id, planObject.binding.action_id,
+                    planObject.binding.observation_id, planObject.binding.generation, sequence_step = index },
+                planObject.desktop, planObject.plans });
+            try { ComputerPlans.Parse(invalidSequence); Require(false); }
+            catch (Boundary error) { Require(error.Code == "input_plan_rejected"); }
+        }
         object Segment(int offset, params object[] events) => new { offset_ms = offset, events };
         ComputerPlan EventPlan(string command, int duration, params object[] segments) => ComputerPlans.Parse(JsonSerializer.SerializeToElement(new {
             kind = "computer_input_plan", schema_version = 1, command, planObject.binding,
             desktop = new { left = 0, top = 0, width = 1920, height = 1080 },
             plans = new[] { new { duration_ms = duration, segments } } }));
+        object[] ChordEvents(int count)
+        {
+            var keys = new[] { 17, 16, 18, 91, 65, 66 }.Take(count).ToArray();
+            return keys.Select(code => (object)new { kind = "virtual_key", code, down = true })
+                .Concat(keys.Reverse().Select(code => (object)new { kind = "virtual_key", code, down = false })).ToArray();
+        }
+        Require(EventPlan("key", 0, Segment(0, ChordEvents(5))).Plans[0].Segments[0].Steps.Length == 10);
+        try { EventPlan("key", 0, Segment(0, ChordEvents(6))); Require(false); }
+        catch (Boundary error) { Require(error.Code == "input_plan_rejected"); }
+        try { EventPlan("key", 0, Segment(0, ChordEvents(5)[..^1])); Require(false); }
+        catch (Boundary error) { Require(error.Code == "input_plan_unbalanced"); }
         var mouseDown = new { kind = "mouse_button", button = "left", down = true };
         var mouseUp = new { kind = "mouse_button", button = "left", down = false };
         var absolute = new { kind = "mouse_absolute", nx = 32767, ny = 32767 };
         var relative = new { kind = "mouse_relative", dx = 1, dy = 0 };
+        object[] DragSegments(int count) => Enumerable.Range(0, count).Select(index =>
+            index == 0 ? Segment(0, absolute, mouseDown) : index == count - 1
+                ? Segment(index, absolute, mouseUp) : Segment(index, absolute)).ToArray();
+        var longDrag = EventPlan("drag", 63, DragSegments(64));
+        Require(longDrag.Plans[0].Segments.Length == 64);
+        Require(longDrag.Plans[0].Segments.Sum(segment => segment.Steps.Length) == 66);
+        var fullBatch = ComputerPlans.Parse(JsonSerializer.SerializeToElement(new {
+            kind = "computer_input_plan", schema_version = 1, command = "batch", planObject.binding,
+            desktop = new { left = 0, top = 0, width = 1920, height = 1080 },
+            plans = Enumerable.Range(0, 100).Select(_ => new { duration_ms = 30, segments = DragSegments(31) }).ToArray()
+        }));
+        Require(fullBatch.Plans.Sum(batch => batch.Segments.Length) == 3100);
+        Require(fullBatch.Plans.Sum(batch => batch.DurationMs) == 3000);
+        try { EventPlan("drag", 64, DragSegments(65)); Require(false); }
+        catch (Boundary error) { Require(error.Code == "input_plan_rejected"); }
+
         var keyDown = new { kind = "virtual_key", code = 17, down = true };
         var keyUp = new { kind = "virtual_key", code = 17, down = false };
+        foreach (int duration in new[] { 2001, 2500, 3000 })
+            Require(EventPlan("key", duration, Segment(0, keyDown), Segment(duration, keyUp)).Plans[0].DurationMs == duration);
+        try { EventPlan("key", 3001, Segment(0, keyDown), Segment(3001, keyUp)); Require(false); }
+        catch (Boundary error) { Require(error.Code == "input_plan_rejected"); }
+        object HoldBatch(int duration) => new { duration_ms = duration,
+            segments = new[] { Segment(0, keyDown), Segment(duration, keyUp) } };
+        foreach (int second in new[] { 1500, 1501 })
+        {
+            var holdBatch = JsonSerializer.SerializeToElement(new { kind = "computer_input_plan", schema_version = 1,
+                command = "batch", planObject.binding, desktop = (object?)null,
+                plans = new[] { HoldBatch(1500), HoldBatch(second) } });
+            if (second == 1500) Require(ComputerPlans.Parse(holdBatch).Plans.Sum(p => p.DurationMs) == 3000);
+            else
+            { try { ComputerPlans.Parse(holdBatch); Require(false); } catch (Boundary error) { Require(error.Code == "input_plan_rejected"); } }
+        }
         foreach (var mousePlan in new[] {
             EventPlan("click", 0, Segment(0, absolute, mouseDown, mouseUp)),
             EventPlan("double_click", 0, Segment(0, absolute, mouseDown, mouseUp, mouseDown, mouseUp)),
@@ -186,6 +425,14 @@ internal static class SelfTests
         Require(mouseContext.Baseline == changedMouseContext);
         mouseContext.Recheck(new(null, null, "unknown"), 140);
         Require(mouseContext.Baseline == new InputContext(null, null, "unknown"));
+        int contextReads = 0;
+        mouseContext.RecheckCurrent(() => { ++contextReads; throw new Exception("unused_mouse_ime_read"); }, 160);
+        Require(contextReads == 0);
+        var keyboardRead = new InputContextGuard(keyboardContext, true);
+        keyboardRead.RecheckCurrent(() => { ++contextReads; return keyboardContext; }, 160);
+        Require(contextReads == 1);
+        try { keyboardRead.RecheckCurrent(() => keyboardContext with { Composition = "active" }, 170); Require(false); }
+        catch (Boundary error) { Require(error.Code == "input_context_changed"); }
         void ContextRejected(InputContextGuard guard, InputContext current, long now)
         { try { guard.Recheck(current, now); Require(false); } catch (Boundary error) { Require(error.Code == "input_context_changed"); } }
         ContextRejected(new(keyboardContext, true), keyboardContext with { Focus = 30 }, 20);
@@ -207,6 +454,25 @@ internal static class SelfTests
         var unknownContext = new InputContextGuard(new(10, null, "unknown"), true);
         unknownContext.MouseDispatched(30, 10); unknownContext.Recheck(new(30, 20, "inactive"), 20);
         Require(unknownContext.Baseline == new InputContext(30, null, "unknown"));
+        long settleTime = 10; int settleChecks = 0;
+        var asyncClick = PendingClick();
+        asyncClick.SettlePending(() => keyboardContext with { Focus = settleTime < 40 ? 10 : 30 }, () => settleTime,
+            () => ++settleChecks, delay => settleTime += delay);
+        Require(settleTime == 40 && settleChecks == 4 && asyncClick.Baseline.Focus == 30);
+        asyncClick.Recheck(keyboardContext with { Focus = 30 }, 571); // Own metadata work does not expire a consumed transition.
+        ContextRejected(asyncClick, keyboardContext with { Focus = 31 }, 572);
+        var settledTraversal = new InputContextGuard(keyboardContext, true); settledTraversal.TraversalDispatched(10); settleTime = 10;
+        try { settledTraversal.SettlePending(() => keyboardContext, () => settleTime, () => { }, delay => settleTime += delay); Require(false); }
+        catch (Boundary error) { Require(error.Code == "input_focus_transition_unconfirmed"); }
+        Require(settleTime == 160 && settledTraversal.Baseline == keyboardContext);
+        ContextRejected(settledTraversal, keyboardContext with { Focus = 30 }, 161); // Never accept a change during a later scan.
+        foreach (var textValue in new[] { "a\tb", "a\nb", "a\r\nb", "a\rb" })
+        {
+            var navigationText = ComputerPlans.TextBatches(textValue);
+            Require(navigationText.Length == 3 && navigationText[1].Segments[0].Steps.Length == 2);
+            Require(navigationText[1].Segments[0].Steps[0].Token == (textValue.Contains('\t') ? "vk:9" : "vk:13"));
+        }
+        Require(ComputerPlans.TextBatches(new string('\t', 8192)).Length == 8192);
         var initialPoint = new Native.Point { X = 9, Y = 8 };
         Require(InputContext.FocusPoint(pair, null, initialPoint) is { X: 9, Y: 8 });
         var mouseAbsoluteStep = new Step(new Native.Input { Data = new Native.Union { Mouse = new Native.Mouse { Dx = 65535, Dy = 0, Flags = 0xc001 } } });
@@ -280,6 +546,14 @@ internal static class SelfTests
         var readPrepare = new Prepare("prepare", owner, readTarget, readOperation, ["physical-window-v1:10:20:30"], 3000, "task", new string('c', 32), 1);
         Protocol.Validate(readPrepare, true);
         Require(!Protocol.NeedsForeground(readOperation) && !Protocol.UsesPhysicalInput(readOperation));
+        var backgroundPlan = JsonSerializer.SerializeToElement(new { schema_version = 1, command = "set_value",
+            arguments = new { target = readArguments.target, reference = new { }, observation = new { },
+                privacy = "structure_only", privacy_scope = "", value = "test", execution_mode = "must_background" },
+            binding = new { task_id = "task", action_id = "task:app:background", observation_id = "observation", generation = "generation", sequence_step = (int?)null } });
+        var backgroundOperation = new Operation("app_request", Plan: backgroundPlan);
+        Protocol.Validate(readPrepare with { Operation = backgroundOperation }, true);
+        Require(!Protocol.NeedsForeground(backgroundOperation) && !Protocol.ReadOnly(backgroundOperation));
+        Require(Protocol.NeedsForeground(backgroundOperation with { Activate = true }));
         var initial = JsonSerializer.SerializeToElement(new { schema_version = 1, command = "observe", arguments = readArguments,
             binding = new { task_id = "task", action_id = "initial", observation_id = (string?)null, generation = (string?)null, sequence_step = (int?)null } });
         Require(AppExecutor.Parse(initial, readTarget).Binding.ObservationId is null);
@@ -360,8 +634,40 @@ internal static class SelfTests
         var mismatchedRequest = new BrokerRequest();
         Require(!Program.AcceptPreGoStop(mismatchedStop, "ledger", unclaimed, mismatchedRequest));
         Require(mismatchedRequest.ActionId == "" && !mismatchedRequest.Stop.IsCancellationRequested);
+        assertions += BrokerLifecycleTests.Run();
+        assertions += SettingsUiPreferenceTests.Run();
+        assertions += UacQualificationLeaseStore.RunFixtureTests();
         assertions += WindowLayoutTests.Run();
         assertions += NativePhaseTests.Run();
-        return new { assertions, nativeInputExecuted = false, mutexAcquired = false, highVerified = false, journalFixture = journalRoot };
+        var planningClock = System.Diagnostics.Stopwatch.StartNew();
+        Native.Point[] curve;
+        try { curve = PointerPath.Points(new() { X = -500, Y = 300 }, new() { X = 600, Y = 80 }); }
+        catch (Boundary error) when (error.Code == "pointer_planning_budget_exceeded")
+        {
+            // This is a fixed, synthetic geometry, never a user target. Keep
+            // timing failures visible instead of retrying or warming the path.
+            Console.Error.WriteLine(JsonSerializer.Serialize(new { selftest = "fixed_pointer_curve", start = new[] { -500, 300 }, end = new[] { 600, 80 },
+                stage = error.Data["PointerStage"], work = error.Data["PointerWork"], elapsed_ms = error.Data["PointerElapsedMs"] }));
+            throw;
+        }
+        double pointerPlanningMs = planningClock.Elapsed.TotalMilliseconds;
+        Require(curve.Length == 5 && curve[0].X > -500 && curve[^1].X < 600);
+        Require(PointerPath.Points(new() { X = 0, Y = 0 }, new() { X = 5, Y = 5 }).Length == 0);
+        var preparedDesktop = new DesktopShape(0, 0, 1000, 800);
+        Step[] preparedBusiness = [new(new Native.Input { Data = new Native.Union {
+            Mouse = new Native.Mouse { Dx = 6554, Dy = 8192, Flags = 0xc001 } } })];
+        var preparedApproachFixture = new PointerPath.PreparedApproach(new() { X = 20, Y = 30 }, new() { X = 100, Y = 100 },
+            preparedDesktop, new PointerGeometry.Motion(0, []), null, 12);
+        Require(PointerPath.ApproachReusable(preparedApproachFixture, preparedBusiness, preparedDesktop, null, new() { X = 20, Y = 30 }));
+        Require(!PointerPath.ApproachReusable(preparedApproachFixture, preparedBusiness, preparedDesktop, null, new() { X = 21, Y = 30 }));
+        Require(!PointerPath.ApproachReusable(preparedApproachFixture, preparedBusiness,
+            preparedDesktop with { Width = 1001 }, null, new() { X = 20, Y = 30 }));
+        Require(!PointerPath.ApproachReusable(preparedApproachFixture, preparedBusiness, preparedDesktop,
+            PointerGeometry.Constraints.Empty, new() { X = 20, Y = 30 }));
+        var pointerLedger = new InputLedger(events => (uint)events.Length);
+        var pointerReceipt = new Receipt();
+        pointerLedger.Send([new Step(new Native.Input { Data = new Native.Union { Mouse = new Native.Mouse { Flags = 0xc001 } } })], pointerReceipt, pointer: true);
+        Require(pointerReceipt.PointerEvents == 1 && pointerReceipt.BusinessEvents == 0 && !pointerReceipt.BusinessAttempted);
+        return new { assertions, pointerPlanningMs, nativeInputExecuted = false, mutexAcquired = false, highVerified = false, journalFixture = journalRoot };
     }
 }

@@ -11,6 +11,10 @@ from .high_broker_types import ComputerInputPlan, InputBinding, WindowLayoutPlan
 from .high_helper import HighHelperError, HighTarget
 
 
+def sequence_batches(value):
+    return value if type(value) is tuple else (value,)
+
+
 def _event(step):
     # Validate the native DTO again; never pass arbitrary INPUT bytes or flags.
     step.__post_init__()
@@ -34,7 +38,10 @@ def _event(step):
     return {"kind": "mouse_absolute", "nx": mouse.dx, "ny": mouse.dy}
 
 
-def input_plan(command, batches, *, task, action, observation, generation, sequence_step=None):
+def input_plan(command, batches, *, task, action, observation, generation, sequence_step=None,
+               suppress_pointer_approach=False, settle_final_focus=False):
+    if type(suppress_pointer_approach) is not bool:raise ValueError('input_plan_rejected')
+    if type(settle_final_focus) is not bool:raise ValueError('input_plan_rejected')
     binding = InputBinding(task, action, observation, generation, sequence_step)
     desktop, plans = None, []
     for batch in batches:
@@ -50,8 +57,21 @@ def input_plan(command, batches, *, task, action, observation, generation, seque
         plans.append({"duration_ms": batch.duration_ms if timed else 0,
                       "segments": [{"offset_ms": offset, "events": [_event(step) for step in steps]}
                                    for offset, steps in segments]})
-    return ComputerInputPlan.from_wire({"kind": "computer_input_plan", "schema_version": 1,
-        "command": command, "binding": binding.wire(), "desktop": desktop, "plans": plans})
+        if batch.pointer_constraints is not None or batch.pointer_motion is not None:
+            from .pointer_geometry import MotionConstraints
+            constraints=batch.pointer_constraints or MotionConstraints()
+            motion=batch.pointer_motion
+            plans[-1]["pointer"]={"spec":"bezier-distance-v1",
+                "obstacles":[list(r) for r in constraints.obstacles],
+                "footprint":list(constraints.footprint),"uncertainty_px":constraints.uncertainty_px,
+                "automatic":bool(motion and motion.automatic),
+                "required_points":([[round(p[0]),round(p[1])] for _,p in motion.route.required]
+                    if motion and motion.route else [])}
+    value={"kind": "computer_input_plan", "schema_version": 2,"motion_spec":"bezier-distance-v1",
+        "command": command, "binding": binding.wire(), "desktop": desktop, "plans": plans}
+    if suppress_pointer_approach:value['suppress_pointer_approach']=True
+    if settle_final_focus:value['settle_final_focus']=True
+    return ComputerInputPlan.from_wire(value)
 
 
 def layout_environment():
@@ -128,6 +148,14 @@ class ComputerHighConnection:
                 self.discard(task)
                 return None
             raise
+
+    def open_monitor(self, task):
+        # A separate authenticated pipe keeps status polling out of execute's
+        # ready/go/stop stream and its session lock.
+        with self.gate:
+            if self.client is None:
+                self.client = self.factory()
+            return self.client.open_session(task)
 
     @staticmethod
     def require_input(status):

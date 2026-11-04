@@ -16,6 +16,8 @@ ORIGIN_FIELD = "flower_origin"
 WEB_TOOLS = ("flower_origin_probe", "flower_web_start_temp", "flower_web_run",
              "flower_web_screenshot",
              "flower_web_action_status", "flower_web_cancel", "flower_web_close_temp",
+             "flower_web_close_status", "flower_web_set_window_mode",
+             "flower_web_jev_policy", "flower_web_finish_run",
              "flower_web_open_ai", "flower_web_close_ai", "flower_web_reconnect_ai",
              "flower_web_begin_ai_login", "flower_web_ai_login_status",
              "flower_web_finish_ai_login", "flower_web_cancel_ai_login",
@@ -29,10 +31,19 @@ APP_TOOLS = ("flower_app_origin_probe", "flower_app_list_windows",
              "flower_app_set_value",
              "flower_app_invoke", "flower_app_set_toggle", "flower_app_select_item",
              "flower_app_action_status", "flower_app_cancel", "flower_app_pause")
+APP_TOOLS += ("flower_app_jev_policy", "flower_app_tasks", "flower_app_artifact", "flower_app_trace")
+APP_TOOLS += ("flower_app_launch_admin", "flower_app_work_authority")
 COMPUTER_TOOLS = ("flower_computer_origin_probe", "flower_computer_list_windows",
                   "flower_computer_select_window", "flower_computer_observe",
                   "flower_computer_activate", "flower_computer_input", "flower_computer_action_status",
                   "flower_computer_cancel", "flower_computer_pause")
+COMPUTER_TOOLS += ("flower_computer_jev_policy", "flower_computer_tasks", "flower_computer_artifact")
+COMPUTER_TOOLS += ("flower_computer_cursor_position",)
+COMPUTER_TOOLS += ("flower_computer_chain",)
+COMPUTER_TOOLS += ("flower_computer_handoff_window",)
+COMPUTER_TOOLS += ('flower_computer_desktop_observe','flower_computer_desktop_input',
+                   'flower_computer_desktop_action_status','flower_computer_desktop_cancel')
+COMPUTER_TOOLS += ('flower_computer_plan','flower_computer_plan_status','flower_computer_plan_cancel')
 FLOWER_TOOLS = frozenset(
     [f"mcp__{server}__{tool}"
      for server in ("flower_web", "flower-web") for tool in WEB_TOOLS]
@@ -58,10 +69,11 @@ def _claude_identifier(value: object, field: str) -> str:
 
 
 def state_directory() -> Path:
-    local = os.environ.get("LOCALAPPDATA")
-    if not local or not Path(local).is_absolute():
-        raise OriginError("local_app_data_unavailable")
-    return Path(local) / "FlowerControl" / "state-v1"
+    from flower_control.data_paths import DataPathError, resolve_data_root
+    try:
+        return resolve_data_root() / "state-v1"
+    except DataPathError as error:
+        raise OriginError(str(error)) from None
 
 
 def issue_for_hook(event: Mapping[str, Any], ledger: OriginLedger, *, host: str = "codex") -> dict:
@@ -94,7 +106,8 @@ def issue_for_hook(event: Mapping[str, Any], ledger: OriginLedger, *, host: str 
                         turn_id=turn,
                         tool_use_id=event.get("tool_use_id"),
                         tool_name=name, tool_input=arguments,
-                        hook_origin="trusted_hook", cwd=event.get("cwd"), host=host)
+                        hook_origin="trusted_hook", cwd=event.get("cwd"), host=host,
+                        thread_title=event.get("session_title"))
     ticket = ledger.issue(call)
     output = {
         "hookEventName": "PreToolUse",

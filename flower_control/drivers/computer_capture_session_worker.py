@@ -8,8 +8,9 @@ import time
 
 import win32job
 
-from .computer_capture_session import read_frame, safe_diagnostic, _DIAGNOSTIC_CODES
-from .computer_capture_worker import _WGC_EXE, _native_environment
+from .computer_capture_session import (read_frame, safe_diagnostic, _DIAGNOSTIC_CODES,
+                                      SESSION_LIFETIME_SECONDS)
+from .computer_capture_worker import wgc_executable, _native_environment
 from .computer_native import WindowIdentity, assert_window, window_geometry
 from .worker_lifetime import WorkerLifetime
 
@@ -36,15 +37,17 @@ def main():
             raise ValueError("invalid_session_request")
         lifetime = WorkerLifetime(request["owner_identity"], request["stop_event"])
         # Native monitor terminates the entire owned tree even if stdin blocks.
-        timer = threading.Timer(9, lambda: win32job.TerminateJobObject(lifetime.job, 1))
+        timer = threading.Timer(SESSION_LIFETIME_SECONDS + 1,
+                                lambda: win32job.TerminateJobObject(lifetime.job, 1))
         timer.daemon = True
         timer.start()
         identity = WindowIdentity(**request["identity"])
         assert_window(identity)
         geometry = window_geometry(identity)
-        if not _WGC_EXE.is_file():
+        executable = wgc_executable()
+        if not executable.is_file():
             raise RuntimeError("wgc_binary_missing")
-        child = subprocess.Popen([str(_WGC_EXE), "--session"], stdin=subprocess.PIPE,
+        child = subprocess.Popen([str(executable), "--session"], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_native_environment(),
             creationflags=subprocess.CREATE_NO_WINDOW)
         def forward_diagnostics():

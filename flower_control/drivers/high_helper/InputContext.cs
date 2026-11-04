@@ -131,11 +131,11 @@ internal record InputContext(long? Focus, long? Layout, string Composition)
         }
     }
     internal static bool MouseDown(Step step) => step.Raw.Type == 0 && (step.Raw.Data.Mouse.Flags & 0x2a) != 0;
-    private static Native.Point AbsolutePoint(Native.Mouse mouse, DesktopShape? desktop)
+    internal static Native.Point AbsolutePoint(Native.Mouse mouse, DesktopShape? desktop)
     {
         if (desktop is null) throw new Boundary("desktop_topology_required");
-        return new() { X = checked((int)(desktop.Left + Math.Round(mouse.Dx * (desktop.Width - 1.0) / 65535))),
-            Y = checked((int)(desktop.Top + Math.Round(mouse.Dy * (desktop.Height - 1.0) / 65535))) };
+        return new() { X = checked((int)(desktop.Left + (long)mouse.Dx * desktop.Width / 65536)),
+            Y = checked((int)(desktop.Top + (long)mouse.Dy * desktop.Height / 65536)) };
     }
     internal static Native.Point? FocusPoint(Step[] steps, DesktopShape? desktop, Native.Point? initial)
     {
@@ -149,10 +149,13 @@ internal record InputContext(long? Focus, long? Layout, string Composition)
         }
         return clicked;
     }
-    internal static long? CheckReceiver(Bound bound, Step[] steps, DesktopShape? desktop)
+    internal static long? CheckReceiver(Bound bound, Step[] steps, DesktopShape? desktop, Action<long>? captureCheck = null,
+        UserPermissionSettings? permissions = null)
     {
+        UserPermissions.RequireInput(bound, steps, desktop, permissions: permissions);
         if (!steps.Any(step => step.Raw.Type == 0)) return null;
         var gui = GetGui(bound) ?? throw new Boundary("mouse_receiver_unavailable");
+        captureCheck?.Invoke(gui.Capture.ToInt64());
         if (gui.Capture != IntPtr.Zero)
         {
             if (Native.GetAncestor(gui.Capture, 2).ToInt64() != bound.Hwnd) throw new Boundary("mouse_receiver_changed");
@@ -185,15 +188,54 @@ internal sealed class InputContextGuard(InputContext baseline, bool keyboard)
     private long? expectedFocus;
     private long focusDeadline;
     private bool traversal;
-    internal void TraversalDispatched(long now) { traversal = true; focusDeadline = now + 150; }
+    private bool traversalUnconfirmed;
+    internal void RecheckCurrent(Func<InputContext> read, long now)
+    {
+        // Mouse-only plans do not consume keyboard focus, layout or IME.
+        // Avoid synchronous cross-process IMM/provider reads for unused data;
+        // target, capture/receiver, privacy, Stop and geometry checks stay live.
+        if (keyboard) Recheck(read(), now);
+    }
+    internal void TraversalDispatched(long now) { expectedFocus = null; traversalUnconfirmed = false; traversal = true; focusDeadline = now + 150; }
     internal void MouseDispatched(long? receiver, long now)
     {
         expectedFocus = keyboard ? receiver : null;
+        traversal = false;
+        traversalUnconfirmed = false;
         focusDeadline = now + 150;
+    }
+    internal void SettlePending(Func<InputContext> read, Func<long> elapsed, Action check, Action<int> sleep)
+    {
+        if (!keyboard) return;
+        // Resolve an asynchronous own click/Tab before the fresh password scan.
+        // Its original 150 ms is a transition window, not a budget consumed by
+        // our metadata work. Once preparation starts no later focus change is
+        // accepted, even if the scan itself is slow.
+        while (true)
+        {
+            check();
+            Recheck(read(), elapsed());
+            if (traversalUnconfirmed) throw new Boundary("input_focus_transition_unconfirmed");
+            if (!traversal && expectedFocus == Baseline.Focus) expectedFocus = null;
+            if (expectedFocus is null && !traversal) return;
+            int remaining = (int)Math.Max(0, Math.Min(10, focusDeadline - elapsed()));
+            if (remaining == 0)
+            {
+                if (traversal) { traversalUnconfirmed = true; traversal = false; throw new Boundary("input_focus_transition_unconfirmed"); }
+                expectedFocus = null;
+                return;
+            }
+            sleep(remaining);
+        }
     }
     internal void Recheck(InputContext current, long now)
     {
-        if (now > focusDeadline) { expectedFocus = null; traversal = false; }
+        if (now > focusDeadline)
+        {
+            expectedFocus = null;
+            if (traversal) traversalUnconfirmed = true;
+            traversal = false;
+        }
         if (!keyboard)
         {
             // Mouse-only plans do not depend on keyboard focus, layout or IME.

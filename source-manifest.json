@@ -1,25 +1,36 @@
 {
   "schema": 1,
-  "version": "0.1.0-preview.2",
-  "source_only": true,
-  "license_finalized": true,
-  "clean_machine_install_verified": false,
-  "host_adapters_runtime_verified": false,
+  "version": "0.1.0-preview.3",
   "files": [
     {
+      "path": ".codex-plugin/plugin.json",
+      "bytes": 2014,
+      "sha256": "6a9380dd55995983b4bbd3f32f618b0c8eed249dcc6a439c1fd6a770160354bf"
+    },
+    {
       "path": ".github/ISSUE_TEMPLATE/bug.yml",
-      "bytes": 938,
-      "sha256": "c1b1c19bc4ac5adbd512be37c03f58cb90a80b513cb4df53c80c82e00fde09ee"
+      "bytes": 912,
+      "sha256": "553dbf1e7ea57a1cb36757f67079b9a7e32244a3e76e527450e0360a69681d46"
     },
     {
       "path": ".github/pull_request_template.md",
-      "bytes": 369,
-      "sha256": "b1374e95ffaf7ba5e0b92f316e3f561aba0fdb87759368647aaa381c7994c3da"
+      "bytes": 364,
+      "sha256": "1392130d913fc2d046b1c9f949f14f30f6016b01912917e492b805a22ba6a81d"
     },
     {
       "path": ".gitignore",
-      "bytes": 516,
-      "sha256": "4ecdbe5c175b0ce0d8ac58e511ef452773b0c4122db30a9be5659a4dc2333c51"
+      "bytes": 589,
+      "sha256": "fafb7119e5970bd6fe3a3485ab2a62886e1595b9e026a980b1cc84a8d181256a"
+    },
+    {
+      "path": "assets/branding/flower-control-icon.ico",
+      "bytes": 148458,
+      "sha256": "26a33d2a421eaf4fb4d878ace3c12cd78f7b6160227ec51033e72cd9644fa2e1"
+    },
+    {
+      "path": "assets/branding/flower-control-icon.png",
+      "bytes": 93509,
+      "sha256": "41d6d3047103495fcb931924a1e0cb139e6f2725c92f94a7160fd523884b08c4"
     },
     {
       "path": "assets/branding/flower-petal/flower-petal-256.png",
@@ -32,14 +43,114 @@
       "sha256": "7f3e2166d9438c1c94488ce1a3ae2dad780cf8a4f362b6c8862bdb0c4d7ca407"
     },
     {
+      "path": "assets/branding/tray-states-v4/01-normal.ico",
+      "bytes": 115319,
+      "sha256": "e3814cfe033d9a3b1bc25ed477cc7b60cd1efe2744b3d92048804a9d2e154cb9"
+    },
+    {
+      "path": "assets/branding/tray-states-v4/02-admin-window.ico",
+      "bytes": 139261,
+      "sha256": "42debdac7eea633359047fc89f51f665dfc6a77f81be08f5b1cf89be94bddb19"
+    },
+    {
+      "path": "assets/branding/tray-states-v4/03-admin-launch.ico",
+      "bytes": 148835,
+      "sha256": "8bda4a78ed42d56841e463631d8ad5ac800761d73420be423120bdef9cfe4501"
+    },
+    {
+      "path": "assets/branding/tray-states-v4/04-system-uac.ico",
+      "bytes": 145302,
+      "sha256": "49385e4a93e3b10242c1ade2c0a96f8568e9ff145750e52db200a7e48c76bc5f"
+    },
+    {
+      "path": "assets/branding/tray-states-v4/05-disabled.ico",
+      "bytes": 97268,
+      "sha256": "4321883f1f3f9dc0a4f0c3998c5b6aeee4cc2b8cc5bc6fc3a2d12d697c224b10"
+    },
+    {
+      "path": "assets/branding/tray-states-v4/06-fault.ico",
+      "bytes": 130139,
+      "sha256": "ab83ba9ccc8d3a5e5f362d39791b6acb86d1ad396a021670355821c141074090"
+    },
+    {
+      "path": "assets/branding/tray-states/01-off.ico",
+      "bytes": 109794,
+      "sha256": "92d40cebef8b86250a60e58fae35302991d9ee6aef64a3aba629f61c415815a8"
+    },
+    {
+      "path": "assets/branding/tray-states/02-observe-cancel.ico",
+      "bytes": 124503,
+      "sha256": "50f10b3f8b6d3207b20bd6b4ca9babdc8c49162f95461e411e0977e9e1b17f66"
+    },
+    {
+      "path": "assets/branding/tray-states/03-whitelist.ico",
+      "bytes": 141806,
+      "sha256": "d6ca2e677af4fe93842f4c3ab0f3cf0085c5ad5d4f5cc3ebb51a38abbe4c5c40"
+    },
+    {
+      "path": "assets/branding/tray-states/04-task-authorized.ico",
+      "bytes": 153907,
+      "sha256": "453811794b86e7c131d0de6f0a1ee5904123526dd8a4aa990651ef8b7f9345ac"
+    },
+    {
+      "path": "assets/branding/tray-states/05-off-disabled.ico",
+      "bytes": 103341,
+      "sha256": "7060f6188fae2361596e835f3d4b0d474f446a8814c65a5eedc75a0542e4cb8d"
+    },
+    {
+      "path": "assets/branding/tray-states/06-observe-disabled.ico",
+      "bytes": 105729,
+      "sha256": "d87e9af4b3077b2a977137cad1e099758d33db5a652e747e22d7b90fce10b636"
+    },
+    {
+      "path": "assets/branding/tray-states/07-whitelist-disabled.ico",
+      "bytes": 101997,
+      "sha256": "8c118bc2b8630fa90e0464ef1d357a432d814e0ff4a301cbc97fa87196e90ee3"
+    },
+    {
+      "path": "assets/branding/tray-states/08-authorized-disabled.ico",
+      "bytes": 100052,
+      "sha256": "227e5f098949d525a3873cf1bff560349581ca537be1f2c0da583418ef2464cb"
+    },
+    {
+      "path": "assets/branding/tray-states/09-fault.ico",
+      "bytes": 108684,
+      "sha256": "ba257d6e5e6415f968cf0ee8f005f252d234d0ba9ba080a79dfe6a40e66b63a5"
+    },
+    {
+      "path": "assets/settings/crystal-flower-v1/background.png",
+      "bytes": 1577937,
+      "sha256": "c675541163e34cd209aadc08c02a402426b54e1b08591dc64144c19bc2b24e7e"
+    },
+    {
+      "path": "assets/settings/quiet-leaf-v2/leaf.png",
+      "bytes": 1187122,
+      "sha256": "10e1470a176b7f39e61ec1485d5c3b35026890da99868573944af0230e31485c"
+    },
+    {
+      "path": "assets/settings/user-repaired-20261019/controls.png",
+      "bytes": 1715468,
+      "sha256": "24f90847f6857ff34da5ec85a68e31ff35b98ce33274d1aefed11f4670407db8"
+    },
+    {
+      "path": "assets/settings/user-repaired-20261019/flower-dim.png",
+      "bytes": 2330244,
+      "sha256": "f188858645dc677e3a49b35fce319cb399dfa62a79e8a5dcf236d4d882f97702"
+    },
+    {
+      "path": "assets/settings/user-repaired-20261019/flower-states.png",
+      "bytes": 1552986,
+      "sha256": "2db54408f76ecfc02adc42d0409e13e1af9aead21c6c41807a240a379b15c6fd"
+    },
+    {
       "path": "CHANGELOG.md",
-      "bytes": 3049,
-      "sha256": "bf31c9521329e4cd77018c5dce6856885c28d16529bdab5de1f67885aa0dde5e"
+      "bytes": 1573,
+      "sha256": "e14dde274ed1b8f02b8d284bf4e38cb0af9e8fefc57cd421c8b5f359a1a816cb"
     },
     {
       "path": "CONTRIBUTING.md",
-      "bytes": 1275,
-      "sha256": "8f5b2b928639044bbb397acbb18a0495bec3f09d1af43ab391acb953f7e8bcf6"
+      "bytes": 1264,
+      "sha256": "03ceba7b6c11a30e5ccef182fb02e31672e21caa53fa686c49886d784f235581"
     },
     {
       "path": "dependency-inventory.json",
@@ -48,78 +159,108 @@
     },
     {
       "path": "docs/ANTIGRAVITY.md",
-      "bytes": 3444,
-      "sha256": "304c13796c75317994a4b107f5a375eeea11facf8c4a3b5a7edd5f79f0113e72"
+      "bytes": 3495,
+      "sha256": "b2201a7d34d392a61669bdd29cdcefb6d0dc85d9c10f9c010a9ec0c5f8644531"
     },
     {
       "path": "docs/ANTIGRAVITY.zh-CN.md",
-      "bytes": 3460,
-      "sha256": "5c5fa67387e55289a8505198f1ba4dfb04b10dfb068c46b8253eab0de526a226"
+      "bytes": 3504,
+      "sha256": "84096f60756c315c55cbcd0db636876c28a6febcd918a037849b04642fae6929"
     },
     {
       "path": "docs/BROWSER_PROFILES.md",
-      "bytes": 3979,
-      "sha256": "a104e03a01d7f11748c9ebe7bc4b05b1da52016a69b77d5c770465686118cad5"
+      "bytes": 3626,
+      "sha256": "6449a7d9e95a544edecabbce9dcab2813cb9c4f4117245bf459955ff1641eaf7"
     },
     {
       "path": "docs/BROWSER_PROFILES.zh-CN.md",
-      "bytes": 3248,
-      "sha256": "ec06ca7bbf1a2e5dff59682612b3f166a6034b4e786ebc3ab43d24f98d5488a2"
+      "bytes": 3281,
+      "sha256": "3f3be5a8394dc1db2b483490aef4618832edd69473e44f98393b99470a0ab20a"
     },
     {
       "path": "docs/CLAUDE_CODE.md",
-      "bytes": 4605,
-      "sha256": "bc0cfe2919ecf59be14693ebaebd41a27ee8062b98547e973274e227cc55c7cc"
+      "bytes": 4649,
+      "sha256": "2f6424ba8e6e2ae78a6bda73192e9d81f614aad809b0d4781430e217d22285c5"
     },
     {
       "path": "docs/CLAUDE_CODE.zh-CN.md",
-      "bytes": 5236,
-      "sha256": "cd79c115c0bdd0fae537026e1638cd1485c2e89f03937f96f5e0b8039b246f73"
+      "bytes": 5265,
+      "sha256": "ff0c69315a700730e23c472d63e6d8fdc73c70bdada775b126354f585cd66519"
     },
     {
       "path": "docs/INSTALL.md",
-      "bytes": 8089,
-      "sha256": "3a0b1b3fb9cf74860971146f93d3955973fb01742d76e87cbfe4461e199928d8"
+      "bytes": 10311,
+      "sha256": "971c131217e7a037bbd8fa06545691d51d22133642a7d0bef9f56c854c7aa859"
     },
     {
       "path": "docs/INSTALL.zh-CN.md",
-      "bytes": 6569,
-      "sha256": "a542b5ae934a16d5c24dc343f135807cc01ae72fc56f2e51ab1517f113d2d0e7"
+      "bytes": 9361,
+      "sha256": "aa807808aebeb56ac9c0e5d69181ed68b921fd6b916fbe1695e90bb9d33b5cea"
     },
     {
       "path": "docs/LOCAL_CLIENTS.md",
-      "bytes": 4239,
-      "sha256": "3862fd92960e0b811c9ff85ae7c79bfda3e09bf68291100e007a44926d7899d3"
+      "bytes": 4276,
+      "sha256": "1d3e38320753a2eec48e33e16909583a288b86dd8afb668f340019c8901531f1"
     },
     {
       "path": "docs/LOCAL_CLIENTS.zh-CN.md",
-      "bytes": 5047,
-      "sha256": "2cd214e7009750938337b616e74803687aebbe34c0ec657ac7a9da50c77c9f73"
+      "bytes": 5084,
+      "sha256": "38bcf0786d2c18fd9d9c699b0fc249043f225f6056181ef3e3952628ff1d16b1"
+    },
+    {
+      "path": "docs/PERMISSIONS.md",
+      "bytes": 7419,
+      "sha256": "315b5b6354083c62b7afc407566a84ea9be78a34bdb017e9975d925a6775a461"
+    },
+    {
+      "path": "docs/PERMISSIONS.zh-CN.md",
+      "bytes": 6947,
+      "sha256": "6467b800d54bd4a2dd58c20363457be54a7d2a9a4d4eee98e3113ca36c11ef50"
     },
     {
       "path": "docs/RELEASE_NOTES.md",
-      "bytes": 3135,
-      "sha256": "6f93648a8c93881a482ac4db4ff967a5a9ebb7603b47c8f7b3fd2fa1c3941653"
+      "bytes": 2542,
+      "sha256": "067bb2f9e697940e61cbd7f4dd9e6f208d99bc3261438655841abbf4528e0090"
     },
     {
       "path": "docs/RELEASE_NOTES.zh-CN.md",
-      "bytes": 2818,
-      "sha256": "fccff96d5c8e6575950c267846cf536bf58da60c22831296b27f2b76ac7e47c8"
+      "bytes": 2251,
+      "sha256": "98b6534ec09bfcf8c146ce284c9d9e732bfaff2e1aee7009f1478b9df206e2a5"
     },
     {
       "path": "docs/SHARING.md",
-      "bytes": 1144,
-      "sha256": "5c68f66dbaf7d8b1eab7bcf9699c9a01804bcb2a3a707ea7c0e7f78deb3144cd"
+      "bytes": 1066,
+      "sha256": "3dcba0cf06342f3d5b22aa17544f78544bd3dafb6476908593c7d347af37312c"
+    },
+    {
+      "path": "docs/TROUBLESHOOTING.md",
+      "bytes": 6039,
+      "sha256": "5a2109f2fd8016e2c7d3a00245e5531682b5941c36a9dc28b46f5ef712817c09"
+    },
+    {
+      "path": "docs/TROUBLESHOOTING.zh-CN.md",
+      "bytes": 5265,
+      "sha256": "0a1b2097aae8ace272add65492fcdf2aa4b15cc1c741754c5755cb8422aa402c"
+    },
+    {
+      "path": "docs/USAGE.md",
+      "bytes": 5479,
+      "sha256": "01300e67ac614aab861316a09fcfd9c27964f80fd7860ea46d70282787db0269"
+    },
+    {
+      "path": "docs/USAGE.zh-CN.md",
+      "bytes": 4846,
+      "sha256": "8b9786e7ed42e2988d579b7fa94502513e358891e3e810e54d11515657daae85"
     },
     {
       "path": "docs/VALIDATION.md",
-      "bytes": 3934,
-      "sha256": "aab20e6182a04299ad3127896048b821bc40ab769a8faa0408b49d5ba86036d4"
+      "bytes": 4700,
+      "sha256": "f2bec31794f439ae05f4a8bc72eb26e99cde1fc514b85ad2ba46d202b7214cef"
     },
     {
       "path": "docs/VALIDATION.zh-CN.md",
-      "bytes": 2749,
-      "sha256": "84b95815a5f1109ec83d0138178fd61db5a442bb33e087f2187cbebf150c223b"
+      "bytes": 3549,
+      "sha256": "1a40655b76417de30d99e74ccff1f1d25e6cb1428ff91af385f24f8545b96a92"
     },
     {
       "path": "flower_control/__init__.py",
@@ -133,8 +274,8 @@
     },
     {
       "path": "flower_control/_status.py",
-      "bytes": 5871,
-      "sha256": "8219beee829a45338e4abcc3fb0e13c2299aea1e4b9984a84adeaf35fd7e724f"
+      "bytes": 8759,
+      "sha256": "8cbb971bb57bc3b5a82b026259cc3f70374da2ba74df1a96b66a7c0908860727"
     },
     {
       "path": "flower_control/antigravity_adapter.py",
@@ -143,8 +284,8 @@
     },
     {
       "path": "flower_control/app.py",
-      "bytes": 63724,
-      "sha256": "04ef3686d6fe88e68d6e2b276c7d1bd26d72c08c7b6c55b568c238384f122863"
+      "bytes": 144494,
+      "sha256": "78c9626fefcdeafed2b1491507518f606ed9bed58214b3dea9128e10101ec3d2"
     },
     {
       "path": "flower_control/authorization/__init__.py",
@@ -152,19 +293,19 @@
       "sha256": "dd01ddbe580dbf896b14660df231f068419b2af2deba5c64c2454b53c481c68f"
     },
     {
-      "path": "flower_control/authorization/card.py",
-      "bytes": 13166,
-      "sha256": "f5fd494231101ad0e8831a3be164fc881b35ffcb8b3c48de35c9a47d9c845a7f"
-    },
-    {
       "path": "flower_control/authorization/card_host.py",
       "bytes": 10899,
       "sha256": "ffad6010bbbf7ebf12daa2364b8f424e3589f8b61521317a18b25406de982c84"
     },
     {
-      "path": "flower_control/authorization/hello.py",
-      "bytes": 5365,
-      "sha256": "853b07a3503a84609f97640caec0cd393f3f44188067dd315c83b344955195d0"
+      "path": "flower_control/authorization/card.py",
+      "bytes": 13173,
+      "sha256": "524e363fc2ba94c6ae484dc2fad95af7112f2292a0dd177bd3f6797e1e6390a4"
+    },
+    {
+      "path": "flower_control/authorization/dsh_source.py",
+      "bytes": 1461,
+      "sha256": "af6e0441e7d66e9f8de0237e8363348897255b98997a5837995e72fb0b11f275"
     },
     {
       "path": "flower_control/authorization/hello_verifier/HelloVerifier.csproj",
@@ -182,44 +323,59 @@
       "sha256": "11b60f4d64a902bf3f3d3ee47365c48cc60673bbf9c7af6545218df7f5728d45"
     },
     {
+      "path": "flower_control/authorization/hello.py",
+      "bytes": 5365,
+      "sha256": "853b07a3503a84609f97640caec0cd393f3f44188067dd315c83b344955195d0"
+    },
+    {
       "path": "flower_control/authorization/hook_bridge.py",
-      "bytes": 6210,
-      "sha256": "3a66d5dba12b0de2cab49cd11f5f2a1925c909fe93686ac8bb8ad4769f7601db"
+      "bytes": 7129,
+      "sha256": "bb1980129325a5e15f1ff6fa88f025b523bdf3eb3f311aef4053bc78d460c3de"
     },
     {
       "path": "flower_control/authorization/luohua_policy.py",
-      "bytes": 2186,
-      "sha256": "5cb47ef142a76407cba5492333047974d61da73d84b9741ed3b03eef609797bf"
+      "bytes": 2259,
+      "sha256": "b4c462b16b315f5f7e431e46d73d21fca4f866197d59fdab4ecccc638fea6a34"
     },
     {
       "path": "flower_control/authorization/origin.py",
-      "bytes": 19371,
-      "sha256": "e30c0026d2753663f114721e0409cf8bbe5711ebfe0d5bfaa19d060e228c76bd"
+      "bytes": 26503,
+      "sha256": "611009a92d12ff73102e73b4cf89f614bf2dfef9f494003964d50c97ed039549"
     },
     {
       "path": "flower_control/authorization/semantic.py",
-      "bytes": 5966,
-      "sha256": "3ec9e34ba283294eda00730fe7ba9e92dc28b477b748e39e4e140b3aca9fb6fe"
+      "bytes": 6570,
+      "sha256": "c9a4bde36d6c16427a3ec6f8d1dab08a662933e0122ccc397cbb2a03341afcc6"
+    },
+    {
+      "path": "flower_control/authorization/uac_preflight.py",
+      "bytes": 4577,
+      "sha256": "6e0c4e6277c94c54f7d226ec8a9888933dfd84a30a76d53f8a0290a35aa3e88a"
+    },
+    {
+      "path": "flower_control/browser_preferences.py",
+      "bytes": 8285,
+      "sha256": "c851be8f29ca41defeb73d85bd2b553b4afca1a52dcc5bb8fd131c21e701ff9e"
     },
     {
       "path": "flower_control/browser_window_policy.py",
-      "bytes": 6193,
-      "sha256": "fe98ebaae87069a518509a44cba6ad1dde7411d11b2da96cf15577b72906ca88"
+      "bytes": 12406,
+      "sha256": "2648deec13d0ba9d9883dee46b80484d901b531575b3e805ad61956d44db4b8b"
     },
     {
       "path": "flower_control/browsers.py",
-      "bytes": 3000,
-      "sha256": "e378b03713e012cb3c059ee2f102bd74e993907382fc820ed18ef92dc016132d"
+      "bytes": 9482,
+      "sha256": "2322a52d054e00b295cad7e64366f11a35562ec6b05f1ef318b170605d59d409"
     },
     {
       "path": "flower_control/computer.py",
-      "bytes": 44836,
-      "sha256": "92690074c72ad290169c4156e55fef79624fd46024452531ad2f62af2a171df3"
+      "bytes": 105301,
+      "sha256": "fc392d0187350357ee459f1efee87cd7f5ef3214ae9cf13079228711b613300c"
     },
     {
       "path": "flower_control/connection_adapter.py",
-      "bytes": 6304,
-      "sha256": "6e86de7d70512e0712721ac915b050225fd08d516f963ed4d1a91c5846066d26"
+      "bytes": 10447,
+      "sha256": "c9863ae8e8fceb68969a3fd37e76961269ff52e71833f78c3984d0638dda56c0"
     },
     {
       "path": "flower_control/control/__init__.py",
@@ -228,8 +384,58 @@
     },
     {
       "path": "flower_control/control/arbitration.py",
-      "bytes": 14790,
-      "sha256": "e025b9484d72f2a0850764df95a63de50d71de81b07033cb51f6cf644c4baf42"
+      "bytes": 15572,
+      "sha256": "6d6421cac418ee109664318e801b58c08737e525178a3564552c3af5a2bd9795"
+    },
+    {
+      "path": "flower_control/control/business_calls.py",
+      "bytes": 7187,
+      "sha256": "f81eee5b6df586a1e878218dc600d2479fae39c72f1627bff4092b971095e2a7"
+    },
+    {
+      "path": "flower_control/control/business_pages.py",
+      "bytes": 6434,
+      "sha256": "096e8be6a60613fafb215bd068123164af8996a718f37ed83e4c75c6e575eacd"
+    },
+    {
+      "path": "flower_control/control/business_plan.py",
+      "bytes": 25161,
+      "sha256": "199ce1c36148a795b331aaca86b96de7fe0bdec2e14aed5c32fcb39a9afdbd3b"
+    },
+    {
+      "path": "flower_control/control/call_cancellation.py",
+      "bytes": 1475,
+      "sha256": "3a41c9297b865fd86a3578ef9c78e988e189a6db4f4d71e729824407eb99c870"
+    },
+    {
+      "path": "flower_control/control/custom_decision.py",
+      "bytes": 5231,
+      "sha256": "1ad9217aa8d018b81f793a35ec6d1d2e986f583561190756680331176c87b837"
+    },
+    {
+      "path": "flower_control/control/decision_cache.py",
+      "bytes": 3580,
+      "sha256": "64e9814bccced04b39edc9ed4ba3ccfb73e604d07eebac4fdfd63237881afcc8"
+    },
+    {
+      "path": "flower_control/control/decision_client.py",
+      "bytes": 1237,
+      "sha256": "909c89b805d736e63dd44d220a528f3843adaa52cf368f6c1e2e4db628cfd474"
+    },
+    {
+      "path": "flower_control/control/decision_router.py",
+      "bytes": 5781,
+      "sha256": "cd501c7c76b5d8b1796426db71820b30fa355d439e3ca8ab655dfc8c31be1834"
+    },
+    {
+      "path": "flower_control/control/decision_settings.py",
+      "bytes": 9805,
+      "sha256": "654e39df3de87bfbcc9114dfe4d8d733960c886ef1e089263f6fff3ebc1f7601"
+    },
+    {
+      "path": "flower_control/control/decision_setup.py",
+      "bytes": 4230,
+      "sha256": "4e43824c9510dfe5c99d1e59a89fd1b417ba039267068a4b8bc40d168d49cb95"
     },
     {
       "path": "flower_control/control/diagnostics.py",
@@ -238,8 +444,8 @@
     },
     {
       "path": "flower_control/control/errors.py",
-      "bytes": 40580,
-      "sha256": "f3ae8c9eb0b69cbe88d8da413b5e109ca046a26509c8d71d34d024a2fad7fe54"
+      "bytes": 46237,
+      "sha256": "5ba1c36bcffe8c949d2452f5dd46ae357ad736046cde51574f85dcd7ef7153b9"
     },
     {
       "path": "flower_control/control/feedback.py",
@@ -248,38 +454,38 @@
     },
     {
       "path": "flower_control/control/foreground_recovery.py",
-      "bytes": 5931,
-      "sha256": "adf50a7fcb87a6fd0f694b26b75d0fa00ffb1dffe1b746e6d232562069b0bc85"
+      "bytes": 16890,
+      "sha256": "f7795630e3cd230b4f988f62b5a08406991669b4fae115e458974ee109ff3964"
     },
     {
       "path": "flower_control/control/foreground_stage.py",
-      "bytes": 27250,
-      "sha256": "4391a5555004d87a23000f5c7d6b74e8b8cc801e4b370cfe48bfa28597d971b9"
+      "bytes": 28043,
+      "sha256": "1c86bf75584fd873561f5956e789f6f29549d7aefb2b72445b48007a9e663446"
+    },
+    {
+      "path": "flower_control/control/host_phase.py",
+      "bytes": 21184,
+      "sha256": "d7f42cff904b499366699a72c7f548d9a5730712e8e55e77c7b2c4962f161712"
     },
     {
       "path": "flower_control/control/input_boot.py",
-      "bytes": 2711,
-      "sha256": "93f83be1ed39ea6176354d323da040d94af8ceeabdb0f59eb6c97e3e7d1e6883"
-    },
-    {
-      "path": "flower_control/control/jev.py",
-      "bytes": 28670,
-      "sha256": "096dbe654ccb7e593e38cbc438a7262508a08d3c36bb86f5ac33bf58b168bce3"
+      "bytes": 5939,
+      "sha256": "b5a69d328f46bd287575d0f0eacfea587cabd4b5eeccd04c97abd2d6309c2e4c"
     },
     {
       "path": "flower_control/control/jev_diagnostics.py",
-      "bytes": 24847,
-      "sha256": "b40926b03c8cef4bf73e75ee525f82e7985a6f1d24a1f954a8eb1190673b86c9"
+      "bytes": 28733,
+      "sha256": "2d27fb56294cb73f76cf72921c36ac36e3498c154ff21bd9ae65977e2510d6ee"
     },
     {
       "path": "flower_control/control/jev_runtime.py",
-      "bytes": 14332,
-      "sha256": "9b00c13bfc279240e09ca47c07f86f790b48e23fad76f08690fcc5bda77f3fa3"
+      "bytes": 20725,
+      "sha256": "1dc197c331e36c2854f15016e501fadfc4b46553123b2b2359e5da4e9616d9ac"
     },
     {
       "path": "flower_control/control/jev_setup.py",
-      "bytes": 1533,
-      "sha256": "fd79fe7b2280c7d4465ed82f581cb5f92179b9a9555b246c58687473cd4f4d6e"
+      "bytes": 1700,
+      "sha256": "5a0345cd5369f86d072417387ab296e514acfcf6fb513cfa4b2d4825c79fdc36"
     },
     {
       "path": "flower_control/control/jev_workflow.py",
@@ -287,44 +493,89 @@
       "sha256": "b40da6cd7316dadd2490b8af6cec534fb2f75a9458f91245b000cd3859775add"
     },
     {
+      "path": "flower_control/control/jev.py",
+      "bytes": 31183,
+      "sha256": "34ec8c0a0cd29439aaef5ddd67c671b0d93844070407572e6f304e585521726c"
+    },
+    {
+      "path": "flower_control/control/local_artifacts.py",
+      "bytes": 16198,
+      "sha256": "3a2cf4701154d5d56cf67d9a14f2d52994c818c7c5b9efd6963ba324df957370"
+    },
+    {
       "path": "flower_control/control/native.py",
-      "bytes": 7016,
-      "sha256": "506b3cb4f765637adde67560834325859e4060e0b369618233603090cdea48af"
+      "bytes": 8663,
+      "sha256": "5479799bdec5f41d4e489a51d75e30d2413445d0007a3bac4f421dbac1a628dc"
+    },
+    {
+      "path": "flower_control/control/perplexity.py",
+      "bytes": 655,
+      "sha256": "18a9aab2ec4088300351d9e0d0b1acd3d63db4541ba5fe1db22d6235addc70fd"
+    },
+    {
+      "path": "flower_control/control/recipes.py",
+      "bytes": 5542,
+      "sha256": "9cba3db5533e102c7aaecb9fc31bbf88b3eaaca22b9218aa65a89d132dfb0f19"
+    },
+    {
+      "path": "flower_control/control/resource_names.py",
+      "bytes": 135,
+      "sha256": "64301548c3a9cbd33cb624ad16e7965fa2335fb59f020f5d5af0b7f0423558e3"
     },
     {
       "path": "flower_control/control/scheduling.py",
-      "bytes": 14242,
-      "sha256": "d6cf7092469317e8c0fd48cab150c808c7a3ce692d9c43781b207890ead34b2b"
+      "bytes": 15878,
+      "sha256": "c24dfbbccdcf9a38de45d71e948195891f79532f1c02c2dcb953c9e522fbc001"
+    },
+    {
+      "path": "flower_control/control/sequence_readback.py",
+      "bytes": 5963,
+      "sha256": "51b306b3c61ff836e23209bca0fdf19d0ab69c97cc8eeffa1e1b0900db5b270a"
     },
     {
       "path": "flower_control/control/state.py",
-      "bytes": 140039,
-      "sha256": "dd0412561a659136ddb1df51b17179f4f86c819d05d7981e74f30e56a65795ee"
+      "bytes": 235759,
+      "sha256": "77a03247121fb4d59259cb2357ee7e1e181ddeb930a50f63b0d3823ffd8da7ba"
     },
     {
       "path": "flower_control/control/takeover.py",
-      "bytes": 3129,
-      "sha256": "ab8d66065dfe5884f40b6efd0233417ec5ac377261f31ebc8f198643864ba9ba"
+      "bytes": 5238,
+      "sha256": "9aeb79a0fe2a40eb97dc78ecfcba5a65995745375280ad8c7bc2e6f889d444d9"
     },
     {
       "path": "flower_control/control/target_selection.py",
-      "bytes": 12436,
-      "sha256": "3d8a75e4871bcc4d4c92580c2e6d94f38ce0685077d896a3004ae6789e260526"
+      "bytes": 18258,
+      "sha256": "d8462f2ce80cedebe916f701fe387079a84d4848712d47929e64a9e77c943d56"
     },
     {
       "path": "flower_control/control/targets.py",
-      "bytes": 18087,
-      "sha256": "94b25faeb857a730eb8ae73740873428f8b115a75155b37bce06a680330da8b4"
+      "bytes": 18097,
+      "sha256": "d3412eda550ab4cfd5dbc4ca3daaa2ad88da808f184e89bc97d58d7a15891dc7"
+    },
+    {
+      "path": "flower_control/control/task_service_report.py",
+      "bytes": 2731,
+      "sha256": "f40b3f44599d25a4202018b235f9933d52fe2668827dd26c1acd1743e1fe411b"
     },
     {
       "path": "flower_control/control/worker_call.py",
-      "bytes": 1759,
-      "sha256": "2b371bd11beb4964db15f4c33dc11881dcf2fb904705c20e2da894f60dbdb4e2"
+      "bytes": 1851,
+      "sha256": "010443b4e2803d27226d94a104a8c82e01c534df4e0dd962c934b3d47ec6c5af"
     },
     {
       "path": "flower_control/control/write_gate.py",
       "bytes": 6502,
       "sha256": "8743fd9dc5c214a1b7d61a9023ff608fcdb2a8f7943c858a8aa6a28d2225056d"
+    },
+    {
+      "path": "flower_control/data_paths.py",
+      "bytes": 4027,
+      "sha256": "047c2b8327589fbd84b48f8283ad1f6c8b725f6a6785db93a8900106261e5701"
+    },
+    {
+      "path": "flower_control/display_preferences.py",
+      "bytes": 4455,
+      "sha256": "49a8227e807fb9b81b130310caa1cbccfe88e33a0c28efe48549d76d13a92191"
     },
     {
       "path": "flower_control/drivers/__init__.py",
@@ -333,8 +584,8 @@
     },
     {
       "path": "flower_control/drivers/app_activation.py",
-      "bytes": 3788,
-      "sha256": "b6921d8f8be2c036ee3060f1c7c3e976dac93250e3670ca25c2cc1a3fe137d3a"
+      "bytes": 4352,
+      "sha256": "e330711457d51633f1203b1aefc8846491d1d87cbd472cdc203c7ab98b0cb5d0"
     },
     {
       "path": "flower_control/drivers/app_conditions.py",
@@ -342,34 +593,44 @@
       "sha256": "8c141f8944f71620772794d338dc65149e35e469c0ab0fea2926d287c12ab19a"
     },
     {
+      "path": "flower_control/drivers/app_contracts.py",
+      "bytes": 7831,
+      "sha256": "992a0db67cabf75087f98d87cd3a090669a1ce771f0d36f37c9b294554a35f11"
+    },
+    {
       "path": "flower_control/drivers/app_control.py",
-      "bytes": 128321,
-      "sha256": "06a19088efa90c88509ef2be4caff8daf1c3f399a3a80a6d0dfe1f5c3e975d34"
+      "bytes": 211767,
+      "sha256": "439c62e17ff85e0b6c981505eb01b9e7ccf0f2001a15520bdfc8e5f0112c0c6f"
     },
     {
       "path": "flower_control/drivers/app_errors.py",
-      "bytes": 4699,
-      "sha256": "a8f7235a3319eeabee32c32bb0d36a9ab4f2c89e07e91f8e5810f97569884811"
+      "bytes": 6543,
+      "sha256": "9b9c116bf4aa04d311bb5ea8a0d34161246d7bf1393fa4ba32b65a9baf86aacd"
     },
     {
       "path": "flower_control/drivers/app_flow.py",
-      "bytes": 5344,
-      "sha256": "407dbe65ae02c80330cd7009de77347cc57bf1f72c874b703ac86b8668c7d83f"
+      "bytes": 10976,
+      "sha256": "74a1c5d13b52d4afa69a19cfe2bb5dd439864d386195d03a1b58bb054e3b0689"
     },
     {
       "path": "flower_control/drivers/app_high.py",
-      "bytes": 7602,
-      "sha256": "f20031aa7e495130431756dc78604a30525eb12a0d24b51c3105e0fae0b544aa"
+      "bytes": 7606,
+      "sha256": "53588caa0b9d4248b8f4f13c87425931e4feacbe2142f74c6943302bc27574d3"
     },
     {
       "path": "flower_control/drivers/app_host_lifetime.py",
-      "bytes": 5830,
-      "sha256": "cbf57843dfc72478542622db466b3700e1d9a195ff3804aeb3fded4be1b07a80"
+      "bytes": 13858,
+      "sha256": "0e0fe92057770c61139d78bef3992a55ec6885227e651fb9a3495c0d828314ee"
+    },
+    {
+      "path": "flower_control/drivers/app_launch_status.py",
+      "bytes": 4472,
+      "sha256": "ec09ede013a7a6e967e84395ea5e169ddc476da981acbfa4aef24c479d711b69"
     },
     {
       "path": "flower_control/drivers/app_lifecycle.py",
-      "bytes": 17614,
-      "sha256": "48d9dbf18fcea8b72d2f651580df7c7ba9fea8181bd77880953145890fe60b7c"
+      "bytes": 19115,
+      "sha256": "b0e6b8c03db22d2cd5ec21409e6e29a7ed9f795fe5158118b18c95f0bcfaff01"
     },
     {
       "path": "flower_control/drivers/app_native/AppCheckpoint.cs",
@@ -377,9 +638,19 @@
       "sha256": "12636680a7ad53368d5c8b564a8062ff4896365e05a6822777ac150fc9b1be76"
     },
     {
+      "path": "flower_control/drivers/app_native/BackgroundFocusEvents.cs",
+      "bytes": 4500,
+      "sha256": "80335caf04fb1cacf27dac257bac742d85bf87a9c61d8b2fd98ea78f7e113922"
+    },
+    {
+      "path": "flower_control/drivers/app_native/BackgroundPatterns.cs",
+      "bytes": 4542,
+      "sha256": "159296b20a9cc0edcf186e1513e3cf87300967f84627eee67ccd67cc650cd9e0"
+    },
+    {
       "path": "flower_control/drivers/app_native/ExecutionTiming.cs",
-      "bytes": 2855,
-      "sha256": "2e6e1bedd05dce59ef31bbd1ba7a01bf42917d1bf2c4d87d889922861e0dc664"
+      "bytes": 6106,
+      "sha256": "7ee9f066ab6bf711bf0c770693d0b3b19c4af5949bec9953d6c03d84cfd562c0"
     },
     {
       "path": "flower_control/drivers/app_native/Flower.AppWorker.csproj",
@@ -397,9 +668,29 @@
       "sha256": "508321d49bc83c3cdc60df579838453cef60ea0d1e774a1e9f757fa7919e2963"
     },
     {
+      "path": "flower_control/drivers/app_native/PasswordFocus.cs",
+      "bytes": 4737,
+      "sha256": "47defe2ba6ef9c1acd32c137a885863d8590f47e15cec7188c15e8be1068a4f7"
+    },
+    {
+      "path": "flower_control/drivers/app_native/PasswordPixels.cs",
+      "bytes": 7891,
+      "sha256": "d982f930a131954f86b569c95d3e232ddea982e52d3e99068367f89d11506440"
+    },
+    {
+      "path": "flower_control/drivers/app_native/PasswordProperty.cs",
+      "bytes": 825,
+      "sha256": "3827c23d28e2c0a15d183a227cd5cb8caa46846239111e60c504cff070a5ebda"
+    },
+    {
       "path": "flower_control/drivers/app_native/Program.cs",
-      "bytes": 56666,
-      "sha256": "5e84ff85731b4b079014f3b20e2139879a107b5778f32114d69e2752e9edc132"
+      "bytes": 86399,
+      "sha256": "d4bcb0954d592116ea3feff5edd2eb78652683c8b413e5282f7755730e8df8bc"
+    },
+    {
+      "path": "flower_control/drivers/app_native/ProviderDiagnostics.cs",
+      "bytes": 5355,
+      "sha256": "fb70feef15c36989c611963528084e1ea096e8b5c950662b1e88255fbcae40a0"
     },
     {
       "path": "flower_control/drivers/app_native/TextPages.cs",
@@ -407,9 +698,24 @@
       "sha256": "bd263318b46f60f1aaa1cee08fda9cded2f8c6c50a96c29277a5725bb3476dfa"
     },
     {
+      "path": "flower_control/drivers/app_native/TextValueComparison.cs",
+      "bytes": 459,
+      "sha256": "2eed699b7f443f320c59ebc280e86fceb08beed403171e6a61bfe20be58bab10"
+    },
+    {
+      "path": "flower_control/drivers/app_native/TransitionGate.cs",
+      "bytes": 3305,
+      "sha256": "a1635575953bd1a5b3f7f39b42b886366d397f2e4c9450469f99b0d8f168eae0"
+    },
+    {
       "path": "flower_control/drivers/app_native/TreePages.cs",
-      "bytes": 5491,
-      "sha256": "94cd07c4da62011f6c8997aecc9d7a006aedb2170ea0da5b969474990507439d"
+      "bytes": 6220,
+      "sha256": "d34e6f169ce9ed00eedac9cc05c7aa50db8fe31e08d7e48d0385f9d5a0ca5ba7"
+    },
+    {
+      "path": "flower_control/drivers/app_packaged.py",
+      "bytes": 8769,
+      "sha256": "a4b261619292b9c37c9cabbb3ec70a846f86c9ded010af1fa20853b7d76d00c5"
     },
     {
       "path": "flower_control/drivers/app_process_chain.py",
@@ -418,8 +724,18 @@
     },
     {
       "path": "flower_control/drivers/app_recording.py",
-      "bytes": 6378,
-      "sha256": "7effbdd3b6a1e9c053e9b50aa4fd49cf29d53d54b331169d12d429976709c25a"
+      "bytes": 14762,
+      "sha256": "0ee8267442cd96e615614520ea696e62d6c6216601052eee0761e9b98a1004dc"
+    },
+    {
+      "path": "flower_control/drivers/app_region_recording.py",
+      "bytes": 7789,
+      "sha256": "9fea432b09b83c683e8743c5a4f51caebfa9c56ef7060fb5b33781f6b017e6af"
+    },
+    {
+      "path": "flower_control/drivers/app_resource_manifest.py",
+      "bytes": 10590,
+      "sha256": "7509ca40fe60b5c6df907bdf8970420f2ab2d4e07f7f7ce72c93f353f7c6e0be"
     },
     {
       "path": "flower_control/drivers/app_scope.py",
@@ -428,13 +744,18 @@
     },
     {
       "path": "flower_control/drivers/app_screenshot.py",
-      "bytes": 10081,
-      "sha256": "b21cfc2cfec800f70d3c03ecb1caf8c42301652c240b29ff4b7817a52d0515a0"
+      "bytes": 12592,
+      "sha256": "e8beeb86a50dfe9e2415219a7995c2a01956b49673c1de14e6e3af4be6ec1b09"
+    },
+    {
+      "path": "flower_control/drivers/app_sequence.py",
+      "bytes": 9397,
+      "sha256": "7e99e5847192ae56e0e551834f41ba274571ce155d489f90bf1dfa548ac3052f"
     },
     {
       "path": "flower_control/drivers/app_stage.py",
-      "bytes": 10939,
-      "sha256": "bc5a00a5bc2fd49b6b87ee23cd72e9d802a9a56ed3d84d27cb8454b8055ed8f7"
+      "bytes": 24242,
+      "sha256": "02fd638b09dce19170899d0b84a8469b0d4a8ab21d4c27ce736617bdcc6ce31a"
     },
     {
       "path": "flower_control/drivers/app_timing.py",
@@ -443,53 +764,73 @@
     },
     {
       "path": "flower_control/drivers/app_worker.py",
-      "bytes": 24306,
-      "sha256": "8048bc3e7475aeb8a5880585f01c2c08a0a86443f647294b430220dbc1855471"
+      "bytes": 34698,
+      "sha256": "51f7a5b209e169dc1f2b55ebaab1c93a9e754068a5072e5ee1551ec2f953c4d7"
     },
     {
-      "path": "flower_control/drivers/computer_capture.py",
-      "bytes": 10366,
-      "sha256": "280b218e6622e8d49074515a8bd1f5d743b94889a0aba225643fe5fb532396ea"
+      "path": "flower_control/drivers/auxiliary_owner_cleanup.py",
+      "bytes": 1487,
+      "sha256": "b54c6c9530b347552dcc5f7b95401359f84c70ac31eac8b82a7ff173aa033e57"
+    },
+    {
+      "path": "flower_control/drivers/cdp_window_probe.py",
+      "bytes": 13838,
+      "sha256": "56a02d8948c1a70cc4a489b6c3a94a88801d49b4c2eb80eaaf6dea3a1c06eba9"
     },
     {
       "path": "flower_control/drivers/computer_capture_cache.py",
-      "bytes": 2596,
-      "sha256": "8c0017e7a4d402335804d040f0789f2c82bcb875a6640c09a1bbaae4e6a6e71c"
-    },
-    {
-      "path": "flower_control/drivers/computer_capture_session.py",
-      "bytes": 13666,
-      "sha256": "419b36b74519fd5cdabe5db39a6b0277576f01130c6f943faa2e5253e9f33bf2"
+      "bytes": 7402,
+      "sha256": "1ade9835e84bc9c3451224ddce5b0b612c5fdec5d673985609d2c29caa402896"
     },
     {
       "path": "flower_control/drivers/computer_capture_session_worker.py",
-      "bytes": 4631,
-      "sha256": "63098a3937eafc62b30d30d485207e5c5983c0b4de5037030f480cd863c939fe"
+      "bytes": 4804,
+      "sha256": "a5c22144222727c8c4c31ebe5e7f41925f003b6b444a504a14a51db0b8f99ffb"
+    },
+    {
+      "path": "flower_control/drivers/computer_capture_session.py",
+      "bytes": 15502,
+      "sha256": "12b624c04841fcee3e01afd41cfe6b1d7ea25c2e47bb599667633b4055753eaf"
     },
     {
       "path": "flower_control/drivers/computer_capture_worker.py",
-      "bytes": 8378,
-      "sha256": "57f709e1b1f4b18c8a5b42e1ec32481b9c640163525b1bca6a7c7f1cfc9e18a2"
+      "bytes": 9224,
+      "sha256": "50e2e856c5c2655f037cfbceb8be28dcbc2a3a88aed04cefd9ee4cb30c341eae"
     },
     {
-      "path": "flower_control/drivers/computer_high.py",
-      "bytes": 6632,
-      "sha256": "70f0d480c75e33205056e43245c3a8720512c8611a8b169ca7aa54b71c50a970"
+      "path": "flower_control/drivers/computer_capture.py",
+      "bytes": 10531,
+      "sha256": "92e9dd687b71ad254a250453f54413b6430ddc343fd8b672982c6126a8345bf8"
+    },
+    {
+      "path": "flower_control/drivers/computer_context_guard.py",
+      "bytes": 2491,
+      "sha256": "4a4e4b3259ef5fff1a79a0a15432082629b6f9bb0ab46f49db4b29e71132b206"
     },
     {
       "path": "flower_control/drivers/computer_high_runtime.py",
-      "bytes": 39297,
-      "sha256": "10e8448c5357d12e20de96c5500e2fe189ee9c2f0484412055d24eda45c3c39a"
+      "bytes": 47814,
+      "sha256": "a44b1b91a1fa78311ba564afededdd5f393a1017f960e898e858b479c15bae72"
+    },
+    {
+      "path": "flower_control/drivers/computer_high.py",
+      "bytes": 8180,
+      "sha256": "69ad6f25284530e2309078e9324176acaf4b96dce77c7eb3a3ff10b5c036867e"
     },
     {
       "path": "flower_control/drivers/computer_host_lifetime.py",
-      "bytes": 3425,
-      "sha256": "6e80a5cc8e750397f6b326d70158b909d7b7c9ab776bfcdbaaa5486bc3666e43"
+      "bytes": 7315,
+      "sha256": "cc2fe4312688443cade0e5ce52c8f864f2556b5e08105e74b185adfc0b95966f"
+    },
+    {
+      "path": "flower_control/drivers/computer_image_view.py",
+      "bytes": 2664,
+      "sha256": "af0cef136774953b05987104b8426d504fec5f9d5ff547d0b0de89c59b28e1ad"
     },
     {
       "path": "flower_control/drivers/computer_input_state.py",
-      "bytes": 19809,
-      "sha256": "3ec35f35cb4184e0199ce4538aff41b07a168ae778ed407983f0cec8be48ce46"
+      "bytes": 20722,
+      "sha256": "50593705887b0e441de6f6f658a84ea1e3e7006812bf4edc19c9f3438905cd5c"
     },
     {
       "path": "flower_control/drivers/computer_job_policy.py",
@@ -497,14 +838,24 @@
       "sha256": "b62c8892cf11ee26c7174dfdc9b820b1f82a773b55853fbfd9789748497ba5d7"
     },
     {
+      "path": "flower_control/drivers/computer_keys.py",
+      "bytes": 4896,
+      "sha256": "6d63b541010dd48cfa70e74a782c9d08eb9b15f74c85b84c53d45755b0b1917c"
+    },
+    {
+      "path": "flower_control/drivers/computer_legacy_actions.py",
+      "bytes": 4174,
+      "sha256": "462f0ce5c665bfc301b57cc70ceee63487ebc402eee1903134fd988b6244d983"
+    },
+    {
       "path": "flower_control/drivers/computer_mcp.py",
-      "bytes": 143694,
-      "sha256": "c62433cb0429678f5723bbea6a4de67a4307bacd9d18e3a62b91d94f21b967a3"
+      "bytes": 244533,
+      "sha256": "d8bab05b49ad8117536451a4f1146a81bc8a3cfd30142f7541b7098db7ca019f"
     },
     {
       "path": "flower_control/drivers/computer_native.py",
-      "bytes": 60267,
-      "sha256": "c10aedbf0bac5912305c5ec866bcb54243c35cbe3b8d01dc4e2e2eec8e410c29"
+      "bytes": 93805,
+      "sha256": "bd1e7688f05cd30c92afdc01ffc18f22c056cb550b7d303c70466cec97a73069"
     },
     {
       "path": "flower_control/drivers/computer_phase.py",
@@ -512,14 +863,39 @@
       "sha256": "12ee6c86ee19a57aa4ee3641d6ddfd7c1572ef3334483f5e41de0e2b57a61b93"
     },
     {
+      "path": "flower_control/drivers/computer_plan.py",
+      "bytes": 35366,
+      "sha256": "d8e7d6032b4c2bef5b0a7542bccbe29d2a2cbb65bb6d8d277f381544c95a538b"
+    },
+    {
       "path": "flower_control/drivers/computer_png.py",
-      "bytes": 2166,
-      "sha256": "fc3ce0f5246a31c68bccea130d903a929cdb580575267b72c4a792359cfc426d"
+      "bytes": 2373,
+      "sha256": "11c14b8c0f631efd3ba270935eba5e12ce133d48d1f408c3a4dcfc857f41c65b"
+    },
+    {
+      "path": "flower_control/drivers/computer_returned_points.py",
+      "bytes": 8157,
+      "sha256": "cf22601752b17e3d96ea2db7125d7eb90c7da7eb8b0e34ae99c459e9f1822b5c"
+    },
+    {
+      "path": "flower_control/drivers/computer_status_wait.py",
+      "bytes": 1849,
+      "sha256": "6f22c7188bada4e4581f0b399873eb8e9cdbdbd9e841104481895af41e79e793"
+    },
+    {
+      "path": "flower_control/drivers/computer_takeover.py",
+      "bytes": 8283,
+      "sha256": "652f00be961a1e5a5a1fd29991d94d88641db501eaefbbee8c9379e24d5f1c83"
     },
     {
       "path": "flower_control/drivers/computer_targets.py",
       "bytes": 15875,
       "sha256": "7c88ec036dab49e0196364ce5ebaefae11e89d094fd758af37244e840af15c2b"
+    },
+    {
+      "path": "flower_control/drivers/computer_wait.py",
+      "bytes": 2728,
+      "sha256": "38319b63d349f9e6af57ff4583393cd5f9f62754f32bacb4ca06e36f80fb122c"
     },
     {
       "path": "flower_control/drivers/computer_wgc/Flower.ComputerWgc.csproj",
@@ -533,8 +909,13 @@
     },
     {
       "path": "flower_control/drivers/computer_wgc/Program.cs",
-      "bytes": 24289,
-      "sha256": "57bc83ab9e39b4367fa0e6d1887e8c3afeea5cf44ccd6cf9c2e902122abee0bc"
+      "bytes": 24351,
+      "sha256": "caf52396e5afb71c0150370fc4e741d64db1abe1703a5c34bf082a56e395d67d"
+    },
+    {
+      "path": "flower_control/drivers/computer_work.py",
+      "bytes": 3823,
+      "sha256": "d303105723e59c4ca69c5be51a6ff3fdc58803900648fcb3968c7faf0bb71a11"
     },
     {
       "path": "flower_control/drivers/desktop_activation_worker.py",
@@ -542,9 +923,84 @@
       "sha256": "e4335fbe508b781103f0e37fada2e4f1690b95fc6fb9b709c3fc5dafd685f1f9"
     },
     {
+      "path": "flower_control/drivers/desktop_authority.py",
+      "bytes": 8378,
+      "sha256": "347a1a184d2fdfe75b57fcd8360c640cb947adb428d6e944cf71a4a45af3a042"
+    },
+    {
+      "path": "flower_control/drivers/desktop_capture_job.py",
+      "bytes": 11854,
+      "sha256": "db52f178f41dc8f1cca60513ddc36060a795606e5406829d732e013d5364440f"
+    },
+    {
+      "path": "flower_control/drivers/desktop_capture_native.py",
+      "bytes": 11516,
+      "sha256": "4384a805ddbf239dccaaada4b1407709a05bf0e078980b62da67b2dfbabdb3fa"
+    },
+    {
+      "path": "flower_control/drivers/desktop_capture.py",
+      "bytes": 7216,
+      "sha256": "10cf8bbaabbe02ac5de49b5abdc2e4433c566e8bda0406ca761c3e6ff7edb5b2"
+    },
+    {
+      "path": "flower_control/drivers/desktop_cursor.py",
+      "bytes": 3883,
+      "sha256": "7715faf5486f75f71a1a5a89d301ab16f7c3fc3c8d1bb405327878292b938e43"
+    },
+    {
+      "path": "flower_control/drivers/desktop_geometry.py",
+      "bytes": 5892,
+      "sha256": "31ab4e9fd07aa450e8342fff930a173d66cc3bd874cf0ba41743510ccb75ddb0"
+    },
+    {
+      "path": "flower_control/drivers/desktop_input_plan.py",
+      "bytes": 7857,
+      "sha256": "635c4a9400ac498ac76df97b7fb53ae9302daaf1c71046f94ce68020c4981906"
+    },
+    {
+      "path": "flower_control/drivers/desktop_input_runtime.py",
+      "bytes": 12208,
+      "sha256": "12dadcd399680ffa323385f66dd0db428b215be38623683328f7da2582f472ac"
+    },
+    {
+      "path": "flower_control/drivers/desktop_inventory_native.py",
+      "bytes": 7766,
+      "sha256": "ba3f67b13a91c1875058072d0140a8c177da33b655baf8e8631cb487db2b7e7c"
+    },
+    {
+      "path": "flower_control/drivers/desktop_ordinary_authority.py",
+      "bytes": 3981,
+      "sha256": "7b6e466f2cf91b13458434e09ec4a0f2ae95eaab1e52dbd6eb8709d20e8503c3"
+    },
+    {
+      "path": "flower_control/drivers/desktop_owned_process.py",
+      "bytes": 6696,
+      "sha256": "89d17bc8497a13236dde73f04e93a4697dcd72a2188c600425ebad82753ca11d"
+    },
+    {
+      "path": "flower_control/drivers/desktop_policy_capture.py",
+      "bytes": 19042,
+      "sha256": "faa1a00e3313e53a2104e775ce553b85a0d292965c9a9c5f8f3c49b42ea40d2d"
+    },
+    {
+      "path": "flower_control/drivers/desktop_runtime.py",
+      "bytes": 17918,
+      "sha256": "8297190de27d6477039cf70eb986429404cbbecbff9c43331929b96b39daf813"
+    },
+    {
+      "path": "flower_control/drivers/desktop_scene.py",
+      "bytes": 5749,
+      "sha256": "9ae65a5ce98e19edeb2915495fa211eea38dfba389254ae94fb4b040071e73ba"
+    },
+    {
+      "path": "flower_control/drivers/focus_borrow.py",
+      "bytes": 5071,
+      "sha256": "c129620a9f8a86d43adfb32a6a123259089979c89feb81af09160ff85932513e"
+    },
+    {
       "path": "flower_control/drivers/foreground_indicator.py",
-      "bytes": 46371,
-      "sha256": "a746d44be190739cb567706b1575552428c6964943e6ffc52955aa3ecb624ba2"
+      "bytes": 72687,
+      "sha256": "6932cc86f014c222099156cc6536c679671a30537f79fc3b6be270bd7e538591"
     },
     {
       "path": "flower_control/drivers/foreground_resume.py",
@@ -553,13 +1009,43 @@
     },
     {
       "path": "flower_control/drivers/foreground_watch.py",
-      "bytes": 7405,
-      "sha256": "6f56b54a3d47a05da37acb62c5c6511b0c0e65d2cd52086cfd167c962d606a66"
+      "bytes": 7954,
+      "sha256": "bd8ffd440c2f11e928894e0cc30fb81ba13046d8c455b17e70b6a25b67e57109"
     },
     {
       "path": "flower_control/drivers/high_broker_types.py",
-      "bytes": 9685,
-      "sha256": "57e5407755b125a41b0ea29de7fdec5b0dba65c6988f44f7b2ae0c0379ea50b9"
+      "bytes": 10337,
+      "sha256": "755f2b9866e6f98fa79caa64a2656f83f49f4270a3a2dde237d43291e233f5b9"
+    },
+    {
+      "path": "flower_control/drivers/high_helper.py",
+      "bytes": 110448,
+      "sha256": "4a373b1bd8a68d193e7688b8d13947ea18f64075822b995678d832d1058d3317"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/AdminHandshake.cs",
+      "bytes": 1103,
+      "sha256": "8721da4fad15997b2ca9fdf4ccecf2f871158e3218a9b3456f882e559e630d8b"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/AdminLaunchFailure.cs",
+      "bytes": 2080,
+      "sha256": "51f50db6f7d5ce6e7bbbd0e8770d18f5984f60bfefd3fcffd18afc0d06503768"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/AdminLaunchWorkload.cs",
+      "bytes": 8522,
+      "sha256": "e8b6f8b3124dd43b7eeed38c60d7b379319535c21ef6f56be4d6e3b9726a7039"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/AdminProgramLaunch.cs",
+      "bytes": 82305,
+      "sha256": "8a88a2c4375801385e986e063f7de232dff4e8beac33f197c44223e7034b5b71"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/AdminProgramLaunchTests.cs",
+      "bytes": 39063,
+      "sha256": "c080c819e40fcfc54d5d079a2010c8eb944f4b824676ac8aa2f853749c8ecfca"
     },
     {
       "path": "flower_control/drivers/high_helper/app.manifest",
@@ -567,69 +1053,224 @@
       "sha256": "dc30f4e3d1ff3da472b69e96225aeac4ecfda76c6acc7432d16b4eabe1973d14"
     },
     {
+      "path": "flower_control/drivers/high_helper/AppCloseDrain.cs",
+      "bytes": 1026,
+      "sha256": "b655402aa142e4508a9b497ed6e32fa9ed5b016b6e62966674c84cba9823c5aa"
+    },
+    {
       "path": "flower_control/drivers/high_helper/AppExecutor.cs",
-      "bytes": 20183,
-      "sha256": "63ca31c9a7842ce37de42ecd6f85db5e2165b3a3a0cfb613d6f792de1e42afcd"
+      "bytes": 33075,
+      "sha256": "a7c63253bebb0860e763218c1386c18dd53682f2eff9c1d7e8cf98e0664ea55b"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/AuthorityPresentation.cs",
+      "bytes": 1469,
+      "sha256": "9fbe928c42fdccdb5533ba566c715bb66cab82d4600bf7fb938f65f2b78bea97"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/AuthorityStorageChecks.cs",
+      "bytes": 2775,
+      "sha256": "ba5b0eb85bd7d1d6755503c360740386781fbe424b292684d496880ee663bb45"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/BoundMaintenanceWriter.cs",
+      "bytes": 7370,
+      "sha256": "d59cdf4f820e0036b10bfd8c127be0d32ffa0688c503114ee7f66fa62103afb0"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/BoundMaintenanceWriterTests.cs",
+      "bytes": 11943,
+      "sha256": "eb3bac041bbd1d96ea3ec66296e74a370a1080591669e3cd707494772ee1e401"
     },
     {
       "path": "flower_control/drivers/high_helper/BrokerHost.cs",
-      "bytes": 14528,
-      "sha256": "8475eb72d22a70f2d0e2ec638c7b1ebeba4053049be8ad97e7e8c5bf1b58531c"
+      "bytes": 41801,
+      "sha256": "4513a2f208450539cbf626b163bc745cc7a44adf8899f2643283e23980219509"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/BrokerLifecycle.cs",
+      "bytes": 1662,
+      "sha256": "ae8da0a14e4d4331deb01b4d273e6b3c0909cd75a41d1bee9345933b61152796"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/BrokerLifecycleTests.cs",
+      "bytes": 2550,
+      "sha256": "9b5964aa19b51adf5d03cee0d05147a98364eb68a7508cf47ce51593f7cbe098"
     },
     {
       "path": "flower_control/drivers/high_helper/BrokerPipe.cs",
-      "bytes": 4200,
-      "sha256": "9acf63361df931ba04adf797ace57067f8b407abeddb255330b852a10539d23f"
+      "bytes": 4799,
+      "sha256": "4d0afc8ec839ff54a164e3f4c3c2d27eba776b915c7885d4be7e6d164fc59c57"
     },
     {
       "path": "flower_control/drivers/high_helper/BrokerPolicy.cs",
-      "bytes": 12808,
-      "sha256": "764dbba2618e369a84048598232e6f696ca177e7a7417e90672f37019d4015dc"
+      "bytes": 19422,
+      "sha256": "8dfee20889264c51deced43f1248577ee542ba3da09ac7c9d7da28872a3b4bee"
     },
     {
       "path": "flower_control/drivers/high_helper/BrokerState.cs",
-      "bytes": 13593,
-      "sha256": "2011fe36bbbb1e3d301dc53a0d2dea96397c81b0b152b84c29c1a47c3fc19a35"
+      "bytes": 46580,
+      "sha256": "9230de449359170e8ceb0940ed72cf131bd18348351a36f9966396b629d61701"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/BrowserPreferences.cs",
+      "bytes": 10187,
+      "sha256": "b6336027292c36df19f530ad23b871c4dfc10a1ca7601974ff76ff42913528de"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/BrowserProfileOpen.cs",
+      "bytes": 15698,
+      "sha256": "96fee96a65b084c4d3bb5c492c70d35510a7a7a78f02a6dc9c9b1da30461380d"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/BrowserProfileOpen.Native.cs",
+      "bytes": 5445,
+      "sha256": "9b31053a3fb31b6f40492687365d495353e9f4a8ba0ed38a601a63a322bc8dac"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/CodexHostIdentity.cs",
+      "bytes": 11615,
+      "sha256": "c46e437f7632c67dc25edb6ff17ea10b15f716952b23c9cda0a96bbf413069c0"
     },
     {
       "path": "flower_control/drivers/high_helper/ComputerPlans.cs",
-      "bytes": 17825,
-      "sha256": "fe07fc025e74dbfeb4474122871825b87aec7c9f4cf2fd6abc50ad74eb2452f9"
+      "bytes": 39497,
+      "sha256": "afbd40917eef169ca7b67f3b02c89ad569a50e0f0294074cd0a537b9e6711916"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/ComputerStopTests.cs",
+      "bytes": 8906,
+      "sha256": "fddac35903443b4c08cb238809441652c280d445b320edbef4e2612027b4c9b3"
     },
     {
       "path": "flower_control/drivers/high_helper/DailyStopTests.cs",
-      "bytes": 3009,
-      "sha256": "2845ea5f3587af43c6439994489c488152529ac41fe58e2d30f4ebcb34c3c277"
+      "bytes": 9654,
+      "sha256": "cca53e13bbe87a712a2b5bdb3fbff55e0a734c07465269d1ca637d2ea29de319"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DecisionCredential.cs",
+      "bytes": 3894,
+      "sha256": "920e757143e817de2b990cae3b2c70953f1563af900863268345f19d9c292d26"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DecisionProviderSettings.cs",
+      "bytes": 13119,
+      "sha256": "5e1e2615f1b5f5172e8c4edf02ecb8911a7fe26a885fb53dba38dc384f89230c"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DisplayPreferences.cs",
+      "bytes": 3159,
+      "sha256": "cc23d633b5746d9a5cd97e3aebbe42c10d22d8196f09f6bdef2aa17037769319"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DisplayPreferenceTests.cs",
+      "bytes": 2805,
+      "sha256": "0a00fc037d649897ba0532afe1f655e689597450b92280cbf30ef19f8abb7d84"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DshCallSource.cs",
+      "bytes": 2107,
+      "sha256": "8db4358a760184e7ab93c1d9d60ac9d572e5e0b25e0220dd4d10e2e82c34a9c5"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DshHostHook.cs",
+      "bytes": 2925,
+      "sha256": "03b8cfd976632e2eace720900eee0dbb2f2be088399e12a599e2b1f676b94ea7"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DshHostIdentity.cs",
+      "bytes": 16022,
+      "sha256": "04ff86ff232f3fdba224f213b3649421abacdb7440526015cdf375123ca3109c"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DshMessageBinding.cs",
+      "bytes": 11879,
+      "sha256": "bf019a5e065cd6d6a32cf2247d90628ffc5f0c07c10832667ead65eddde5564e"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DshPhaseHook.cs",
+      "bytes": 4825,
+      "sha256": "38b814af41e47209d278c41677f991b019db4f42eb60c740d738d8d9fa6480e9"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DshSignedArchive.cs",
+      "bytes": 9727,
+      "sha256": "fc425a8ef8f7fed20539746addc22ae456f253e9cb8a2736ef731bfea0a88557"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DshSourceBarrier.cs",
+      "bytes": 1921,
+      "sha256": "6c57ea0d32ce559c5310e75ef2e7521b1c9c3d152ad1c05760f9b45da8243160"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DshTranscriptReader.cs",
+      "bytes": 13845,
+      "sha256": "5556b1500828716b2f2195f8a7f0d514f551f037b34965a1462859dae67b520e"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/DshZstdDecoder.cjs",
+      "bytes": 4581,
+      "sha256": "d3a6491c5d0f7ff397d4777323580c95cee71da7dfb775fd38c7b37768453468"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/ExecutionAudit.cs",
+      "bytes": 34701,
+      "sha256": "8960e8f639abc12b74f797e25d1d61f8db1adfe712dfd3bc080740c260841226"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/ExecutionRoleLease.cs",
+      "bytes": 2738,
+      "sha256": "fe241280d23c41aaebf313403e9b345078aa33a05d0d52ac8e4d2282d366c7bd"
     },
     {
       "path": "flower_control/drivers/high_helper/Executor.cs",
-      "bytes": 16778,
-      "sha256": "40b1c1ff861a3893816941590f54894d3be2c594b86f2a1024a0165d634e4079"
-    },
-    {
-      "path": "flower_control/drivers/high_helper/Flower.HighHelper.csproj",
-      "bytes": 777,
-      "sha256": "7fb9b1ea84482d059875efcaf7d63c8c4f9d0df3480da968894a0f7fa093d567"
+      "bytes": 31010,
+      "sha256": "1a7d692c8df27664d226b37ef56185f23babf3d5e542d4dae0bdc734a4abda19"
     },
     {
       "path": "flower_control/drivers/high_helper/flower_bootstrap.py",
-      "bytes": 2273,
-      "sha256": "b3d01ca472c6d1b181f7f22c7f5f0ca696fb1901cecc19b9152fc9f5aff702a8"
+      "bytes": 2518,
+      "sha256": "03663204fd5365df16ff97c7b07f59649f422765d2e86fb12d25bc9efb255a4c"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/flower_hook_bootstrap.py",
+      "bytes": 915,
+      "sha256": "0ddfe06de9370b903dad5431764ff66fdba54d423384ec7ad475daaf1cd45f17"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/Flower.HighHelper.csproj",
+      "bytes": 2237,
+      "sha256": "d45b8da0fb52a88d736ccc036988050a1b2cfc1c61705083221137171bd831f6"
     },
     {
       "path": "flower_control/drivers/high_helper/ForegroundEvents.cs",
-      "bytes": 6873,
-      "sha256": "7190d669dca88718c028feaaed59ca26b191599cc1712e6eeb6c9fce24d7b508"
+      "bytes": 9405,
+      "sha256": "456617014d2e682ce8fad67d922fc18dbb16cc65e6a5c86f4acfdb441db40cd6"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/ForegroundPriority.cs",
+      "bytes": 1797,
+      "sha256": "dfea9125889218deda86f9be28e4c3c860a848baf6bebaeae209e98cd11bec4e"
     },
     {
       "path": "flower_control/drivers/high_helper/HostWindow.cs",
-      "bytes": 12865,
-      "sha256": "2a46a26f6ef450e2da40ab141b06ffb1d75ea67c398478b8a6d18e8a62852de4"
+      "bytes": 20152,
+      "sha256": "c576217922b5101af0bdaaff5af61d984ae17a500ccdfd33ecc3e989f48e9ec2"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/HumanHandoffWindow.cs",
+      "bytes": 22719,
+      "sha256": "cd91d029108aa8122cb4cb355d48dfda49edcad9153dc139719eedde0a1024e1"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/InputActivity.cs",
+      "bytes": 6584,
+      "sha256": "17074c182db639e633f84e05b10b30b6ec4bbe3659560d41bd94e99cd1a4e1b5"
     },
     {
       "path": "flower_control/drivers/high_helper/InputContext.cs",
-      "bytes": 12065,
-      "sha256": "34c3022e00a097a379bfea349b73bc7adc3c7dd09aa4c23424c121494d78023c"
+      "bytes": 14047,
+      "sha256": "3e63de8ca7b66959dfce345ccb2f15e3e666f3c59a913a62aeed981ab47976b3"
     },
     {
       "path": "flower_control/drivers/high_helper/LayoutWorker.cs",
@@ -642,14 +1283,54 @@
       "sha256": "21e66bbdd5e21bb443b5b9e9ab800ea3e4c3bf33c261df478631dedab883307d"
     },
     {
+      "path": "flower_control/drivers/high_helper/LocalSettingsTests.cs",
+      "bytes": 3295,
+      "sha256": "b8fdf75aa752c9718f62c7bf83a3e60ad8494c526b5e03a58f78d6e21943f8ba"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/LocalUiWriter.cs",
+      "bytes": 18671,
+      "sha256": "6831d080615649ee01b72d26692447bf9ec3bbc45da6b6e7c5c73f5b6b413a08"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/MaintenanceBinding.cs",
+      "bytes": 5020,
+      "sha256": "7bbe1ffdcf96d151296c32ddf0589d10e712bf86c8843231d932031fcde00f0e"
+    },
+    {
       "path": "flower_control/drivers/high_helper/Native.cs",
-      "bytes": 19902,
-      "sha256": "a0c4829c7e4fa1895df18339e3a2c792a90f5048a57094934a42edeba6b216b7"
+      "bytes": 23643,
+      "sha256": "2d1ca3aee309e449ad8fbb2cf817644c1d4690c0fef35d2f9fc1fd7c38d3a8a2"
     },
     {
       "path": "flower_control/drivers/high_helper/NativePhaseTests.cs",
-      "bytes": 5325,
-      "sha256": "f53e5cb0bb37d1cbc33ede120d9e257694f2dee81fe1a86bd5263fa4a579d3e6"
+      "bytes": 18533,
+      "sha256": "ae102030abdf763c4ae5f4aff1908c1307ba1c80e168e911ab69855a430a6e6a"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/NativeRoleIdentity.cs",
+      "bytes": 1012,
+      "sha256": "d9d82465d6aae0ced59edafcd73531e6dcab09e52fb545842685bff31ca64162"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/OfflineRecovery.cs",
+      "bytes": 2522,
+      "sha256": "643b4b24808264026bdf1552d53fa2ce856e8cc3d58a5fb376ea16cf59bbb360"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/OrdinaryMaintenance.cs",
+      "bytes": 26209,
+      "sha256": "09af3a57f2faad72d7d3df15cf06d9d1f25f30c01b0a89abfa7decdf39b85bd3"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/OrdinaryMaintenanceTests.cs",
+      "bytes": 14729,
+      "sha256": "bddea3515cd84cd345ddd22df2fa0c9aa972728e12680c67a5d3df7132460232"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/OrdinaryStopJournal.cs",
+      "bytes": 12727,
+      "sha256": "991ac81bf836e2a1698d9583816b8bf577a85f1d931c4f5a270a2d3385d3127e"
     },
     {
       "path": "flower_control/drivers/high_helper/OwnedChild.cs",
@@ -662,14 +1343,89 @@
       "sha256": "3ea8c3864c8f23b39364f9f40beb868ce4d8ecb62c5a25188dca037417beed3b"
     },
     {
+      "path": "flower_control/drivers/high_helper/PasswordMetadata.cs",
+      "bytes": 16430,
+      "sha256": "67668964b0571a074073f9b64bc446b7f5f26d9ed59c5f85948b71d1af3944e5"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PermissionAuthorityChecks.cs",
+      "bytes": 8939,
+      "sha256": "120105fe1075a0d13dc5eb75904e9d11fd5ecfbc7c663d9ad4aa8864ae68abf3"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PermissionHelp.cs",
+      "bytes": 8670,
+      "sha256": "de1c2cb350d2ef654ecec79152c7b6d05486722ce0cb65f0e1adf39e9e08bd3d"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PermissionPageLayout.cs",
+      "bytes": 9542,
+      "sha256": "c61818af1b43c86f70901185e134a262ea42f219e66834be17e5a9aca95a420b"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PermissionSettingsBlacklists.cs",
+      "bytes": 6393,
+      "sha256": "c7548069339d23ea7962da2994192929767d025d12601f7ceae3f6f8a52519a5"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PermissionSettingsRole.cs",
+      "bytes": 13394,
+      "sha256": "d0ab9a6743e8d772ff895dac2ac5babc48a019ec51827bbb8f964091c15270f2"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PermissionSettingsRoleTests.cs",
+      "bytes": 10787,
+      "sha256": "64d81408c14e6e32950baecc8f57aa143f703f8c85c6d5a9e989e6f57f501101"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PermissionSettingsWindow.cs",
+      "bytes": 207916,
+      "sha256": "0aeaef4ad3c568ddd0747ebb851858fcb5776e158eb2368ddf7513d1660d6fec"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PermissionVisual.cs",
+      "bytes": 38211,
+      "sha256": "516f3ff244a7a8864493d8cddc05a887e02863f2cfe66eed5004ca002b3dd04a"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PointerGeometry.cs",
+      "bytes": 41318,
+      "sha256": "7cf763cc5ee16f9fd613ff3cb442e7884939cc236e2bceb36172ee155daddddd"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PointerPath.cs",
+      "bytes": 14275,
+      "sha256": "960bfc261829dd4724c4f8de732791315429efc3190cef3828b2a2e38ec7d622"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PointerWait.cs",
+      "bytes": 1595,
+      "sha256": "5e805d1ca5e18b4fe98e12162bbe4d612fb08d43d4dcfc03be053282a00c9346"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/PrivacyDiagnostics.cs",
+      "bytes": 2669,
+      "sha256": "9e08f379c3d0f6df22fbe9326c3e2befe0d7d83dd4f5871fb199325bac63b9fc"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/program_identity_native.cpp",
+      "bytes": 30015,
+      "sha256": "e22e723849c607d43bf8bd18a5e9d16f203ca983a917c2805c5c2f1000cbaed2"
+    },
+    {
       "path": "flower_control/drivers/high_helper/Program.cs",
-      "bytes": 14266,
-      "sha256": "0d35f6bb5928e980b3308c4f2bc38418b9e020a721fc029f6f16c439d0d80c60"
+      "bytes": 45328,
+      "sha256": "4ccff52dd7922b2cefb7c25a2ff44ced2d0e950caaa0b309ffb7316fe6dd80ec"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/ProtectedStop.cs",
+      "bytes": 6558,
+      "sha256": "156ba68d38245b23bab861448828a63eb3f74a937df9c21be83dae2510e92ec7"
     },
     {
       "path": "flower_control/drivers/high_helper/Protocol.cs",
-      "bytes": 12871,
-      "sha256": "f0b11beb31bf1dc3f36dc4606853da9c94c6752cbbab83df99795703806e2b4c"
+      "bytes": 14586,
+      "sha256": "ef9b851ce389fc018fd4ac50fb7bd8e620aef6de5e0cb150c3c79bdaf9c1e029"
     },
     {
       "path": "flower_control/drivers/high_helper/RequestSignalTests.cs",
@@ -677,14 +1433,244 @@
       "sha256": "fe76bc4f3f9320998fc5b06f0f13fc59667ac642bb169523b5bc74b90d8b0765"
     },
     {
+      "path": "flower_control/drivers/high_helper/RoleDraftRecovery.cs",
+      "bytes": 6199,
+      "sha256": "92ae3d5268dd67a5a80f069a257feb0d2c35426ec0a5109b808dd28a979cc609"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/RoleHandoff.cs",
+      "bytes": 13060,
+      "sha256": "bb3491674b1d8410d11d405d0e28cd2421353a60af11f029dc0d697d324ed8a9"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/RoleStateTests.cs",
+      "bytes": 9610,
+      "sha256": "3a8637ed756483207779c5b016eb4b5da8dcf277803545c58d6da5358b98e2d5"
+    },
+    {
       "path": "flower_control/drivers/high_helper/SelfTests.cs",
-      "bytes": 29735,
-      "sha256": "8e977d356063bd2c4d0bed1e613762d6b1d948adc0a4af87cdd15fed853a0c1d"
+      "bytes": 53456,
+      "sha256": "345cd50a42768673ad41c6ff8adb7c001c332f4747651b93005deba2fe2b0b38"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SemanticDelegation.cs",
+      "bytes": 3455,
+      "sha256": "b4dc3e8b4e9084d3bf695ee5925fc91f52eb90cd098504ac5c9983a8c520f2f5"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SemanticExecution.cs",
+      "bytes": 47077,
+      "sha256": "c80171bd8cbabdf30e395a9cbdc36dbca7ee534ac1d75474fd3acbfb029e3498"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SemanticLaunchPolicy.cs",
+      "bytes": 3992,
+      "sha256": "419b2d6a4ea7b14420103d8edf75cbbb16af80b1a1b7d5c292a8a8a7d85c66da"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsArtwork.cs",
+      "bytes": 14556,
+      "sha256": "b00ba993b9118cfdbe22cc759492df7cde7ebd73ccb092df417ff437e864b504"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsEnglish.json",
+      "bytes": 62607,
+      "sha256": "ef3463319687335aec0fd629c3bd1e7902b1d21d8747a1b1d037b6fb4a6a2e4f"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsPrivacyWords.cs",
+      "bytes": 3558,
+      "sha256": "75a8f8ed8eb735f040f5a2db0b78c7349888d310468166fa4a51b8810a7485b4"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsSurfaceInteraction.cs",
+      "bytes": 5201,
+      "sha256": "e750982c8271fc2f2322a28e90e8372c73a73c40f15cca7f8ae3bea6e1ed2dfe"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsTooltips.cs",
+      "bytes": 12082,
+      "sha256": "35a2bad9fc85635cee9a91c82d9dc3de0e41f54104f16d29dd70a1867cef8ed5"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsUiPreferences.cs",
+      "bytes": 6371,
+      "sha256": "555416a56584a4a8f1d9302364e30a14e575c56cc08490cd8baf0b341ae234ac"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsUiPreferenceTests.cs",
+      "bytes": 6865,
+      "sha256": "20f6422b5fc7a559f9924b1ccd4ad4853d42d6c02a737fe6ec46802fb2bd4bad"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspace.cs",
+      "bytes": 59048,
+      "sha256": "f8d7d54db7381daad2b53b23fdbff1a899f11f2685f203092228b89390033b4b"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceBackdrop.cs",
+      "bytes": 2195,
+      "sha256": "4d3022fb025facbfafbfe44516c9e280eedd25de8f89fd2e0005fe0f5b4dfac6"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceBrowser.cs",
+      "bytes": 19193,
+      "sha256": "8933b8bd2f2825621eb0d9ca520fe4d428b8eeb371e8176e945ec35b940adfd9"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceCanvas.cs",
+      "bytes": 10839,
+      "sha256": "38520e365c5a6b4a9f2498f1e05b65c259604bbf296fa5f37f4be858890b538e"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceComposition.cs",
+      "bytes": 15601,
+      "sha256": "82158bb50590b547c82f124830ec2177388f3997b285de8b58bd46bc9ae19b15"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceControls.cs",
+      "bytes": 13562,
+      "sha256": "972fb25f2121fd28041dfe0a4c47d67a65205493eb6874c615c6f64f083f4548"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceDecision.cs",
+      "bytes": 20752,
+      "sha256": "7531bd62d2c267c488c6ade5462eb708a256f0a341ee997531e62d1ca76b3d91"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceDecisionTests.cs",
+      "bytes": 17167,
+      "sha256": "0005dbbc5e6c6257abfd1337972030bcbb2a48494abd4e336b55359f17f9c3b6"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceDecoration.cs",
+      "bytes": 6468,
+      "sha256": "65a2dfec4e5cc2d47fc528b0617e98f0e9974a5efba640edb170b38494e594c5"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceDiagnostics.cs",
+      "bytes": 2092,
+      "sha256": "560495270a64137a4b3bd456202b1722cbc3f9ef1d693c4acc7c9b32687b6165"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceDialog.cs",
+      "bytes": 19216,
+      "sha256": "d032db3860c3f7319502a535f95d1f220cf7d13da39b1f164880110562436d46"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceDispatch.cs",
+      "bytes": 3805,
+      "sha256": "6d641cc21a77b6f0b31fbb11ff4c93219e4582e5036d442a1b10bcb02631eefa"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceHandoff.cs",
+      "bytes": 5515,
+      "sha256": "179e5bdbc735da381a5e27cace5011768791ee28fe980f92c9407b5ae32ef9c0"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceHelp.cs",
+      "bytes": 3784,
+      "sha256": "ecf0d2a9908f37aa65a707692d9547b1d43e3fc90a82eda4252f5dbce0671047"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceLanguage.cs",
+      "bytes": 6236,
+      "sha256": "18e65dd325061c7f677742b278c8f3c009873ba04c4881a20422406c175d4281"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceLanguageTests.cs",
+      "bytes": 6911,
+      "sha256": "fee78d9a78c605fd446371aa67a63c03d4ebcdf5a08467b119841983079ebcfd"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceLifecycleTests.cs",
+      "bytes": 14031,
+      "sha256": "3121946e89b4b2678f05cd89e5bcb71d1d49b31c707c213c75c32b1b40b13e66"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceMenuTests.cs",
+      "bytes": 15310,
+      "sha256": "7fc0c802e021d86119cbde21cb92c3f6504d08a497a068cdc91d698e9e574f6e"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceModel.cs",
+      "bytes": 7883,
+      "sha256": "f0d8fb0a28fed67393ec8087e87546d189109c5ba6be249c398e37548128f5bd"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceOverview.cs",
+      "bytes": 5424,
+      "sha256": "5ce77d0f83cc459f32d593908e88b6948e0573f9ec84a1a7b14be025e5b601ef"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspacePages.cs",
+      "bytes": 32254,
+      "sha256": "3235bbf9b26eeff0090d9cf9da552a5117c51dbd2e6e34eb13f4015b97d3d2a1"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspacePermissionPaint.cs",
+      "bytes": 21400,
+      "sha256": "2503bf1b82784651be9f629f20418084708096345b7b12271eb5e5664b6d3b32"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspacePermissions.cs",
+      "bytes": 8633,
+      "sha256": "a463ba837c81e14c575d0615b85fdcca141c1b5045c77c78cc719380d5a36805"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceProviderEditor.cs",
+      "bytes": 4861,
+      "sha256": "f5fdb43cc2b5cd32c12c1fb69509720bba0dde10a0280b645b083f6e9f1c8f82"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceRefresh.cs",
+      "bytes": 4927,
+      "sha256": "700d80b0b4d89993cdb9f20f8366e5b872287894f1ab64dc0e6e46efc29237c4"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceSelection.cs",
+      "bytes": 17205,
+      "sha256": "549345cc637fb6dcd2a1ff6a3a8fcfe95a351a98c3dfe89543c4df65350ec79f"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceSelectionTests.cs",
+      "bytes": 12674,
+      "sha256": "0ff311924fa2c6fb73cc086fbc5824349f96febb81fd4967b1ae8d098ad9eada"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceSemantic.cs",
+      "bytes": 2542,
+      "sha256": "867c5bd7e2d73d173b569c25244961781b79233196231950dffd3ff9c7028718"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceTests.cs",
+      "bytes": 29304,
+      "sha256": "3d174edc8c0d3465ba2f3b39470848e97c50f0b6c0e05655a7300831ea4cc506"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceUxTests.cs",
+      "bytes": 27343,
+      "sha256": "53fd7d1db6afa08b6cd9246fecfd1f1c5e7b13702287576f5c86a1fb29960189"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceVisual.cs",
+      "bytes": 21043,
+      "sha256": "7dc8bcf7a86f77d7f24c569318ca0b1c8d4fb27c7b5d8b57d15029c466d40f1a"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceWindowTests.cs",
+      "bytes": 22522,
+      "sha256": "668e26f223e749e6662fcbe5312fc33f2a5e42eb2bf6c9e5a9e741e8602a4a40"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/SettingsWorkspaceWorkflow.cs",
+      "bytes": 27701,
+      "sha256": "d3decbf67e72274059f54b7ff0071c26ff61e23d03526c024f06a3a147d24e64"
     },
     {
       "path": "flower_control/drivers/high_helper/SharedWriteGate.cs",
-      "bytes": 5975,
-      "sha256": "7b19556e7497c203ad82bab6c667b0a699225e99daa479040e7cb60629c7c934"
+      "bytes": 7422,
+      "sha256": "61052bb92dc63c5b47268a097321101d6d69e95fcfa8013b797bfa166bb0512d"
     },
     {
       "path": "flower_control/drivers/high_helper/ShellDesktopWorker.cs",
@@ -692,9 +1678,139 @@
       "sha256": "14fe7fb41acf1a9529e66e279f08cde6211c64ddf9a3aff4654cff606153226a"
     },
     {
+      "path": "flower_control/drivers/high_helper/TrayMenu.cs",
+      "bytes": 47058,
+      "sha256": "a93a887ced682e7eff52f5a324bea20e0e36a69fa83703d205a8ec1d8a9e8b6c"
+    },
+    {
       "path": "flower_control/drivers/high_helper/TrayRegistration.cs",
       "bytes": 1979,
       "sha256": "560f6f9d9b15d92caba19d8a18fb6f7c73f23a7b6cbdd8d34053bb7fd982e61c"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/TrayStateIcons.cs",
+      "bytes": 4663,
+      "sha256": "1b102e0dad6b6da871136242a8833bb93a6b15f723b12623632f671eb4913a1f"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacCancelledTestRecovery.cs",
+      "bytes": 15831,
+      "sha256": "7815336e40ab87170a5c592cc528492db89af10ff79b45a49b6550faf9a87349"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacChatAuthorization.cs",
+      "bytes": 58358,
+      "sha256": "b2c5a4c7266041fa9dfaca1c7b49ae8ccfad5cd44d1d1fdfe54a5e41c757da16"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacClaimJournal.cs",
+      "bytes": 36688,
+      "sha256": "64712a15c9d5cc1dd0130fd305ac04741870978dea23479522eab0f7c4d33240"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacDecision.cs",
+      "bytes": 14482,
+      "sha256": "a84484fe4bac5faf62843db555a6bad0b1afc2c417feb9a7c7e04f5d112fbfe2"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacHostHook.cs",
+      "bytes": 11344,
+      "sha256": "b020d07e465617e25b2762b6263837ce7a6597ba4e55e5f14f97db49e8f02b8f"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacIdentity.cs",
+      "bytes": 18445,
+      "sha256": "a92c4a83b170641b2f13a5b6af1852dd0dab60b7036484c855e7eb650821911b"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacInstallation.cs",
+      "bytes": 34331,
+      "sha256": "000cc8fbea80d529c93308bd1165f4bebf86aaa2c5381c20429a65f7e36d8dcc"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacLegacyControlRecovery.cs",
+      "bytes": 2524,
+      "sha256": "dbb1a7966831d2bdca8617d6d52e7172baf0e3ea069c70f3a49167a489bc97a7"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacLegacyTestResult.cs",
+      "bytes": 236,
+      "sha256": "cd1b8f829fd3802d6ffe451f60c7f23acf9df81229c917830421641f46b37fae"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacOutcomeEvidence.cs",
+      "bytes": 6326,
+      "sha256": "46672a364bd640c537936fe613ece6ebac12efafe08defdbd5061538d855a54e"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacPeerReadAccess.cs",
+      "bytes": 3452,
+      "sha256": "db7e2edcb6b8135480f628d3a02a65b3dce8bc0a00bf005e9bd625ce7a557254"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacProgramBinding.cs",
+      "bytes": 7949,
+      "sha256": "9038316a20a27e327f970ce6bfb69ebe74dd1da44ed270dfb1427287db26ac3c"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacQualificationLease.cs",
+      "bytes": 16942,
+      "sha256": "410fdd29019a201399d8937541644cd30db97972ad8f7b17f742d1afbc39f662"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacQualificationLeaseTests.cs",
+      "bytes": 14077,
+      "sha256": "081f33986079546b954316a2cba5e152c5abeb59feea3379730e09d6c3056854"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacRuntime.cs",
+      "bytes": 26205,
+      "sha256": "a9a770a8e8a97f9a8f010380e2a7dee776beea2b5836857235fb0679f3f6dbd7"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacScanLease.cs",
+      "bytes": 8887,
+      "sha256": "72f984e56c641d4c94584d834e64bb6e0d2604157b2ac6da8b08cf7823dab9ae"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacStateStorage.cs",
+      "bytes": 2109,
+      "sha256": "b9f13dd98a6f683285455ffc287410718bc143cdbfe427545d34de5093cf5d55"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacSystemBootstrap.cs",
+      "bytes": 357,
+      "sha256": "a481361094de4050e8afabbe63655200b29ed030eca6d8b4895b315d83eabf87"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacTranscriptBinding.cs",
+      "bytes": 15651,
+      "sha256": "4617d5863fb3f04fe4f86436dcb696c6dd13085eaf9dc9f93610715c17b0933b"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacTranscriptReader.cs",
+      "bytes": 35249,
+      "sha256": "6995a95c70549d082ef8fecff4cae242db03c944f0c91ae6da82d4e139643446"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacVerification.cs",
+      "bytes": 15910,
+      "sha256": "9bb07ce011fe47e318089979cc7b1c871302e1914d3419df79b64087c10986e2"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UacVerificationTests.cs",
+      "bytes": 11259,
+      "sha256": "d8fcef9211582cb815373e2460de4e408608b120c7c0a3140e20093853ecc849"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UiText.cs",
+      "bytes": 3711,
+      "sha256": "08af760b2633b233c2556b6ee88b59ffe88dfb7f5a54a8aeb4fb0b7b2a0b2ee2"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/UserPermissions.cs",
+      "bytes": 58699,
+      "sha256": "5333bed59cb5f747aa3839cc6ad3314a4d99dfb79b4a2a6f3b21da6c423b41da"
     },
     {
       "path": "flower_control/drivers/high_helper/WindowLayout.cs",
@@ -707,9 +1823,44 @@
       "sha256": "5e0dde9f4a7bf800ace88bfd0101083745f87a96054f8c9a6a8cd88fe50ad5ee"
     },
     {
-      "path": "flower_control/drivers/high_helper.py",
-      "bytes": 66186,
-      "sha256": "0d5bafb12f97ee0cc3ed2e374de5cbb91b8821401f4305451b9b43c6d74b88ff"
+      "path": "flower_control/drivers/high_helper/WorkAuthority.cs",
+      "bytes": 40712,
+      "sha256": "919e66362ab2a580ea9bb06aed12c01b9eaf25d8e5b04700bbddf34d22633a01"
+    },
+    {
+      "path": "flower_control/drivers/high_helper/WorkSourceDiagnosticsTests.cs",
+      "bytes": 4143,
+      "sha256": "68319dc320cd2a677e3bb44c8990b2895c87983e7cb0475d159f9d7f9e23a9ef"
+    },
+    {
+      "path": "flower_control/drivers/host_cleanup.py",
+      "bytes": 4040,
+      "sha256": "47417c0197948434c95e611f5afc357a152e4c09dab3bf49ded54cb0ef74f049"
+    },
+    {
+      "path": "flower_control/drivers/hud_layout_memory.py",
+      "bytes": 3487,
+      "sha256": "62f3a257244d9d3923550b6a700adb55006f4b43426c0f096536feaa6b4acd33"
+    },
+    {
+      "path": "flower_control/drivers/human_handoff.py",
+      "bytes": 7474,
+      "sha256": "ebc08294226028a48e175ad12bdea57928774ea348b0ab37db134ca1f6a2f1e1"
+    },
+    {
+      "path": "flower_control/drivers/idle_phase_cleanup.py",
+      "bytes": 4351,
+      "sha256": "6c7fb8988aef273b008134a070416e9d554dc1b918cad6b9f72fb60b5198aaf2"
+    },
+    {
+      "path": "flower_control/drivers/indicator_content.py",
+      "bytes": 1971,
+      "sha256": "4f4066d4f2e0cb1a624f1a3cd976af7644e8a781c81e18a7ef2ffee7708bc792"
+    },
+    {
+      "path": "flower_control/drivers/indicator_language.py",
+      "bytes": 7548,
+      "sha256": "e4a7309943ac56f8f80b53dec77a7a1749ed74d6faf87f7a0ea3fe2a548650a6"
     },
     {
       "path": "flower_control/drivers/indicator_native_draw.py",
@@ -718,33 +1869,98 @@
     },
     {
       "path": "flower_control/drivers/indicator_operator.py",
-      "bytes": 4336,
-      "sha256": "b1ec86a9aa496df032a9d410540b44ab42189deb9c0d566ef8fcabd7a79bd09b"
+      "bytes": 4907,
+      "sha256": "0700b485a89d1206ff4a72e0e1ce1bf6f55932dfbc10a443383d3c7df3f5febd"
     },
     {
       "path": "flower_control/drivers/indicator_visual.py",
-      "bytes": 11440,
-      "sha256": "500957cd9c42248d06c12b97f52e43db69d647a1d14db972ab722668434b6512"
+      "bytes": 21145,
+      "sha256": "c4b3269ff7071c3c7ce173e3260fc2e1e48990d7d6d048b3ce02117b259a7390"
+    },
+    {
+      "path": "flower_control/drivers/input_activity.py",
+      "bytes": 6739,
+      "sha256": "c7d77ca3684db0d54539224c836244cf9233e52761d27cbf132c80c50b8c3f98"
+    },
+    {
+      "path": "flower_control/drivers/local_video.py",
+      "bytes": 13260,
+      "sha256": "f5a2baee3c6df173aad61ecf4ae64b6e46df92d84d2db24bba735d3f643679d5"
+    },
+    {
+      "path": "flower_control/drivers/password_pixels.py",
+      "bytes": 14119,
+      "sha256": "dcc98928bb468a18eaa415eb834f067808133cd52bd64b95ac623a1f015f9d0e"
+    },
+    {
+      "path": "flower_control/drivers/pointer_geometry.py",
+      "bytes": 34022,
+      "sha256": "2b2b647b4f46dcb3e03f5ebfa03c8f59745222db7f2b1cfb3660d7861c4d982f"
+    },
+    {
+      "path": "flower_control/drivers/pointer_path.py",
+      "bytes": 827,
+      "sha256": "10c4071143a14185351e73ffc3a2c55f3ac2d2ae2e7ab85ce24e721a8282189e"
+    },
+    {
+      "path": "flower_control/drivers/privacy_diagnostics.py",
+      "bytes": 1276,
+      "sha256": "f7810cdbfc8e3f53793727994b694ec4d3ae583f3af289f9c78454967cd421ae"
+    },
+    {
+      "path": "flower_control/drivers/recording_storage.py",
+      "bytes": 4067,
+      "sha256": "aeeb5f3a589259814a9944bd56899db1560662489841ea11edb252d9cbea6c5a"
+    },
+    {
+      "path": "flower_control/drivers/request_stop.py",
+      "bytes": 3245,
+      "sha256": "40426699fbdfc18d155ffb4ddadc1ac0f750f584f0b908e1cbc9a2f2818e1a36"
+    },
+    {
+      "path": "flower_control/drivers/semantic_execution.py",
+      "bytes": 4478,
+      "sha256": "d09ef0062b07f659ed6aa29d72ecef04babe5d99cd6a5fb5fb871890ecf0e9f2"
+    },
+    {
+      "path": "flower_control/drivers/visual_conditions.py",
+      "bytes": 4920,
+      "sha256": "eff2d38e1dc9d7a59659f615d8da3f4601966b042a572473bcb56c0e70b6ff26"
     },
     {
       "path": "flower_control/drivers/web_artifacts.py",
-      "bytes": 2940,
-      "sha256": "c6117c72cd7dc66a4b8b640bc9564fc0065a331592c0e0cf36329035caaa35e4"
+      "bytes": 14148,
+      "sha256": "bf287ea7b2e2e5ea0b2782b395d7d230ad2208f4eba28111df3ea5070733e6bf"
     },
     {
       "path": "flower_control/drivers/web_batch.py",
-      "bytes": 5312,
-      "sha256": "2ea50f46523aec2b13c377d1d1f9cda72cdb883f8b928a4dd6ff5ce3f309d07e"
+      "bytes": 7104,
+      "sha256": "a3cdd877f9063af3f4bdf465cb45d4e01a0dc6dca0271887a1cb84aca7b2caae"
+    },
+    {
+      "path": "flower_control/drivers/web_browser_runtime.py",
+      "bytes": 11263,
+      "sha256": "609dfd296ac69d45dc75e7c8c9b621b06d962098b0ffd21131248216001837b5"
     },
     {
       "path": "flower_control/drivers/web_business.py",
-      "bytes": 5950,
-      "sha256": "593a73cb4c914d5f8b2d8e16b0ddf40f67fc22093836ed6581039512208ae79c"
+      "bytes": 5987,
+      "sha256": "f64b8d04c357d69c6729be006a38860425e692fd56f440c76bcf38d2a6c349c7"
     },
     {
       "path": "flower_control/drivers/web_control.py",
-      "bytes": 38996,
-      "sha256": "63ccc60c778d50ef311fe216021c25dcde958281f5ec9a51f9c4bf9b133c6256"
+      "bytes": 48363,
+      "sha256": "6f0b04a23370e58d6224257dc9e93fd7e03b09cff6fbed125beeb94f23badf08"
+    },
+    {
+      "path": "flower_control/drivers/web_diagnostic_recording.py",
+      "bytes": 7943,
+      "sha256": "bb9b1235a15c3f137c77db4adcabc513c25adf3ea8fc41f457e4b5aed9f8e7d5"
+    },
+    {
+      "path": "flower_control/drivers/web_diagnostics.py",
+      "bytes": 2350,
+      "sha256": "573f4f234e53bb40217859813e42893ae20fcbd75548531e15936ef60be98f70"
     },
     {
       "path": "flower_control/drivers/web_discovery.py",
@@ -753,38 +1969,138 @@
     },
     {
       "path": "flower_control/drivers/web_effects.py",
-      "bytes": 1947,
-      "sha256": "93b140c04a68921cf6d3dcd871bfd1e1719ecc5946d29620a99e1b72c3181891"
+      "bytes": 3055,
+      "sha256": "d907f30264c03621aa70b4624e40c52666f1eb487f07241c957ac5451beddf2f"
+    },
+    {
+      "path": "flower_control/drivers/web_file_picker.py",
+      "bytes": 6005,
+      "sha256": "14f8022567ddddf3519976184f119f41a7118b00071e50199a3d6056a1102328"
+    },
+    {
+      "path": "flower_control/drivers/web_file_session.py",
+      "bytes": 7687,
+      "sha256": "a7d7f1588e56cbb46c4b85020e825265bfe1e8ee8313b363dc31e39dacd858ac"
+    },
+    {
+      "path": "flower_control/drivers/web_file_snapshot.py",
+      "bytes": 8044,
+      "sha256": "6ab703198f56e50e329c17165090c3e924bf749f8fd47e9ca2f2324f6921488c"
+    },
+    {
+      "path": "flower_control/drivers/web_finish_store.py",
+      "bytes": 10035,
+      "sha256": "70a526e0ed44d8b08b8052f241569a6d8e47ea7653eb030955963b05b8e0888b"
+    },
+    {
+      "path": "flower_control/drivers/web_finish.py",
+      "bytes": 17930,
+      "sha256": "cfbf8be0f873d862bf36e053fb7850cc41eda222d890eb77ed45e57ba1094246"
     },
     {
       "path": "flower_control/drivers/web_flow.py",
-      "bytes": 8237,
-      "sha256": "c2cdc33d689521e1bff4138bad468ee1fe5af219f851bcf9d49227a7ec002291"
+      "bytes": 12702,
+      "sha256": "b0ed1290b05c5d60e53685eea3181b90a1150ca41fff1a654f169f9747b21a83"
+    },
+    {
+      "path": "flower_control/drivers/web_hidden_window.py",
+      "bytes": 4311,
+      "sha256": "69b61203f879156164ab7ba1e3a18e339be533d74c14789de16d1d173c146fdb"
     },
     {
       "path": "flower_control/drivers/web_mcp.py",
-      "bytes": 62095,
-      "sha256": "a2e1b71d992568856003651e19594767a75a1b39e4648ed4ef41da1c49c75ac4"
+      "bytes": 102545,
+      "sha256": "c5af66da09088e2785836724999155cca3efd79ff20d71bdc75dc355d4bec9ab"
+    },
+    {
+      "path": "flower_control/drivers/web_native_window.py",
+      "bytes": 9122,
+      "sha256": "9183d6d444a077f3759671a087a78944f1417db48ec39fb5aafe6b72c6f8aad3"
+    },
+    {
+      "path": "flower_control/drivers/web_page_registry.py",
+      "bytes": 3489,
+      "sha256": "0abae16d0c683430fe71500f024f5010a8970eb8f167ef4a8923e6b0406725f3"
     },
     {
       "path": "flower_control/drivers/web_page.py",
-      "bytes": 61030,
-      "sha256": "e6c244ae36fb8ff14d92a8170a3ab357afbb14486f8963c87939cc9c25f149f6"
+      "bytes": 103492,
+      "sha256": "83f674caabfc053c93fa21154a5153c6871b3807f3f486fde3d9ae8a7d2bc251"
+    },
+    {
+      "path": "flower_control/drivers/web_privacy.py",
+      "bytes": 3746,
+      "sha256": "4c048f9e12cb7a2a2b438ce7ff8bc99a68a2f365afc0f59d9ef898c2adea8a61"
+    },
+    {
+      "path": "flower_control/drivers/web_reconnect_recovery.py",
+      "bytes": 4836,
+      "sha256": "005c6910adbe58d80043b714bf3f0424b277b62c941494494c78ff680ba38272"
+    },
+    {
+      "path": "flower_control/drivers/web_recording.py",
+      "bytes": 6719,
+      "sha256": "8dc185e5263caa841be66c14438e65d7ce3faace71ca3d73244ba22aacbd02a9"
     },
     {
       "path": "flower_control/drivers/web_session.py",
-      "bytes": 70046,
-      "sha256": "6200bfa9f871dd4342e0ae203589fc64975f6b6757d663f76cd5acb2d02d4f82"
+      "bytes": 90864,
+      "sha256": "73cbd7b9e7d5578f9c937330acbfddc0360ae9174c3631a0ee7cd2b6f38ffdc9"
+    },
+    {
+      "path": "flower_control/drivers/web_shared_profile.py",
+      "bytes": 14040,
+      "sha256": "0addb47e09b3fe9941298e8a79303a42edc084ef31e19895a5f98b655a48c7d9"
+    },
+    {
+      "path": "flower_control/drivers/web_text.py",
+      "bytes": 892,
+      "sha256": "5788e953ffb7e913b4f2afa71e6363bc3e07572fe6e1ce8950f7cb9f503f29df"
+    },
+    {
+      "path": "flower_control/drivers/web_tree.py",
+      "bytes": 5726,
+      "sha256": "ea28ff82466cf4b66b5da76b0287f4ecda0caea45b04dd60926d802fce22adec"
+    },
+    {
+      "path": "flower_control/drivers/web_upload_recovery.py",
+      "bytes": 11920,
+      "sha256": "8a8159b5aacf8a6ec99c14768674afdb781907cdb33cebe1dd5d2ebddbdbf60c"
+    },
+    {
+      "path": "flower_control/drivers/web_uploads.py",
+      "bytes": 2481,
+      "sha256": "59b36147787a6d5d1c068c6e0433a45e365cf69571be671508f697ee7f40a655"
+    },
+    {
+      "path": "flower_control/drivers/web_user_profile.py",
+      "bytes": 6277,
+      "sha256": "7792732cd2c62b79b328b0a794e95c5f833a57e79276f8bdcd61926e27c070a8"
+    },
+    {
+      "path": "flower_control/drivers/web_user_tabs.py",
+      "bytes": 1868,
+      "sha256": "1b67ad44666bdea0e27cdc43005c9c23fa61d355f0c4a9fc6b8b29ac74dc0812"
+    },
+    {
+      "path": "flower_control/drivers/web_window_mode.py",
+      "bytes": 793,
+      "sha256": "a5433491a6a080d623588a6faa2fc5239eae2552b4d16b44d51d0aeb055a8e2b"
     },
     {
       "path": "flower_control/drivers/web_worker.py",
-      "bytes": 50291,
-      "sha256": "0e89eb73ee0ed8163926c8cd52d2d0960bc92e2b6f7fbaf23569baf6812f378a"
+      "bytes": 163707,
+      "sha256": "b23edf753c84a4683357992b8a33ae833a5dad9d4780b05e693f41afd80b9bdd"
     },
     {
       "path": "flower_control/drivers/web_workflow.py",
-      "bytes": 9194,
-      "sha256": "eb6de64c4bb06ef5a7c8fd38724cd5de0c73fef788b146dc95dc344f846d5e4c"
+      "bytes": 10187,
+      "sha256": "d226c7258db142b30dea04dbf577bd15788ae5954dfd4873e7c784196afef046"
+    },
+    {
+      "path": "flower_control/drivers/worker_bootstrap.py",
+      "bytes": 1954,
+      "sha256": "57b3efa5315fa2187ee8faec5c064958cc60a30bb232cdeb3d7da69b85d26d98"
     },
     {
       "path": "flower_control/drivers/worker_lifetime.py",
@@ -793,8 +2109,13 @@
     },
     {
       "path": "flower_control/drivers/worker_python.py",
-      "bytes": 771,
-      "sha256": "8cc2005e1a43fbac1e54bf5c225663cf998060ce06c8869f53d8d25acdcf9f79"
+      "bytes": 1123,
+      "sha256": "9667597de42b81ce5724f736bd40b15d1adfa3397fe93aebfc190cd9e96cf2b4"
+    },
+    {
+      "path": "flower_control/dsh_metadata.py",
+      "bytes": 1240,
+      "sha256": "2a97e75fc687d9b60e2ee7fc6c0b519c1bf9d11c1026c543611ff3879498c019"
     },
     {
       "path": "flower_control/local_target.py",
@@ -807,9 +2128,54 @@
       "sha256": "701d6db7ac1fa20476cc2716230298441e1f3c19423df95beb2b7ecb5c72beb7"
     },
     {
+      "path": "flower_control/mcp_call_lifetime.py",
+      "bytes": 3584,
+      "sha256": "2c98300dd0c10609b1b584dd2cabd5bcb06d8b4c5e1fae8567f7f9bc6d2cb394"
+    },
+    {
       "path": "flower_control/mcp_origin.py",
       "bytes": 1361,
       "sha256": "b34526e368f87d876430a7a85294a290430f90dd97d1b49bffe34f47e3c02c4b"
+    },
+    {
+      "path": "flower_control/permissions.py",
+      "bytes": 29106,
+      "sha256": "4e65ad99f7f599a10e9d46635b95e9492829e5ffcab735e575f9427741df073a"
+    },
+    {
+      "path": "flower_control/privacy_detection.py",
+      "bytes": 5047,
+      "sha256": "bb091ba2d730221461cc76fe1e1ad90dfb9c60a08c75b8b10f61083abb046150"
+    },
+    {
+      "path": "flower_control/privacy.py",
+      "bytes": 17312,
+      "sha256": "33c317990ea0d536654a3253483e09f1a9225cab982f5bcfce52cd7e60b79851"
+    },
+    {
+      "path": "flower_control/profile_registry.py",
+      "bytes": 10834,
+      "sha256": "076fa61a29c7b1ba25ff41c359484bb3f7c8402b73007e9e375de16b634b57ba"
+    },
+    {
+      "path": "flower_control/security_prompt_continuation.py",
+      "bytes": 13371,
+      "sha256": "ebf235c4dd933848915c57c40f7911aaa757bac50634bb251d278b745b72d990"
+    },
+    {
+      "path": "flower_control/security_prompt_execution.py",
+      "bytes": 19647,
+      "sha256": "9d8c2dcd84de25564e228dfb0fb4aa830ed76164ac751a56f21d8a5c7f047fd1"
+    },
+    {
+      "path": "flower_control/security_prompt_identity.py",
+      "bytes": 7467,
+      "sha256": "c64e46f7d1041a601e43accf2b31f388fbdb8b8ace01fb07dd2287d4b86ba179"
+    },
+    {
+      "path": "flower_control/security_prompt_observation.py",
+      "bytes": 8736,
+      "sha256": "28eb62bf028d17e352861c0992783a57e1e50ff56d5c5bf8ff0bc55e0f98b722"
     },
     {
       "path": "flower_control/target_launch.py",
@@ -818,18 +2184,23 @@
     },
     {
       "path": "flower_control/target_wire.py",
-      "bytes": 3249,
-      "sha256": "703d2a83a31207647eb423bee8b5fc87517b0a1c1fdf5c74be14dbc193891ff2"
+      "bytes": 4278,
+      "sha256": "17210ffb02070deb8e427144839af335b356b88c9acc94f189894aed690a2ea8"
+    },
+    {
+      "path": "flower_control/tool_guidance.py",
+      "bytes": 1496,
+      "sha256": "1e95533e54e05cd1e2a659ee43090c12cd091eb5a6ad9d8d59b01cd4c289398b"
     },
     {
       "path": "flower_control/web.py",
-      "bytes": 34741,
-      "sha256": "9b81389d46e0e618e99d7ef7ec313be2145f495b1ba7083469c61de50f3e6d82"
+      "bytes": 60315,
+      "sha256": "9194ee07e29d67521de967d2b8ccf439ea63caf0df644424c4fe88582ccfe747"
     },
     {
       "path": "flower_control/window_registry.py",
-      "bytes": 21449,
-      "sha256": "5e0136e160c28ab7cdd556be5e264aad4359617b106e0aeed6af40e2e914bc93"
+      "bytes": 23377,
+      "sha256": "e07b484b97092a3018bd43f5ab62e342f556c8a198ae50a55d5d31d33e24a723"
     },
     {
       "path": "hooks/claude_pre_tool_use.py",
@@ -837,19 +2208,64 @@
       "sha256": "3bca61afc124260dda99a6628d04da55a78486dbdc85e1e80b08e2c9c34df07c"
     },
     {
+      "path": "hooks/dsh_phase.py",
+      "bytes": 1099,
+      "sha256": "1aae8483c8836908496e9c01491d38b23a879038cd9c7cd21dbaa8343e8c6062"
+    },
+    {
       "path": "hooks/hooks.template.json",
-      "bytes": 1483,
-      "sha256": "4ef37c9be3e18f59588555b811dfc31f11db5d80cfa8851818e8fd03dbdc142d"
+      "bytes": 3378,
+      "sha256": "2cdb4a281a1b7bea7a1698e49922b27893a12be601f35bd21bbd932d423826c6"
+    },
+    {
+      "path": "hooks/host_phase.py",
+      "bytes": 2319,
+      "sha256": "7a81fa47312ba05c0fdcea2264272ea13f7455b8244620e1876775c8586ed0e8"
     },
     {
       "path": "hooks/pre_tool_use.py",
-      "bytes": 1765,
-      "sha256": "3041b0e9d7ed559c9667eea4c875f3a6c742af277f22ab721ac88f0e33cf53bd"
+      "bytes": 2002,
+      "sha256": "005e9edbbe5185dd1d084d3569eb68a515f763d8ac22bf8c3ca39a208ab8e49e"
+    },
+    {
+      "path": "integrations/dsh/host-bridge.mjs",
+      "bytes": 22748,
+      "sha256": "70bc1e178f3a7ca2039a17bd57f6e5904729b3e1f711c6b068b5ccab282ec6f7"
+    },
+    {
+      "path": "integrations/dsh/index.mjs",
+      "bytes": 1797,
+      "sha256": "f94f799e4668af1ca85f912a82b858184fb6094aa46ce3518929da79eca81b89"
+    },
+    {
+      "path": "integrations/dsh/metadata.mjs",
+      "bytes": 2184,
+      "sha256": "baea45969319345fd9e072c50456c9ba025de08c62d40951008d09d3c4fae80e"
+    },
+    {
+      "path": "integrations/dsh/package.json",
+      "bytes": 557,
+      "sha256": "5d16a1cca05c369f266eef6f6ddddde2c7f85c06197d5123b27e3d3f2c098381"
+    },
+    {
+      "path": "integrations/dsh/plugin.mjs",
+      "bytes": 11012,
+      "sha256": "d58ee199d310bc80fc9ec068650c36296578f910776bebacf0e3b248470323e1"
+    },
+    {
+      "path": "integrations/dsh/README.md",
+      "bytes": 5148,
+      "sha256": "6f96dfb3f7e1e9dc272958609de6321a1fe9ee94d3e51df27177e29dae1da0be"
     },
     {
       "path": "LICENSE",
       "bytes": 1082,
       "sha256": "34617bb18dcf87991089f8e7235746293de9aac360c37aba3b1e881d29816e9c"
+    },
+    {
+      "path": "LICENSE-MIT.draft",
+      "bytes": 1091,
+      "sha256": "5fe45f3a98d917d45589987ab1ade5713707edd51e1e5c463adc8365ccb48176"
     },
     {
       "path": "licenses/third-party/annotated-types/annotated_types-0.8.0.dist-info/licenses/LICENSE",
@@ -917,14 +2333,14 @@
       "sha256": "fdcb59154c74cbaba16a11242f7740bea9f23d6feb5547917d8c5f94a80392a5"
     },
     {
-      "path": "licenses/third-party/httpx/httpx-0.28.1.dist-info/licenses/LICENSE.md",
-      "bytes": 1508,
-      "sha256": "4ec59d544f12b5f539a3a716fd321ac58ccd8030b465221f2c880200cdf28d8d"
-    },
-    {
       "path": "licenses/third-party/httpx-sse/httpx_sse-0.4.3.dist-info/licenses/LICENSE",
       "bytes": 1072,
       "sha256": "beec67e4ee83a7af26f242bed9987aa863d6d2dfb776106aa2360c4187f31901"
+    },
+    {
+      "path": "licenses/third-party/httpx/httpx-0.28.1.dist-info/licenses/LICENSE.md",
+      "bytes": 1508,
+      "sha256": "4ec59d544f12b5f539a3a716fd321ac58ccd8030b465221f2c880200cdf28d8d"
     },
     {
       "path": "licenses/third-party/idna/idna-3.20.dist-info/licenses/LICENSE.md",
@@ -932,14 +2348,14 @@
       "sha256": "1a9a4f0e3d479a27240ddd59a9137a66ab4a0f9dfdc8ca6188cc0bfd85187f04"
     },
     {
-      "path": "licenses/third-party/jsonschema/jsonschema-4.26.0.dist-info/licenses/COPYING",
-      "bytes": 1057,
-      "sha256": "4f92a015a13c4d1a040bef018aa13430b4f1bc73b41b16bb846c346766de7439"
-    },
-    {
       "path": "licenses/third-party/jsonschema-specifications/jsonschema_specifications-2025.9.1.dist-info/licenses/COPYING",
       "bytes": 1057,
       "sha256": "42dcd63495f87b4eb7c7757afa379bb55a53f94afd7a5f657d9adf57236e515c"
+    },
+    {
+      "path": "licenses/third-party/jsonschema/jsonschema-4.26.0.dist-info/licenses/COPYING",
+      "bytes": 1057,
+      "sha256": "4f92a015a13c4d1a040bef018aa13430b4f1bc73b41b16bb846c346766de7439"
     },
     {
       "path": "licenses/third-party/mcp/mcp-1.30.0.dist-info/licenses/LICENSE",
@@ -950,6 +2366,11 @@
       "path": "licenses/third-party/pillow/pillow-12.3.0.dist-info/licenses/LICENSE",
       "bytes": 78016,
       "sha256": "4f7866a74802c6326f81faff59a56546b6aec2b10b91973e0e9308de95e79857"
+    },
+    {
+      "path": "licenses/third-party/playwright/playwright-1.63.0.dist-info/licenses/LICENSE",
+      "bytes": 11399,
+      "sha256": "7fab1461b41970ff376f1c9303a637076bfaaeb71cd12dd3a1c44aaf59a1a2b9"
     },
     {
       "path": "licenses/third-party/playwright/playwright/driver/LICENSE",
@@ -987,19 +2408,9 @@
       "sha256": "a549d329bad8806fe279f0ecae0fc0270dec7e7c2dc8ec10f90e394f7c32b144"
     },
     {
-      "path": "licenses/third-party/playwright/playwright-1.63.0.dist-info/licenses/LICENSE",
-      "bytes": 11399,
-      "sha256": "7fab1461b41970ff376f1c9303a637076bfaaeb71cd12dd3a1c44aaf59a1a2b9"
-    },
-    {
       "path": "licenses/third-party/pycparser/pycparser-3.0.dist-info/licenses/LICENSE",
       "bytes": 1543,
       "sha256": "0c846399369ea76ddd7b5c44fe6d16497415fcf015f5cbb508c24bf98b81c5b1"
-    },
-    {
-      "path": "licenses/third-party/pydantic/pydantic-2.13.5.dist-info/licenses/LICENSE",
-      "bytes": 1129,
-      "sha256": "a9e186f3ca16b5eef84318e7a701721351a00cb7b8ae3a4394b67b49e3529ef3"
     },
     {
       "path": "licenses/third-party/pydantic-core/pydantic_core-2.46.5.dist-info/licenses/LICENSE",
@@ -1010,6 +2421,11 @@
       "path": "licenses/third-party/pydantic-settings/pydantic_settings-2.15.0.dist-info/licenses/LICENSE",
       "bytes": 1103,
       "sha256": "eb355a753e020346d33d83bf9769135b89fc610568ac531a01c295bcee7fd998"
+    },
+    {
+      "path": "licenses/third-party/pydantic/pydantic-2.13.5.dist-info/licenses/LICENSE",
+      "bytes": 1129,
+      "sha256": "a9e186f3ca16b5eef84318e7a701721351a00cb7b8ae3a4394b67b49e3529ef3"
     },
     {
       "path": "licenses/third-party/pyee/pyee-13.0.0.dist-info/LICENSE",
@@ -1148,28 +2564,28 @@
     },
     {
       "path": "PRIVACY.md",
-      "bytes": 2613,
-      "sha256": "a2950d031f77c4d7144a369a39da754a8198412db8ef6b4e7fea5cdcba720bc0"
+      "bytes": 3116,
+      "sha256": "423f1830c0389eaf18fe2bd144958c900884bd4fcd572ea56c7b6edb2dce736e"
     },
     {
       "path": "PRIVACY.zh-CN.md",
-      "bytes": 2074,
-      "sha256": "492561dccbf0486a5b1b514de8dbe20b80493ed043211526eceb03692c03008d"
+      "bytes": 2752,
+      "sha256": "e4c44029bff396dba8e951bb063ab299f56d8d01ce9eeae63113695e316bc522"
     },
     {
       "path": "pyproject.toml",
-      "bytes": 270,
-      "sha256": "edb788b8c4534017a1a5ee0be7fc2107fa83c2d9a3fca0e3ead39c29f5920fca"
+      "bytes": 266,
+      "sha256": "8b57d8b70f5c11d98e5978704a7afc15c0334fd221abb414e0e96306044f6142"
     },
     {
       "path": "README.md",
-      "bytes": 6876,
-      "sha256": "298566c88da0a1fb872774571aef6f53e6d679ed070c685a7b02e9932f92bb9c"
+      "bytes": 6201,
+      "sha256": "c1af8da70c2248e46b26ffff64716f54bece5d0008cba296df8362ec56c284f0"
     },
     {
       "path": "README.zh-CN.md",
-      "bytes": 6112,
-      "sha256": "5da9beb037610ae61734256b5570991e94c3b9fef32ab8a163d1ef2d01e851d8"
+      "bytes": 6256,
+      "sha256": "b2d41c7911599be51b0439865dede2a7f6eea1379dbc4486c26012d909607238"
     },
     {
       "path": "requirements-web.lock",
@@ -1183,38 +2599,53 @@
     },
     {
       "path": "SECURITY.md",
-      "bytes": 1000,
-      "sha256": "fc7e4c4baebdfc72ceb3d4281a62c65d83c099820fb345e771ff1ca7862331fa"
+      "bytes": 991,
+      "sha256": "bc77a962428ff5b1d49f908bfd869581fcf5e7e07ea949decaf5f67e8036066d"
+    },
+    {
+      "path": "skills/flower-control/SKILL.md",
+      "bytes": 35240,
+      "sha256": "fe19aba231e999ad4c9e8641b49393b89974c221b66aeaf21910cdd012bb459e"
+    },
+    {
+      "path": "tests/fixtures/dynamic_host_identity/Program.cs",
+      "bytes": 6672,
+      "sha256": "491e1ed5d8cc16fa36fb08e5a375c6ad720e763c85b7cc9a4a2b7a6ac9243ce5"
     },
     {
       "path": "tests/test_connection_adapter.py",
-      "bytes": 8774,
-      "sha256": "3d0cf7c920abb2452c17f082a12d7eb2191a8b365712ad00b1fa6a2ec7dc4fd7"
+      "bytes": 9767,
+      "sha256": "80cb4006c15349737185d376dde86edf5bd633aaf6f0085005525a8bca79fbb2"
     },
     {
       "path": "tests/test_connection_configuration.py",
-      "bytes": 4997,
-      "sha256": "d019393923220d7e052dc3dd261690bcee7321706127b0bf365adf3284da6c27"
+      "bytes": 6170,
+      "sha256": "d88eba88d98d9f84a26906e082f2f635a1c064be28e0759d7553a0159a7c32b3"
     },
     {
       "path": "tests/test_connection_web_cleanup.py",
-      "bytes": 3100,
-      "sha256": "eeaad807572e424e19b2176788359eec835a329a240f22d714b278d64e2cc1b5"
+      "bytes": 5403,
+      "sha256": "3123a139be34654797e27d399510958c1206ac9e208e1a717447aab483b230b9"
+    },
+    {
+      "path": "tests/test_dynamic_host_identity.py",
+      "bytes": 7757,
+      "sha256": "ea865ab3e64de5811d0bc1e5fbad3c9558b96dba47c4740dd326151c4c489d51"
     },
     {
       "path": "tests/test_foreground_indicator_owned_modal.py",
-      "bytes": 3446,
-      "sha256": "04513ad785e1d1db9c2e71b94d5a26725ecbb30d2a2413fd4fba19f4028b7f50"
+      "bytes": 3432,
+      "sha256": "429419df4029df7bb71f0d45f4f04d9bb2595bb9e2966fa75f94d3888c75e1c4"
     },
     {
       "path": "tests/test_web_closed_browser_update.py",
-      "bytes": 6079,
-      "sha256": "fd147b8dd641321e1e1c310b8b4783834f08eb0c2c8e5dfb3e741eb77ea63721"
+      "bytes": 7143,
+      "sha256": "ac3d64105aec86506944ea99d2f0718c8f96dd87a337fb251bcfa8c8513d052f"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "bytes": 3914,
-      "sha256": "8a3be3e16c56b277f7829a88994ef3bf34c666a51c57777ea1ac738afc050a3c"
+      "bytes": 3886,
+      "sha256": "fbab591399563421ac4f2665287ef918b18f377a459563c77eb1e25460d464c1"
     },
     {
       "path": "tools/antigravity_flower_skill.md",
@@ -1223,8 +2654,13 @@
     },
     {
       "path": "tools/build_daily_payloads.py",
-      "bytes": 2877,
-      "sha256": "268b3b6c73f194edaf0e2c635bc97c204ff3d3d8c6017faee60ded72d578a8f8"
+      "bytes": 4814,
+      "sha256": "eaf82bb8b110749ac5b6ee93ec69b5c92ed999e368c344496f39cb83eabbbbe5"
+    },
+    {
+      "path": "tools/build_identity_native.ps1",
+      "bytes": 4493,
+      "sha256": "125dd5a473ca4a22e6437333f43a1464d1b64fe8fc9f919751087b9e8352b372"
     },
     {
       "path": "tools/claude_flower_skill.md",
@@ -1238,23 +2674,28 @@
     },
     {
       "path": "tools/configure_claude_plugin.py",
-      "bytes": 5832,
-      "sha256": "a20e9ce07e263130187dd51d08b98561f5d6be086879005943984013f1f01d5c"
+      "bytes": 6471,
+      "sha256": "d1f1f839fc3f052744392d17e27ad928faa678ca651034fa14e4c2f4e941ef22"
     },
     {
       "path": "tools/configure_connection_mcp.py",
-      "bytes": 4633,
-      "sha256": "59f5945730bbb82cdb76510e0af504a2a6c22ebcd50c63943ee68ba4d1dffb60"
+      "bytes": 4662,
+      "sha256": "5d0273a405dd34dbf9289587b3b22d15c11bd591756874742c3a53202ff83b31"
+    },
+    {
+      "path": "tools/configure_dsh_plugin.py",
+      "bytes": 4665,
+      "sha256": "c96ff3919412e8a751024b7abf0a7264417114471fd599da1daf95ec9d4a406d"
     },
     {
       "path": "tools/configure_local_plugin.py",
-      "bytes": 4889,
-      "sha256": "1e40df2354081fd6ee6b7599bd84a3960cfb7a48a1ecdfdbb2f10d1209506685"
+      "bytes": 4795,
+      "sha256": "9329ffbcea82ba8b0695623698dd1ef91e54170dbef3b26c82949f17a02d0f8e"
     },
     {
       "path": "tools/high_broker_install/ApplyInstall.ps1.template",
-      "bytes": 2984,
-      "sha256": "e8ec75d4d1c99947f0a851df6b03e53c1b4587991adfde03c16f7ad18b97f3c1"
+      "bytes": 2860,
+      "sha256": "06a1d07c337a5c4ca954516ad72c6ae6c562758a408b6b7161057edd418c88a4"
     },
     {
       "path": "tools/high_broker_install/CheckRollbackSource.ps1.template",
@@ -1268,8 +2709,33 @@
     },
     {
       "path": "tools/high_broker_install/InstallCommon.ps1.template",
-      "bytes": 7765,
-      "sha256": "3785ff49a606c06e6f3bcfac9980fc277d75dbf41beb59eb36a7ca55a5c982cc"
+      "bytes": 16209,
+      "sha256": "0c808f880269118a31306b243a30f88d34d1862eae29413b9ace47c1a455cc9b"
+    },
+    {
+      "path": "tools/high_broker_install/PinnedDelivery.cs",
+      "bytes": 30188,
+      "sha256": "841efa1f56262a6e93977b79820cb9619c4bdcf7c297b47de18f2da32d6e4992"
+    },
+    {
+      "path": "tools/high_broker_install/RecoveryProtection.cs",
+      "bytes": 10221,
+      "sha256": "04e38472f1655a2a3aa0d380fb5eac945432e6f9bb78106e0df40759c5ee8a4b"
+    },
+    {
+      "path": "tools/high_broker_install/UpdateWorkAuthority20261018.ps1.template",
+      "bytes": 54233,
+      "sha256": "0191800a3e63649a27d57e306faef5d1cf114f3c724789f3a48c01aed4f4644c"
+    },
+    {
+      "path": "tools/host_phase_hooks.py",
+      "bytes": 623,
+      "sha256": "d49bac589c23d9821588b0bec7fe7bf8b4081de2dff03dfb15e9fd0c1a4e7255"
+    },
+    {
+      "path": "tools/open_flower_browser.py",
+      "bytes": 10390,
+      "sha256": "4daae9ec92da613322519c6ffe284dc86c63602399b270a594ad7a235f8cb29c"
     },
     {
       "path": "tools/prepare_direct_python.py",
@@ -1278,8 +2744,28 @@
     },
     {
       "path": "tools/prepare_high_broker_install.py",
-      "bytes": 17629,
-      "sha256": "183729e97802ffcae62f4f3d5af9ec7390f4f0d38dfd3128515466a321c32f18"
+      "bytes": 58089,
+      "sha256": "88563ec69102a9df2a52daf41d4619ad5242539bfbd8ecfaa1c426e10c5de041"
+    },
+    {
+      "path": "tools/prepare_work_authority_update.py",
+      "bytes": 42219,
+      "sha256": "d7389c501a5e30003d3be847cbd144580a16517fd27727715060f6e9aaea4f81"
+    },
+    {
+      "path": "tools/runtime_snapshot.py",
+      "bytes": 7052,
+      "sha256": "eabfcbd1f5fae25f0eff386ffac1dafca414722996ca012d34625539d4c6715e"
+    },
+    {
+      "path": "tools/windows_hook_command.py",
+      "bytes": 635,
+      "sha256": "4debf2c8d60f7272e9cb30282763da89670e76f0e1b71c6d2c11326b458e6dd6"
+    },
+    {
+      "path": "VERSION",
+      "bytes": 16,
+      "sha256": "74095e1a8c7c4df5560b36eba6d326a59e9fb12e9f2f0fd5c7fd82902a748eef"
     }
   ]
 }

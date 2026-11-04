@@ -12,7 +12,8 @@ from flower_control.drivers.computer_native import activate_window, NativeInputE
 
 _CODE = re.compile(r"^[a-z][a-z0-9_]{0,95}$")
 _FIELDS = frozenset({"state", "reason", "foreground", "activation_method", "restored_from_minimized",
-                     "activation_input_events", "activation_input_release", "activation_input_complete"})
+                     "activation_input_events", "activation_input_release", "activation_input_complete",
+                     "keyboard_release_events"})
 
 
 @dataclass
@@ -25,8 +26,15 @@ class AppActivationAttempt:
     attempted: bool = False
 
     @property
+    def keyboard_release_events(self):
+        return max(self.progress.get("keyboard_release_events", 0),
+                   sum(getattr(ledger, "keyboard_release_events", 0)
+                       for ledger in getattr(self.phase, "ledgers", ())))
+
+    @property
     def dispatched(self):
-        return bool(self.progress.get("activation_request_sent") or self.progress.get("activation_input_events", 0))
+        return bool(self.progress.get("activation_request_sent") or
+                    self.progress.get("activation_input_events", 0) or self.keyboard_release_events)
 
     def run(self, identity, *, stage, preflight, stopped):
         if self.attempted:
@@ -56,7 +64,10 @@ class AppActivationAttempt:
             self.result.update(state="outcome_uncertain", reason="input_release_unconfirmed")
         self.result.update({key: value for key, value in self.progress.items()
                            if key in _FIELDS or key == "activation_request_sent"})
+        self.result["keyboard_release_events"] = self.keyboard_release_events
         self.result["activation_dispatched"] = self.dispatched
+        if self.result.get("state") == "rejected" and self.dispatched:
+            self.result["state"] = "not_verified"
         self.result["input_release"] = release
         self.result["uia_dispatched"] = False
         if native_prefix is not None:

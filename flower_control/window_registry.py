@@ -91,8 +91,16 @@ def _ordinary_window(hwnd: int, *, task: str, policy: BrowserWindowPolicy | None
         if (not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd)
                 or win32gui.GetAncestor(hwnd, win32con.GA_ROOT) != hwnd):
             return _omit_window(diagnostics, "not_visible_or_root")
-        if any(_USER32.GetPropW(hwnd, marker) for marker in _PROTECTED_PROPS):
-            return _omit_window(diagnostics, "protected_flower_window")
+        root, seen = hwnd, set()
+        for _ in range(16):
+            if not root or root in seen:
+                break
+            seen.add(root)
+            if any(_USER32.GetPropW(root, marker) for marker in _PROTECTED_PROPS):
+                return _omit_window(diagnostics, "protected_flower_window")
+            root = win32gui.GetWindow(root, win32con.GW_OWNER)
+        from flower_control.permissions import require_window
+        require_window(hwnd)
         pid = win32process.GetWindowThreadProcessId(hwnd)[1]
         if not pid:
             return _omit_window(diagnostics, "process_or_bounds_unavailable")
@@ -103,8 +111,8 @@ def _ordinary_window(hwnd: int, *, task: str, policy: BrowserWindowPolicy | None
         if is_supported_browser_image(image) and policy is None:
             return _omit_window(diagnostics, "browser_scope_unavailable")
         failure_reason = "browser_scope_unavailable"
-        access = (policy.inspect(task, pid, image) if policy is not None
-                  else BrowserWindowAccess())
+        access = (policy.inspect(task, pid, image, hwnd=hwnd) if isinstance(policy, BrowserWindowPolicy)
+                  else policy.inspect(task, pid, image) if policy is not None else BrowserWindowAccess())
         failure_reason = "window_probe_failed"
         title = win32gui.GetWindowText(hwnd).strip()
         if require_title and not title:
@@ -320,6 +328,25 @@ class WindowRegistry:
         except Exception:
             return False
 
+    def bind_desktop_target(self,task,hwnd,*,current):
+        """Internal fresh hit/focus adapter, on a separate desktop registry.
+
+        No candidate ID or raw model HWND is accepted by any public tool.
+        current must revalidate the original desktop image and actual hit/focus.
+        """
+        if not callable(current) or current() is not True:
+            raise WindowSelectionError('candidate_changed')
+        ordinary=_ordinary_window(hwnd,task=task,policy=self._browser_policy,require_title=False)
+        if ordinary is None:raise WindowSelectionError('selected_window_unavailable')
+        candidate=_Candidate(hwnd,ordinary[0],process_creation_filetime(ordinary[0]),ordinary[2],
+            ordinary[1],ordinary[3],time.monotonic()+10)
+        def fresh():return current() is True and self._candidate_current(task,candidate)
+        identity=self._bind_candidate(task,candidate,fresh)
+        with self._lock:
+            if not fresh():raise WindowSelectionError('candidate_changed')
+            self._selected[task]=identity
+        return identity
+
     def _bind_candidate(self, task: str, candidate: _Candidate,
                         current: Callable[[], bool]) -> WindowIdentity:
         if not current():
@@ -459,3 +486,12 @@ class WindowRegistry:
         if ordinary is None:
             raise WindowSelectionError("selected_window_unavailable")
         return ordinary[3]
+
+    def execution_guard(self, task: str, identity: WindowIdentity, access: BrowserWindowAccess):
+        """Revalidate shared page membership at each native preflight."""
+        if not (access.shared_resource or "").startswith("web-borrower:"):
+            return None
+        def check():
+            if self.access(task, asdict(identity)) != access:
+                raise WindowSelectionError("selected_window_unavailable")
+        return check

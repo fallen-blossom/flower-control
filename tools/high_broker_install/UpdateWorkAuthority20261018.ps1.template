@@ -1,0 +1,786 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Global
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -Global
+Import-Module (Join-Path $PSHOME 'Modules\ScheduledTasks\ScheduledTasks.psd1') -Global
+$plan = @'
+@@PLAN_JSON@@
+'@ | ConvertFrom-Json
+$prefix = $plan.ProgressPrefix
+$package = $plan.Package
+$brokerRoot = $plan.BrokerRoot
+$version = $plan.Version
+$oldVersion = $plan.OldVersion
+$oldDir = Join-Path $brokerRoot ('versions\' + $oldVersion)
+$newDir = Join-Path $brokerRoot ('versions\' + $version)
+$oldExe = Join-Path $oldDir 'Flower.HighHelper.exe'
+$newExe = Join-Path $newDir 'Flower.HighHelper.exe'
+$taskName = $plan.TaskName
+$utf8 = New-Object Text.UTF8Encoding($false)
+$script:PauseAttempted = $false
+$script:TaskChanged = $false
+$script:ActiveChanged = $false
+$script:OldExited = $false
+$script:Resumed = $false
+$script:ResumeAttempted = $false
+$script:LiveResourcesFinalized = $false
+$script:OldXml = $null
+$script:OldSddl = $null
+$script:NewTaskHash = $null
+$script:StartAttempted = $false
+$script:LoggingReady = $false
+$script:WriterMarkerReady = $false
+$script:WriterMarker = $null
+$recovering = $plan.RecoveryOperation -cne ''
+$leavePaused = $plan.PSObject.Properties.Name -contains 'LeavePaused' -and $plan.LeavePaused -eq $true
+$originalPaused = $plan.PSObject.Properties.Name -contains 'OriginalPaused' -and $plan.OriginalPaused -eq $true
+$restoreRunning = $plan.PSObject.Properties.Name -contains 'RestoreRunningAfterInstall' -and $plan.RestoreRunningAfterInstall -eq $true
+if ($restoreRunning -and (!$leavePaused -or $originalPaused -or $recovering)) { throw 'running_restore_plan_invalid' }
+$reusePayload = $plan.PSObject.Properties.Name -contains 'ReusePayload' -and $plan.ReusePayload -eq $true
+$script:ledgerFence = $null; $script:FinalSharedEpoch = $null
+$oldRole = if ($plan.PSObject.Properties.Name -contains 'OldBrokerRole') { [string]$plan.OldBrokerRole } else { 'high' }
+$newRole = if ($plan.PSObject.Properties.Name -contains 'NewBrokerRole') { [string]$plan.NewBrokerRole } else { 'high' }
+$roleSupported = $plan.PSObject.Properties.Name -contains 'RoleLifecycleSupported' -and $plan.RoleLifecycleSupported -eq $true
+if ($oldRole -notin @('high','ordinary') -or $newRole -notin @('high','ordinary') -or
+    (!$roleSupported -and ($oldRole -eq 'ordinary' -or $newRole -eq 'ordinary'))) { throw 'update_role_plan_invalid' }
+$script:PayloadVerified = $false
+$maintenanceDurable = $null
+if ($roleSupported) {
+    $maintenanceDurable = ($plan.DurableStopAnchor | ConvertTo-Json -Depth 12 -Compress) | ConvertFrom-Json
+    if (!$recovering -and !$originalPaused) {
+        if ($oldRole -eq 'ordinary') { $maintenanceDurable.Ordinary.Count = [long]$maintenanceDurable.Ordinary.Count + 1 }
+        else { $maintenanceDurable.Protected.Stopped = $true; $maintenanceDurable.Protected.Epoch = [long]$maintenanceDurable.Protected.Epoch + 1 }
+    }
+}
+$maintenanceShared = [long]$plan.OldSharedEpoch + $(if ($recovering -or $originalPaused) { 0 } else { 1 })
+$maintenanceProtected = [long]$plan.OldProtectedEpoch + $(if ($recovering -or $originalPaused -or $oldRole -eq 'ordinary') { 0 } else { 1 })
+function Log([string]$stage, $detail = $null) {
+    $line = [ordered]@{ utc = [DateTime]::UtcNow.ToString('o'); stage = $stage; detail = $detail }
+    if (!$script:LoggingReady) { [Console]::Error.WriteLine(($line | ConvertTo-Json -Compress -Depth 8)); return }
+    [IO.File]::AppendAllText(($prefix + '-progress.jsonl'), (($line | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine), $utf8)
+}
+function Hash([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function HashText([string]$text) {
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($hash.ComputeHash($utf8.GetBytes($text))).Replace('-', '').ToLowerInvariant() }
+    finally { $hash.Dispose() }
+}
+function RequirePreviousTask {
+    if ((HashText ([string](Export-ScheduledTask -TaskName $taskName -TaskPath '\'))) -cne $plan.OldTaskDefinitionSha256 -or
+        (HashText (Get-FlowerTaskSecurityDescriptor)) -cne $plan.OldTaskSddlSha256) { throw 'previous_task_changed' }
+}
+function Set-MaintenanceWriterProtection([string]$path) {
+    # This exact operation record is outside the version installation scope.
+    # Never broaden Set-FlowerProtection to recovery or another operation.
+    if ($plan.OperationId -cnotmatch '^[a-f0-9]{32}$') {throw 'maintenance_writer_operation_invalid'}
+    $expected=Join-Path $brokerRoot ('recovery\installation-'+$plan.OperationId+'\maintenance-writer.json')
+    if ($path -cne [IO.Path]::GetFullPath($path) -or $path -ine $expected) {throw 'maintenance_writer_path_rejected'}
+    $null=[FlowerPinnedDelivery]::RequireLogDirectory($plan.OperationId,$plan.UserSid)
+    Assert-FlowerNoLinks $path -Shallow
+    if ((Get-Item -LiteralPath $path -Force).PSIsContainer) {throw 'maintenance_writer_path_rejected'}
+    $expectedAcl=New-FlowerAcl $false
+    Set-Acl -LiteralPath $path -AclObject $expectedAcl
+    Set-FlowerHighLabel $path
+    $actual=Get-Acl -LiteralPath $path
+    if (!$actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne 'S-1-5-32-544' -or
+        (Get-FlowerAclRules $actual) -cne (Get-FlowerAclRules $expectedAcl) -or
+        !(Test-FlowerIntegrityLabel (Get-FlowerIntegritySddl $path) $false)) {throw 'maintenance_writer_protection_changed'}
+}
+function Admin([string]$exe, [string]$arguments) {
+    $supportsBoundWriter = ($exe -ieq $newExe -and $plan.PSObject.Properties.Name -contains 'NewBoundMaintenanceWriterProtocol' -and $plan.NewBoundMaintenanceWriterProtocol -eq 1) -or
+        ($exe -ieq $oldExe -and $plan.PSObject.Properties.Name -contains 'OldBoundMaintenanceWriterProtocol' -and $plan.OldBoundMaintenanceWriterProtocol -eq 1)
+    if($script:WriterMarkerReady -and $supportsBoundWriter) {
+        if($arguments -ceq '--flower-admin status') {$arguments='--flower-update-status '+$plan.OperationId}
+        elseif($arguments.StartsWith('--flower-maintenance ',[StringComparison]::Ordinal)) {
+            $arguments='--flower-update-maintenance '+$plan.OperationId+' '+$arguments.Substring('--flower-maintenance '.Length)
+        }
+    }
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $exe; $info.Arguments = $arguments; $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+    $child = New-Object Diagnostics.Process; $child.StartInfo = $info
+    try {
+        if (!$child.Start()) { throw 'admin_start_failed' }
+        $stdout = $child.StandardOutput.ReadToEndAsync(); $stderr = $child.StandardError.ReadToEndAsync()
+        if (!$child.WaitForExit(15000)) { throw 'admin_outcome_unknown' }
+        $out = $stdout.GetAwaiter().GetResult(); $err = $stderr.GetAwaiter().GetResult()
+        if ($child.ExitCode -ne 0) { throw ('admin_failed:' + $child.ExitCode + ':' + $err + $out) }
+        $result = $out | ConvertFrom-Json
+        if ($null -ne $result -and $result.PSObject.Properties.Name -contains 'Status') { RequireStatusShape $result.Status }
+        return $result
+    } finally { $child.Dispose() }
+}
+function Status([string]$exe) { return (Admin $exe '--flower-admin status').Status }
+function ExpectedRole($value) {
+    if ($value.version -ceq $oldVersion) { return $oldRole }
+    if ($value.version -ceq $version) { return $newRole }
+    throw 'maintenance_instance_changed'
+}
+function RequireRolePolicy {
+    if (!$roleSupported -or !$script:PayloadVerified) { return }
+    $selected = Admin $newExe '--flower-role-policy'
+    if ($selected.Phase -cne 'role_policy' -or $selected.UserSid -cne $plan.UserSid -or
+        $selected.Revision -cne $plan.RolePolicyRevision -or $selected.Tier -ne $plan.RolePolicyTier) { throw 'role_policy_changed' }
+}
+function DurableStop($value) {
+    if ($value.PSObject.Properties.Name -contains 'role_stop' -and $null -ne $value.role_stop) {
+        $stop = $value.role_stop
+    } else { $stop = (Admin $newExe '--flower-role-policy').Stop }
+    if ($null -eq $stop -or $stop.Protected.Epoch -ne $value.protected_stop_epoch -or
+        [bool]($stop.Computer.Stopped -or $stop.OrdinaryComputer.Count -ne $stop.OrdinaryComputer.Acknowledged) -ne $value.computer_paused) { throw 'durable_stop_status_changed' }
+    return [ordered]@{ Protected = $stop.Protected; Computer = $stop.Computer; Ordinary = $stop.Ordinary; OrdinaryComputer = $stop.OrdinaryComputer }
+}
+function RequireDurableStop($value, $expected, [bool]$verifyPolicy = $true) {
+    if (!$roleSupported -or !$script:PayloadVerified) { return }
+    if ($verifyPolicy) { RequireRolePolicy }
+    if ((DurableStop $value | ConvertTo-Json -Depth 12 -Compress) -cne ($expected | ConvertTo-Json -Depth 12 -Compress)) { throw 'maintenance_stop_changed' }
+}
+function MaintenanceAdmin([string]$exe, [string]$command, $before) {
+    RequireIdle $before
+    if ($before.PSObject.Properties.Name -notcontains 'maintenance_protocol' -or
+        ($before.maintenance_protocol -isnot [int] -and $before.maintenance_protocol -isnot [long]) -or
+        $before.maintenance_protocol -notin @(1,2)) { throw 'maintenance_binding_unsupported' }
+    if ($before.PSObject.Properties.Name -notcontains 'maintenance_activities') { throw 'broker_status_invalid' }
+    if ($command -notin @('pause','resume','shutdown')) { throw 'maintenance_binding_invalid' }
+    if ($before.maintenance_protocol -eq 2) {
+        if ((ExpectedRole $before) -ne 'ordinary') { throw 'maintenance_binding_unsupported' }
+        $binding = [ordered]@{ Version = $before.version; Pid = $before.pid; Created = $before.created;
+            PolicyRevision = $before.policy_revision; Tier = $before.authority_tier; Stop = $before.role_stop;
+            Paused = $before.paused; ComputerPaused = $before.computer_paused }
+        $encoded = [Convert]::ToBase64String($utf8.GetBytes(($binding | ConvertTo-Json -Depth 12 -Compress)))
+        return (Admin $exe ('--flower-maintenance-ordinary ' + $command + ' ' + $encoded))
+    }
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $arguments = '--flower-maintenance ' + $command + ' ' + $before.pid.ToString($culture) + ' ' +
+        $before.created.ToString($culture) + ' ' + $before.global_stop_epoch.ToString($culture) + ' ' +
+        $before.protected_stop_epoch.ToString($culture) + ' ' + $before.paused.ToString().ToLowerInvariant() + ' ' +
+        $before.computer_paused.ToString().ToLowerInvariant()
+    return (Admin $exe $arguments)
+}
+function RequireStatusShape($value) {
+    if ($null -eq $value -or $value -isnot [pscustomobject] -or
+        $value.PSObject.Properties.Name -notcontains 'version' -or $value.version -isnot [string] -or
+        $value.version -cnotmatch '^[a-f0-9]{32}$') { throw 'broker_status_invalid' }
+    foreach ($name in @('paused','global_write_stopped','stopping','release_fault','high_verified','computer_paused')) {
+        if ($value.PSObject.Properties.Name -notcontains $name -or $value.$name -isnot [bool]) { throw 'broker_status_invalid' }
+    }
+    $limits = @{ pid = @(1,[int]::MaxValue); created = @(1,[long]::MaxValue);
+        active_requests = @(0,[int]::MaxValue); pending_release_recoveries = @(0,[int]::MaxValue);
+        global_stop_epoch = @(0,[long]::MaxValue); protected_stop_epoch = @(0,[long]::MaxValue) }
+    foreach ($name in $limits.Keys) {
+        if ($value.PSObject.Properties.Name -notcontains $name) { throw 'broker_status_invalid' }
+        $number = $value.$name
+        if (($number -isnot [int] -and $number -isnot [long]) -or
+            $number -lt $limits[$name][0] -or $number -gt $limits[$name][1]) { throw 'broker_status_invalid' }
+    }
+    if ($value.PSObject.Properties.Name -contains 'maintenance_activities' -and
+        (($value.maintenance_activities -isnot [int] -and $value.maintenance_activities -isnot [long]) -or
+         $value.maintenance_activities -lt 0 -or $value.maintenance_activities -gt [int]::MaxValue)) { throw 'broker_status_invalid' }
+    foreach ($name in @('stop_persistence_error','computer_pause_persistence_error')) {
+        if ($value.PSObject.Properties.Name -contains $name -and $null -ne $value.$name -and
+            ($value.$name -isnot [string] -or $value.$name.Length -eq 0)) { throw 'broker_status_invalid' }
+    }
+}
+function RequireHealthy($value) {
+    RequireStatusShape $value
+    if ($value.stopping -or $value.release_fault -or
+        ($value.PSObject.Properties.Name -contains 'role_transition' -and $value.role_transition)) { throw 'broker_not_healthy' }
+    if ((ExpectedRole $value) -eq 'ordinary') {
+        foreach ($name in @('ordinary_verified','broker_role','maintenance_protocol','policy_revision','authority_tier','role_stop')) {
+            if ($value.PSObject.Properties.Name -notcontains $name) { throw 'broker_role_status_invalid' }
+        }
+        if ($value.ordinary_verified -isnot [bool] -or !$value.ordinary_verified -or $value.high_verified -or
+            $value.broker_role -cne 'ordinary' -or ($value.maintenance_protocol -isnot [int] -and $value.maintenance_protocol -isnot [long]) -or $value.maintenance_protocol -ne 2 -or
+            $value.policy_revision -cne $plan.RolePolicyRevision -or ($value.authority_tier -isnot [int] -and $value.authority_tier -isnot [long]) -or $value.authority_tier -ne $plan.RolePolicyTier -or
+            $null -eq $value.role_stop) { throw 'broker_execution_role_changed' }
+    } elseif (!$value.high_verified -or
+        ($value.PSObject.Properties.Name -contains 'ordinary_verified' -and $value.ordinary_verified) -or
+        ($value.PSObject.Properties.Name -contains 'broker_role' -and $value.broker_role -cne 'high')) { throw 'broker_execution_role_changed' }
+    if ($value.PSObject.Properties.Name -contains 'stop_persistence_error' -and $value.stop_persistence_error) { throw 'stop_persistence_unconfirmed' }
+    if ($value.PSObject.Properties.Name -contains 'computer_pause_persistence_error' -and $value.computer_pause_persistence_error) { throw 'computer_pause_persistence_unconfirmed' }
+}
+function RequireIdle($value) {
+    RequireHealthy $value
+    if ($value.active_requests -ne 0 -or $value.pending_release_recoveries -ne 0) { throw 'broker_not_idle' }
+    if ($value.PSObject.Properties.Name -contains 'maintenance_activities' -and $value.maintenance_activities -ne 0) { throw 'broker_not_idle' }
+}
+function RequireComputerPause($value, [bool]$newVersion = $false) {
+    # A persisted pause must survive ordinary updates as well as the first
+    # legacy migration. Missing/changed state never grants automatic resume.
+    $expected = if ($newVersion -and $plan.LegacyComputerPause) { $true } else { [bool]$plan.OldComputerPaused }
+    if ($value.PSObject.Properties.Name -notcontains 'computer_paused' -or
+        $value.computer_paused -isnot [bool] -or $value.computer_paused -ne $expected) { throw 'computer_pause_state_changed' }
+}
+function RequireMaintenancePaused($value, [long]$shared, [long]$protected) {
+    RequireIdle $value
+    if (!$value.paused -or !$value.global_write_stopped -or
+        $value.global_stop_epoch -ne $shared -or $value.protected_stop_epoch -ne $protected) {
+        throw 'maintenance_pause_unconfirmed'
+    }
+    RequireDurableStop $value $maintenanceDurable
+}
+function RequireOriginal($value, [bool]$maintenance = $false) {
+    RequireIdle $value
+    RequireComputerPause $value
+    $shared = if ($maintenance) { $maintenanceShared } else { [long]$plan.OldSharedEpoch }
+    $protected = if ($maintenance) { $maintenanceProtected } else { [long]$plan.OldProtectedEpoch }
+    $stopped = $maintenance -or $recovering -or ($plan.PSObject.Properties.Name -contains 'OriginalPaused' -and $plan.OriginalPaused -eq $true)
+    if ($value.version -cne $oldVersion -or $value.pid -ne $plan.OldPid -or $value.created -ne [long]$plan.OldCreated -or
+        $value.paused -ne $stopped -or $value.global_write_stopped -ne $stopped -or
+        $value.global_stop_epoch -ne $shared -or $value.protected_stop_epoch -ne $protected) {
+        throw 'preflight_state_changed'
+    }
+    if ($roleSupported) { RequireDurableStop $value $(if ($maintenance) { $maintenanceDurable } else { $plan.DurableStopAnchor }) }
+}
+function RequireResume($before, $after, [long]$shared, [long]$protected) {
+    RequireMaintenancePaused $before $shared $protected
+    # New work can enter immediately after resume. Confirm the transition,
+    # rather than misreporting that legitimate work as a failed installation.
+    RequireHealthy $after
+    if ($protected -eq [long]::MaxValue -or
+        $after.version -cne $before.version -or $after.pid -ne $before.pid -or $after.created -ne $before.created -or
+        $after.paused -or $after.global_write_stopped -or
+        $after.global_stop_epoch -ne $shared -or $after.protected_stop_epoch -ne ($protected + 1)) {
+        throw 'resume_unconfirmed'
+    }
+    if ($roleSupported) {
+        $expected = ($maintenanceDurable | ConvertTo-Json -Depth 12 -Compress) | ConvertFrom-Json
+        $expected.Protected.Stopped = $false; $expected.Protected.Epoch = $protected + 1
+        $expected.Ordinary.Acknowledged = $expected.Ordinary.Count
+        RequireDurableStop $after $expected $false
+    }
+}
+function ResumeBroker([string]$exe, $before, [bool]$newVersion = $false, [long]$shared = $maintenanceShared) {
+    RequireComputerPause $before $newVersion
+    RequireMaintenancePaused $before $shared $maintenanceProtected
+    if ($maintenanceProtected -eq [long]::MaxValue) { throw 'stop_epoch_exhausted' }
+    $script:ResumeAttempted = $true
+    $after = (MaintenanceAdmin $exe 'resume' $before).Status
+    RequireComputerPause $after $newVersion
+    RequireResume $before $after $shared $maintenanceProtected
+    return $after
+}
+function Test-AllowedLiveReuseFailure([string]$reason) {
+    if ($reason -ceq 'unparked_version_executor_present') { return $true }
+    return $reason.Length -le 1024 -and
+        $reason -cmatch '(?<![a-z0-9_])stopped_client_image_unreadable(?![a-z0-9_])'
+}
+function RequireReusedPayload {
+    if (!$reusePayload -or !$leavePaused) { throw 'fixed_payload_reuse_required' }
+    $log = [FlowerPinnedDelivery]::RequireLogDirectory($plan.ReuseOperation,$plan.UserSid)
+    if ([IO.Path]::GetDirectoryName($plan.ReuseResultPath) -ine $log -or
+        [IO.Path]::GetDirectoryName($plan.ReuseProgressPath) -ine $log) { throw 'reuse_receipt_path_changed' }
+    $prior = ([FlowerPinnedDelivery]::ReadText($plan.ReusePlan,$plan.ReusePlanSha256)) | ConvertFrom-Json
+    $failed = ([FlowerPinnedDelivery]::ReadText($plan.ReuseResultPath,$plan.ReuseResultSha256)) | ConvertFrom-Json
+    $priorProgressText=[FlowerPinnedDelivery]::ReadText($plan.ReuseProgressPath,$plan.ReuseProgressSha256)
+    if ($prior.OperationId -cne $plan.ReuseOperation -or $prior.Version -cne $version -or
+        $prior.OldVersion -cne $oldVersion -or $prior.BrokerRoot -ine $brokerRoot -or
+        $prior.ActiveSha256 -cne $plan.ActiveSha256 -or $prior.OldActiveSha256 -cne $plan.OldActiveSha256 -or
+        $failed.operation -cne $prior.OperationId -or $failed.version -cne $version -or
+        $failed.state -cne 'failed' -or $failed.resumed -ne $false) {
+        throw 'reuse_receipt_changed'
+    }
+    $liveReuse=$plan.PSObject.Properties.Name -contains 'ReuseKind' -and $plan.ReuseKind -ceq 'failed_live'
+    if($liveReuse) {
+        $priorProgress=$priorProgressText.Split("`n") | Where-Object {![string]::IsNullOrWhiteSpace($_)} |
+            ForEach-Object {$_ | ConvertFrom-Json}
+        if($prior.LeavePaused -ne $true -or $prior.RecoveryOperation -cne '' -or
+            $failed.reason -isnot [string] -or !(Test-AllowedLiveReuseFailure $failed.reason) -or
+            $failed.rollback -cne 'previous_restored_paused' -or
+            $failed.start_attempted -ne $false -or $failed.active_changed -isnot [bool] -or $failed.task_changed -isnot [bool] -or
+            $failed.active_changed -ne $failed.task_changed) {
+            throw 'reuse_live_receipt_changed'
+        }
+        $payload=@($priorProgress | Where-Object {$_.stage -ceq 'payload_verified'})
+        $started=@($priorProgress | Where-Object {$_.stage -ceq 'started'})
+        $rolled=@($priorProgress | Where-Object {$_.stage -ceq 'rollback_recovery_keeps_original_pause'})
+        $failure=@($priorProgress | Where-Object {$_.stage -ceq 'failed'})
+        if($payload.Count -ne 1 -or ($payload[0].detail.files -isnot [int] -and $payload[0].detail.files -isnot [long]) -or
+            $payload[0].detail.files -lt 1 -or $started.Count -ne 1 -or
+            $started[0].detail.operation -cne $prior.OperationId -or $started[0].detail.version -cne $version -or
+            $rolled.Count -ne 1 -or $rolled[0].detail.version -cne $oldVersion -or $rolled[0].detail.global_paused -ne $true -or
+            $failure.Count -ne 1 -or $failure[0].detail.reason -cne $failed.reason -or $failure[0].detail.rollback -cne $failed.rollback) {
+            throw 'reuse_live_progress_changed'
+        }
+        if([Array]::IndexOf($priorProgress,$started[0]) -ge [Array]::IndexOf($priorProgress,$payload[0]) -or
+            [Array]::IndexOf($priorProgress,$payload[0]) -ge [Array]::IndexOf($priorProgress,$rolled[0]) -or
+            [Array]::IndexOf($priorProgress,$rolled[0]) -ge [Array]::IndexOf($priorProgress,$failure[0])) {throw 'reuse_live_progress_changed'}
+        if((HashText ([IO.File]::ReadAllText((Join-Path $log 'update-previous-task.xml')))) -cne $plan.OldTaskDefinitionSha256 -or
+            (HashText ([IO.File]::ReadAllText((Join-Path $log 'update-previous-task-sddl.txt')))) -cne $plan.OldTaskSddlSha256) {
+            throw 'reuse_live_original_task_changed'
+        }
+    } elseif($failed.stage -cne 'offline_checks' -or $failed.reason -cne 'offline_independent_executor_present' -or
+        $failed.active_changed -ne $false -or $failed.task_changed -ne $false) {throw 'reuse_receipt_changed'}
+    $expected = @{}
+    foreach($item in $newActive.hashes.PSObject.Properties) {$expected.Add($item.Name,[string]$item.Value)}
+    foreach($item in $newActive.runtime_hashes.PSObject.Properties) {$expected.Add($item.Name.Replace('/','\'),[string]$item.Value)}
+    foreach($item in $newPolicy.AppWorkerHashes.PSObject.Properties) {$expected.Add(('app\'+$item.Name),[string]$item.Value)}
+    foreach($item in $newPolicy.WgcWorkerHashes.PSObject.Properties) {$expected.Add(('wgc\'+$item.Name),[string]$item.Value)}
+    $expected.Add('installation.json',$plan.ActiveSha256)
+    Assert-FlowerAcl $newDir; [FlowerPinnedDelivery]::PinDirectory($newDir)
+    $count=0
+    foreach($item in Get-ChildItem -LiteralPath $newDir -Recurse -Force) {
+        Assert-FlowerAcl $item.FullName
+        if($item.PSIsContainer) { [FlowerPinnedDelivery]::PinDirectory($item.FullName); continue }
+        $relative=$item.FullName.Substring($newDir.Length+1)
+        if(!$expected.ContainsKey($relative)) { throw 'reuse_extra_file' }
+        [FlowerPinnedDelivery]::VerifyFile($item.FullName,$expected[$relative])
+        $count++
+    }
+    if($count -ne $expected.Count) { throw 'reuse_payload_incomplete' }
+    if($liveReuse -and $payload[0].detail.files -ne $expected.Count) {throw 'reuse_live_payload_count_changed'}
+    Assert-FlowerVersion $newDir; Assert-FlowerSource $newDir
+    Log 'existing_exact_payload_verified' @{version=$version;files=$count;previous_operation=$plan.ReuseOperation;overwritten=$false}
+}
+function PinLiveClients {
+    Add-Type -TypeDefinition ([FlowerPinnedDelivery]::ReadText($plan.HostRetentionTypePath,$plan.HostRetentionTypeSha256))
+    foreach($expected in $plan.RetainedProcessFacts) {
+        $fact=New-Object FlowerStoppedClientFact
+        foreach($name in @('Pid','Created','Image','ParentPid','Session','User','Integrity','UiAccess')) {$fact.$name=$expected.$name}
+        [FlowerStoppedClientRetention]::Pin($fact) | Out-Null
+    }
+    # Retention is metadata ownership only; it never admits new host authority.
+    # Preserve the exact existing native-host image/runtime pins through update.
+    if($plan.PSObject.Properties.Name -contains 'RetainedNativeHostEvidence') {
+        foreach($entry in $plan.RetainedNativeHostEvidence.PSObject.Properties) {
+            $hostProof=$entry.Value
+            [FlowerPinnedDelivery]::PinDirectory((Split-Path -Parent $hostProof.Path))
+            [FlowerPinnedDelivery]::VerifyFile($hostProof.Path,$hostProof.Sha256)
+            if($hostProof.RuntimeSha256) {
+                $runtime=Join-Path (Split-Path -Parent $hostProof.Path) 'resources\app.asar'
+                [FlowerPinnedDelivery]::PinDirectory((Split-Path -Parent $runtime))
+                [FlowerPinnedDelivery]::VerifyFile($runtime,$hostProof.RuntimeSha256)
+            }
+        }
+    }
+    if($plan.PSObject.Properties.Name -contains 'LegacyResumeCompatibilityReview') {
+        [FlowerPinnedDelivery]::ReadText($plan.LegacyResumeCompatibilityReview.Path,$plan.LegacyResumeCompatibilityReview.Sha256) | Out-Null
+    }
+    foreach($source in $plan.LegacyResumeSourceHashes.PSObject.Properties) {
+        [FlowerPinnedDelivery]::ReadText($source.Name,[string]$source.Value) | Out-Null
+    }
+}
+function LiveMetadataRole($live) {
+    if($live.User -cne $plan.UserSid -or $live.Session -ne $plan.SessionId -or
+        $live.Integrity -ne 8192 -or $live.UiAccess) {return $null}
+    if($live.Image -ine (Join-Path $oldDir 'flower-python.exe') -and $live.Image -ine $oldExe) {return $null}
+    $argv=[FlowerStoppedClientRetention]::ReadArguments($live)
+    if($null -eq $argv) {return $null}
+    if($argv.Count -eq 3 -and $live.Image -ieq (Join-Path $oldDir 'flower-python.exe') -and
+        $argv[0] -ieq $live.Image -and $argv[1] -ieq (Join-Path $oldDir 'flower_hook_bootstrap.py') -and
+        $argv[2] -ceq '--host-phase') {$role='host_phase'}
+    elseif($argv.Count -eq 2 -and $live.Image -ieq $oldExe -and $argv[0] -ieq $live.Image -and
+        $argv[1] -ceq '--uac-host-event') {$role='host_message'}
+    else {return $null}
+    $parent=[FlowerStoppedClientRetention]::Read([int]$live.ParentPid)
+    if($null -eq $parent) {return $null}
+    if($parent.User -cne $plan.UserSid -or $parent.Session -ne $plan.SessionId -or
+        $parent.Integrity -ne 8192 -or $parent.UiAccess -or [long]$parent.Created -gt [long]$live.Created) {return $null}
+    $hostPid=$parent.Pid
+    if($parent.Image -ieq (Join-Path ([Environment]::SystemDirectory) 'cmd.exe')) {$hostPid=$parent.ParentPid}
+    if($plan.RetainedHostPids -notcontains [int]$hostPid) {return $null}
+    if($null -eq [FlowerStoppedClientRetention]::Verify([int]$hostPid)) {return $null}
+    return $role
+}
+function RequireLiveUpdateActors {
+    $waitMilliseconds=0
+    do {
+    if(!$leavePaused -or ![FlowerPinnedDelivery]::StoppedWriteFenceHeld()) {throw 'live_clients_not_fenced'}
+    $snapshot=[FlowerPinnedDelivery]::SnapshotWriteGate()
+    if($snapshot[0] -ne 1 -or $snapshot[1] -ne $maintenanceShared -or $snapshot[2] -ne $plan.SharedResumeAllEpoch) {throw 'live_update_stop_changed'}
+    foreach($fact in $plan.RetainedProcessFacts) {
+        $current=[FlowerStoppedClientRetention]::Verify([int]$fact.Pid)
+        if($null -eq $current -and $plan.RetainedHostPids -contains [int]$fact.Pid) {throw 'retained_host_exited'}
+    }
+    $root=(Join-Path $brokerRoot 'versions')+'\'
+    $candidates=[Collections.Generic.HashSet[int]]::new()
+    foreach($process in @(Get-CimInstance Win32_Process)) {
+        if(($plan.VersionExecutableNames -icontains $process.Name) -or
+            (![string]::IsNullOrWhiteSpace($process.ExecutablePath) -and $process.ExecutablePath.StartsWith($root,[StringComparison]::OrdinalIgnoreCase))) {
+            $null=$candidates.Add([int]$process.ProcessId)
+        }
+    }
+    foreach($process in [FlowerStoppedClientRetention]::ProcessNames()) {
+        if($plan.VersionExecutableNames -icontains $process.Name) {$null=$candidates.Add([int]$process.Pid)}
+    }
+    $waited=$false
+    foreach($candidate in $candidates) {
+        $live=[FlowerStoppedClientRetention]::Read($candidate)
+        if($null -eq $live -or !$live.Image.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) {continue}
+        if($plan.RetainedActorPids -notcontains [int]$live.Pid) {
+            $role=LiveMetadataRole $live
+            if(!$role) {
+                $again=[FlowerStoppedClientRetention]::Read([int]$live.Pid)
+                if($null -eq $again) {continue}
+                if($again.Created -cne $live.Created) {throw 'stopped_client_pid_reused'}
+                $remaining=15000-$waitMilliseconds
+                if($remaining -le 0) {
+                    Log 'unparked_executor_rejected' @{pid=$live.Pid;created=$live.Created;parent_pid=$live.ParentPid;image_name=[IO.Path]::GetFileName($live.Image)}
+                    throw 'unparked_version_executor_present'
+                }
+                # A host reconnect may briefly spawn an unparked executor after
+                # the original broker drain. Wait for it to exit without adding
+                # it to the retained-client authority or accepting its metadata.
+                Log 'waiting_unparked_executor_exit' @{pid=$live.Pid;created=$live.Created;parent_pid=$live.ParentPid;image_name=[IO.Path]::GetFileName($live.Image);input_exemption=$false}
+                $waitClock=[Diagnostics.Stopwatch]::StartNew()
+                $exited=[FlowerStoppedClientRetention]::WaitMetadataExit($live,$remaining)
+                $waitMilliseconds+=[Math]::Max(1,[int]$waitClock.ElapsedMilliseconds)
+                if(!$exited) {
+                    Log 'unparked_executor_rejected' @{pid=$live.Pid;created=$live.Created;parent_pid=$live.ParentPid;image_name=[IO.Path]::GetFileName($live.Image)}
+                    throw 'unparked_version_executor_present'
+                }
+                $waited=$true
+                continue
+            }
+            $remaining=15000-$waitMilliseconds
+            if($remaining -le 0) {throw 'metadata_hooks_not_quiescent'}
+            Log 'waiting_metadata_hook_exit' @{pid=$live.Pid;created=$live.Created;role=$role;input_exemption=$false}
+            $waitClock=[Diagnostics.Stopwatch]::StartNew()
+            $exited=[FlowerStoppedClientRetention]::WaitMetadataExit($live,$remaining)
+            $waitMilliseconds+=[Math]::Max(1,[int]$waitClock.ElapsedMilliseconds)
+            if(!$exited) {throw 'metadata_hooks_not_quiescent'}
+            $waited=$true
+            continue
+        }
+        [FlowerStoppedClientRetention]::Verify([int]$live.Pid) | Out-Null
+    }
+    if(!$waited) {return}
+    if($waitMilliseconds -ge 15000) {throw 'metadata_hooks_not_quiescent'}
+    } while($true)
+}
+function CloseLiveLedgerFence {
+    if($null -eq $script:ledgerFence) {return}
+    if(!$script:ledgerFence.Held) {throw 'live_ledger_fence_lost'}
+    if($script:PauseAttempted) {
+        $snapshot=[FlowerPinnedDelivery]::SnapshotWriteGate()
+        if($snapshot[0] -ne 1 -or $snapshot[1] -lt $maintenanceShared -or $snapshot[2] -ne $plan.SharedResumeAllEpoch) {throw 'live_cleanup_stop_changed'}
+        if(![FlowerPinnedDelivery]::StoppedWriteFenceHeld()) {
+            [FlowerPinnedDelivery]::EnterStoppedWriteFence($snapshot[1],$snapshot[2])
+        }
+        $script:FinalSharedEpoch=[FlowerPinnedDelivery]::AdvanceMaintenanceStoppedGeneration($snapshot[1],$snapshot[2])
+    }
+    $script:ledgerFence.Dispose(); $script:ledgerFence=$null
+    if($null -ne $script:FinalSharedEpoch) {Log 'live_waiting_resume_epoch_invalidated' @{shared_epoch=$script:FinalSharedEpoch;resumed=$false}}
+}
+function CompleteLivePausedUpdate($started) {
+    RequireMaintenancePaused $started $maintenanceShared $maintenanceProtected
+    CloseLiveLedgerFence
+    [FlowerPinnedDelivery]::ExitStoppedWriteFence()
+    $after=Status $newExe
+    RequireMaintenancePaused $after $script:FinalSharedEpoch $maintenanceProtected
+    RequireComputerPause $after $true
+    if($after.version -cne $version -or $after.pid -ne $started.pid -or $after.created -ne $started.created) {throw 'live_updated_instance_changed'}
+    return $after
+}
+function FinalizeLiveUpdateResources {
+    $errors=[Collections.Generic.List[string]]::new()
+    try { CloseLiveLedgerFence } catch { $errors.Add('stop_or_ledger_cleanup_unconfirmed') }
+    try { if('FlowerStoppedClientRetention' -as [type]) {[FlowerStoppedClientRetention]::Close()} } catch {$errors.Add('client_pins_close_failed')}
+    try { if('FlowerPinnedDelivery' -as [type]) {[FlowerPinnedDelivery]::Close()} } catch {$errors.Add('delivery_pins_close_failed')}
+    try { if($null -ne $script:ledgerFence) {$script:ledgerFence.Dispose()} } catch {$errors.Add('ledger_dispose_failed')}
+    if($errors.Count -gt 0) {
+        $cleanup=@{schema=1;operation=$plan.OperationId;version=$version;state='cleanup_failed';stop_confirmed=$false;
+            installation_result_preserved=$true;final_shared_epoch=$script:FinalSharedEpoch;active_changed=$script:ActiveChanged;
+            resumed=$false;errors=@($errors.ToArray())}
+        if($script:LoggingReady) {
+            try {[IO.File]::WriteAllText(($prefix+'-cleanup.json'),($cleanup|ConvertTo-Json -Depth 4),$utf8)}
+            catch {[Console]::Error.WriteLine('cleanup_receipt_unavailable')}
+        }
+        throw 'live_update_cleanup_failed_inspection_required'
+    }
+}
+function DrainOriginal {
+    $beforePause = Status $oldExe; RequireOriginal $beforePause
+    # The old broker accepts pause only from running. An existing user Stop
+    # is bound unchanged; a newer Stop fails RequireOriginal before shutdown.
+    $script:PauseAttempted = $true
+    $wasStopped = $plan.PSObject.Properties.Name -contains 'OriginalPaused' -and $plan.OriginalPaused -eq $true
+    $paused = if ($recovering -or $wasStopped) { Status $oldExe } else { (MaintenanceAdmin $oldExe 'pause' $beforePause).Status }
+    RequireOriginal $paused $true
+    $beforeShutdown = Status $oldExe; RequireOriginal $beforeShutdown $true
+    $null = MaintenanceAdmin $oldExe 'shutdown' $beforeShutdown
+    WaitExit ([int]$plan.OldPid) ([long]$plan.OldCreated); $script:OldExited = $true
+}
+function RegisterTask([string]$xml, [string]$sddl) {
+    $scheduler = New-Object -ComObject Schedule.Service
+    $folder = $null; $registered = $null
+    try {
+        $scheduler.Connect(); $folder = $scheduler.GetFolder('\')
+        $registered = $folder.RegisterTask($taskName, $xml, 6, $plan.UserSid, $null, 3, $sddl)
+    } finally {
+        if ($null -ne $registered) { [Runtime.InteropServices.Marshal]::ReleaseComObject($registered) | Out-Null }
+        if ($null -ne $folder) { [Runtime.InteropServices.Marshal]::ReleaseComObject($folder) | Out-Null }
+        [Runtime.InteropServices.Marshal]::ReleaseComObject($scheduler) | Out-Null
+    }
+}
+function WaitExit([int]$pidValue, [long]$created) {
+    $until = [DateTime]::UtcNow.AddSeconds(20)
+    do {
+        $live = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+        if ($null -eq $live) { return }
+        if ($live.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $created) { throw 'broker_pid_reused' }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $until)
+    throw 'broker_exit_unconfirmed'
+}
+function WaitReady([string]$exe, [string]$expectedVersion) {
+    $until = [DateTime]::UtcNow.AddSeconds(180)
+    do {
+        try {
+            $value = Status $exe
+            if ($value.version -ceq $expectedVersion -and $value.paused -and $value.tray_available) { RequireIdle $value; return $value }
+        } catch { }
+        Start-Sleep -Seconds 2
+    } while ([DateTime]::UtcNow -lt $until)
+    throw 'broker_start_unconfirmed'
+}
+function ReplaceActive([string]$source, [string]$expected, [string]$previous) {
+    if ((Hash $source) -cne $expected) { throw 'active_source_changed' }
+    $destination = Join-Path $brokerRoot 'active.json'
+    $temporary = Join-Path $brokerRoot ('active.' + $plan.OperationId + '.pending')
+    if (Test-Path -LiteralPath $temporary) { throw 'active_pending_exists' }
+    $text = [FlowerPinnedDelivery]::ReadText($source, $expected)
+    $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $bytes = $utf8.GetBytes($text); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+    finally { $stream.Dispose() }
+    if ((Hash $temporary) -cne $expected) { throw 'active_serialization_changed' }
+    if ((Hash $destination) -cne $previous) { throw 'active_destination_changed' }
+    [FlowerPinnedDelivery]::ReplaceFile($temporary, $destination)
+    Set-FlowerProtection $destination
+    Assert-FlowerAcl $destination
+    if ((Hash $destination) -cne $expected) { throw 'active_replace_unconfirmed' }
+}
+function Rollback {
+    # Missing acknowledgement does not prove that resume did not happen.
+    if ($script:ResumeAttempted -and !$script:Resumed) { return 'resume_outcome_unknown_inspection_required' }
+    if (!$script:PauseAttempted -or $script:Resumed) { return 'not_needed_or_already_resumed' }
+    try {
+        # A timed-out shutdown response can still mean that the exact old
+        # instance exited. Reconcile identity instead of trusting an attempt flag.
+        $oldProcess = Get-Process -Id ([int]$plan.OldPid) -ErrorAction SilentlyContinue
+        if ($null -eq $oldProcess) { $script:OldExited = $true }
+        elseif ($oldProcess.StartTime.ToUniversalTime().ToFileTimeUtc() -ne [long]$plan.OldCreated) { throw 'rollback_old_pid_reused' }
+        if ($script:OldExited) {
+            $restoreTask = $false
+            $currentTaskHash = HashText ([string](Export-ScheduledTask -TaskName $taskName -TaskPath '\'))
+            if ($currentTaskHash -cne $plan.OldTaskDefinitionSha256) {
+                if (!$script:NewTaskHash -or $currentTaskHash -cne $script:NewTaskHash) { throw 'rollback_task_changed' }
+                $restoreTask = $true
+            }
+            if ((HashText (Get-FlowerTaskSecurityDescriptor)) -cne $plan.OldTaskSddlSha256) { throw 'rollback_task_security_changed' }
+            $currentActiveHash = Hash (Join-Path $brokerRoot 'active.json')
+            if ($currentActiveHash -notin @($plan.ActiveSha256, $plan.OldActiveSha256)) { throw 'rollback_active_changed' }
+            if ($script:StartAttempted) {
+                # A started-but-unreachable new instance is never killed or
+                # assumed absent. Preserve the maintenance Stop for recovery.
+                try {
+                    $live = Status $newExe; RequireIdle $live
+                    if ($live.version -cne $version -or !$live.paused -or [long]$live.global_stop_epoch -ne $maintenanceShared -or [long]$live.protected_stop_epoch -ne $maintenanceProtected) { throw 'rollback_stop_changed' }
+                    RequireMaintenancePaused $live $maintenanceShared $maintenanceProtected
+                    $null = MaintenanceAdmin $newExe 'shutdown' $live
+                    WaitExit ([int]$live.pid) ([long]$live.created)
+                } catch { throw 'rollback_new_broker_shutdown_unconfirmed' }
+            }
+            if ($restoreTask) { RegisterTask $script:OldXml $script:OldSddl }
+            if ($currentActiveHash -ceq $plan.ActiveSha256) {
+                ReplaceActive (Join-Path $oldDir 'installation.json') $plan.OldActiveSha256 $plan.ActiveSha256
+            }
+            RequirePreviousTask
+            Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+            $old = WaitReady $oldExe $oldVersion
+            if ($plan.LegacyComputerPause) {
+                Log 'rollback_legacy_pause_requires_explicit_recovery' @{ version = $oldVersion; global_paused = $true }
+                return 'previous_restored_legacy_pause_manual_recovery'
+            }
+        } else { $old = Status $oldExe }
+        RequireIdle $old
+        if ([long]$old.global_stop_epoch -ne $maintenanceShared -or [long]$old.protected_stop_epoch -ne $maintenanceProtected) { throw 'rollback_stop_changed' }
+        if ($recovering -or $leavePaused) {
+            Log 'rollback_recovery_keeps_original_pause' @{ version = $oldVersion; global_paused = $true }
+            if($leavePaused) {return 'previous_restored_paused'}
+            return 'previous_restored_legacy_pause_manual_recovery'
+        }
+        $after = ResumeBroker $oldExe $old
+        Log 'rollback_restored_previous' @{ pid = $after.pid; version = $after.version }
+        return 'previous_restored'
+    } catch {
+        Log 'rollback_unconfirmed' @{ reason = $_.Exception.Message }
+        return 'manual_recovery_required'
+    }
+}
+try {
+    Add-Type -TypeDefinition @'
+@@PINNED_DELIVERY_TYPE@@
+'@
+    $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'elevation_required' }
+    $logDirectory = [FlowerPinnedDelivery]::CreateLogDirectory($plan.OperationId, $plan.UserSid)
+    if ($logDirectory -ine [IO.Path]::GetDirectoryName($prefix)) { throw 'delivery_log_path_changed' }
+    $script:LoggingReady = $true
+    Log 'started' @{ pid = $PID; version = $version; operation = $plan.OperationId }
+    if ((Hash (Join-Path $brokerRoot 'active.json')) -cne $plan.OldActiveSha256) { throw 'old_active_changed' }
+    $activeText = [FlowerPinnedDelivery]::ReadText((Join-Path $package 'active.json'), $plan.ActiveSha256)
+    $newActive = $activeText | ConvertFrom-Json
+    $sourceDir = Join-Path $package ('versions\' + $version)
+    $newPolicy = ([FlowerPinnedDelivery]::ReadText((Join-Path $sourceDir 'broker.json'), $newActive.hashes.'broker.json')) | ConvertFrom-Json
+    $newXml = [FlowerPinnedDelivery]::ReadText((Join-Path $package 'task.xml'), $plan.TaskXmlSha256)
+    $common = [FlowerPinnedDelivery]::ReadText((Join-Path $package 'InstallCommon.ps1'), $plan.CommonSha256)
+    . ([scriptblock]::Create($common))
+    if($plan.PSObject.Properties.Name -contains 'NewBoundMaintenanceWriterProtocol' -and $plan.NewBoundMaintenanceWriterProtocol -eq 1) {
+        $writer=[Diagnostics.Process]::GetCurrentProcess()
+        try {
+            $script:WriterMarker=[ordered]@{Schema=1;State='active';OperationId=$plan.OperationId;UserSid=$plan.UserSid;
+                Session=[int]$writer.SessionId;OldVersion=$oldVersion;NewVersion=$version;WriterPid=[int]$PID;
+                WriterCreated=[long]$writer.StartTime.ToUniversalTime().ToFileTimeUtc();WriterImage=$writer.MainModule.FileName;
+                WriterImageSha256=(Hash $writer.MainModule.FileName)}
+        } finally {$writer.Dispose()}
+        $markerPath=Join-Path $logDirectory 'maintenance-writer.json'
+        [IO.File]::WriteAllText($markerPath,($script:WriterMarker|ConvertTo-Json -Compress),$utf8)
+        Set-MaintenanceWriterProtection $markerPath
+        $script:WriterMarkerReady=$true
+    }
+    if ($recovering) {
+        $prior = ([FlowerPinnedDelivery]::ReadText($plan.RecoveryPlan, $plan.RecoveryPlanSha256)) | ConvertFrom-Json
+        if ($prior.OperationId -cne $plan.RecoveryOperation -or $prior.Version -cne $version -or $prior.OldVersion -cne $oldVersion -or
+            $prior.ActiveSha256 -cne $plan.ActiveSha256 -or $prior.OldActiveSha256 -cne $plan.OldActiveSha256 -or
+            $prior.UserSid -cne $plan.UserSid -or $prior.BrokerRoot -ine $brokerRoot -or $prior.TaskName -cne $taskName -or
+            $prior.OldTaskDefinitionSha256 -cne $plan.OldTaskDefinitionSha256 -or $prior.OldTaskSddlSha256 -cne $plan.OldTaskSddlSha256 -or
+            ([long]$prior.OldSharedEpoch + 1) -ne $maintenanceShared -or ([long]$prior.OldProtectedEpoch + 1) -ne $maintenanceProtected) { throw 'recovery_plan_changed' }
+        $priorDirectory = [FlowerPinnedDelivery]::RequireLogDirectory($plan.RecoveryOperation, $plan.UserSid)
+        $receipt = ([FlowerPinnedDelivery]::ReadText((Join-Path $priorDirectory 'update-result.json'), $plan.RecoveryResultSha256)) | ConvertFrom-Json
+        if ($receipt.operation -cne $plan.RecoveryOperation -or $receipt.version -cne $version -or $receipt.state -cne 'failed' -or
+            $receipt.rollback -cne 'previous_restored_legacy_pause_manual_recovery') { throw 'protected_recovery_receipt_changed' }
+        # The saved original uses UTF-16; compare decoded text instead of bytes.
+        if ((HashText ([IO.File]::ReadAllText((Join-Path $priorDirectory 'update-previous-task.xml')))) -cne $plan.OldTaskDefinitionSha256 -or
+            (HashText ([IO.File]::ReadAllText((Join-Path $priorDirectory 'update-previous-task-sddl.txt')))) -cne $plan.OldTaskSddlSha256) { throw 'recovery_original_task_changed' }
+        Log 'resuming_exact_failed_update' @{ previous_operation = $plan.RecoveryOperation; shared_epoch = $maintenanceShared; protected_epoch = $maintenanceProtected }
+    }
+    $before = Status $oldExe; RequireOriginal $before
+    if($leavePaused) {
+        [FlowerPinnedDelivery]::HoldMaintenanceWriteGate($plan.UserSid,[long]$plan.OldSharedEpoch,[long]$plan.SharedResumeAllEpoch,$originalPaused)
+        PinLiveClients
+    } else { [FlowerPinnedDelivery]::HoldWriteGate($plan.UserSid) }
+    Log 'existing_write_gate_held' @{ epoch = [long]$plan.OldSharedEpoch; read_only = $true }
+    if ((Hash (Join-Path $oldDir 'installation.json')) -cne $plan.OldActiveSha256) { throw 'old_installation_changed' }
+    $script:OldXml = [string](Export-ScheduledTask -TaskName $taskName -TaskPath '\')
+    $script:OldSddl = Get-FlowerTaskSecurityDescriptor
+    if ((HashText $script:OldXml) -cne $plan.OldTaskDefinitionSha256 -or (HashText $script:OldSddl) -cne $plan.OldTaskSddlSha256) { throw 'old_task_definition_changed' }
+    [IO.File]::WriteAllText(($prefix + '-previous-task.xml'), $script:OldXml, [Text.Encoding]::Unicode)
+    [IO.File]::WriteAllText(($prefix + '-previous-task-sddl.txt'), $script:OldSddl, $utf8)
+    $task = Get-FlowerTask
+    if (@($task.Actions).Count -ne 1 -or $task.Actions.Execute -ine $oldExe -or $task.Actions.Arguments -cne '--serve') { throw 'old_task_changed' }
+    if($reusePayload) {
+        RequireReusedPayload
+    } elseif ($recovering) {
+        if (!(Test-Path -LiteralPath $newDir)) { throw 'recovery_verified_payload_missing' }
+        Assert-FlowerVersion $newDir; Assert-FlowerAcl $newDir
+        Log 'protected_payload_reverified' @{ version = $version }
+    } else {
+    if (Test-Path -LiteralPath $newDir) { throw 'new_target_exists_no_replay' }
+    [IO.Directory]::CreateDirectory($newDir) | Out-Null
+    Set-FlowerProtection $newDir
+    [FlowerPinnedDelivery]::PinDirectory($newDir)
+    $hashes = @{}
+    foreach ($item in $newActive.hashes.PSObject.Properties) { $hashes.Add($item.Name, [string]$item.Value) }
+    foreach ($item in $newActive.runtime_hashes.PSObject.Properties) { $hashes.Add($item.Name.Replace('/', '\'), [string]$item.Value) }
+    foreach ($item in $newPolicy.AppWorkerHashes.PSObject.Properties) { $hashes.Add(('app\' + $item.Name), [string]$item.Value) }
+    foreach ($item in $newPolicy.WgcWorkerHashes.PSObject.Properties) { $hashes.Add(('wgc\' + $item.Name), [string]$item.Value) }
+    $hashes.Add('installation.json', $plan.ActiveSha256)
+    $count = 0
+    foreach ($relative in @($hashes.Keys | Sort-Object)) {
+        if ([IO.Path]::IsPathRooted($relative) -or $relative.Contains(':') -or @($relative.Split('\') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) { throw 'payload_relative_path_rejected' }
+        $destination = Join-Path $newDir $relative
+        $parent = [IO.Path]::GetDirectoryName($destination)
+        $missing = New-Object 'System.Collections.Generic.Stack[string]'
+        for ($part = $parent; !(Test-Path -LiteralPath $part); $part = [IO.Path]::GetDirectoryName($part)) { $missing.Push($part) }
+        while ($missing.Count -gt 0) { $part = $missing.Pop(); [IO.Directory]::CreateDirectory($part) | Out-Null; Set-FlowerProtection $part }
+        [FlowerPinnedDelivery]::CopyFile((Join-Path $sourceDir $relative), $destination, $hashes[$relative])
+        Set-FlowerProtection $destination
+        $count++
+        if (($count % 100) -eq 0) { Log 'payload_progress' @{ done = $count; total = $hashes.Count } }
+    }
+    Assert-FlowerVersion $newDir; Assert-FlowerAcl $newDir
+    Log 'payload_verified' @{ files = $count }
+    }
+    $script:PayloadVerified = $true
+    RequireRolePolicy
+    if ($plan.LegacyComputerPause) {
+        $computerPause = Admin $newExe '--preserve-legacy-computer-pause'
+        if (!$computerPause.Stopped -or $computerPause.UserSid -cne $plan.UserSid -or $computerPause.Epoch -lt 1) { throw 'legacy_computer_pause_unconfirmed' }
+        Log 'legacy_computer_pause_preserved' @{ epoch = $computerPause.Epoch; old_paused = $plan.OldComputerPaused; explicit_tray_continue_required = $true }
+    }
+    RequirePreviousTask
+    if ((Hash (Join-Path $brokerRoot 'active.json')) -cne $plan.OldActiveSha256) { throw 'active_changed_before_pause' }
+    if($leavePaused) {
+        $script:ledgerFence=[FlowerLedgerFence]::Acquire($plan.LedgerPath,$plan.LedgerLibrary,$plan.LedgerLibrarySha256)
+        RequireOriginal (Status $oldExe)
+    }
+    DrainOriginal
+    if($leavePaused) {
+        [FlowerPinnedDelivery]::EnterStoppedWriteFence($maintenanceShared,[long]$plan.SharedResumeAllEpoch)
+        RequireLiveUpdateActors
+    }
+    if ((Hash (Join-Path $brokerRoot 'active.json')) -cne $plan.OldActiveSha256) { throw 'active_changed_after_drain' }
+    RequirePreviousTask
+    $script:TaskChanged = $true; RegisterTask $newXml $script:OldSddl
+    Assert-FlowerTaskSecurity
+    $newTask = Get-FlowerTask
+    if (@($newTask.Actions).Count -ne 1 -or $newTask.Actions.Execute -ine $newExe -or $newTask.Actions.Arguments -cne '--serve' -or
+        $newTask.Actions.WorkingDirectory -ine $newDir -or [string]$newTask.Principal.RunLevel -notin @('Highest', 'HighestAvailable') -or
+        [string]$newTask.Principal.LogonType -notin @('Interactive', 'InteractiveToken')) { throw 'new_task_unconfirmed' }
+    $script:NewTaskHash = HashText ([string](Export-ScheduledTask -TaskName $taskName -TaskPath '\'))
+    $script:ActiveChanged = $true; ReplaceActive (Join-Path $package 'active.json') $plan.ActiveSha256 $plan.OldActiveSha256
+    if ((HashText ([string](Export-ScheduledTask -TaskName $taskName -TaskPath '\'))) -cne $script:NewTaskHash -or
+        (HashText (Get-FlowerTaskSecurityDescriptor)) -cne $plan.OldTaskSddlSha256) { throw 'new_task_changed_before_start' }
+    if($leavePaused) {
+        RequireLiveUpdateActors
+        [FlowerPinnedDelivery]::CloseInputs()
+        [FlowerPinnedDelivery]::ExitStoppedWriteFence()
+    }
+    $script:StartAttempted = $true
+    Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+    $started = WaitReady $newExe $version
+    RequireComputerPause $started $true
+    if($leavePaused) {
+        $finalStatus=CompleteLivePausedUpdate $started
+        # Cleanup may absorb a newer user Stop. Only our exact maintenance
+        # generation may be released; the native CAS checks it once more.
+        if ($restoreRunning -and $script:FinalSharedEpoch -eq ($maintenanceShared + 1)) {
+            FinalizeLiveUpdateResources
+            $script:LiveResourcesFinalized = $true
+            $finalStatus = ResumeBroker $newExe $finalStatus $true $script:FinalSharedEpoch
+            $script:Resumed = $true
+            Log 'installed_and_running' @{version=$version;shared_epoch=$script:FinalSharedEpoch;resumed=$true}
+            [IO.File]::WriteAllText(($prefix + '-result.json'), (@{schema=1;state='installed_and_running';version=$version;operation=$plan.OperationId;resumed=$true;shared_epoch=$script:FinalSharedEpoch;protected_epoch=($maintenanceProtected+1);after=$finalStatus} | ConvertTo-Json -Depth 10),$utf8)
+            exit 0
+        }
+        Log 'installed_paused_verified' @{version=$version;shared_epoch=$script:FinalSharedEpoch;resumed=$false}
+        [IO.File]::WriteAllText(($prefix + '-result.json'), (@{schema=1;state='installed_paused_verified';version=$version;operation=$plan.OperationId;resumed=$false;shared_epoch=$script:FinalSharedEpoch;protected_epoch=$maintenanceProtected;after=$finalStatus} | ConvertTo-Json -Depth 10),$utf8)
+        exit 0
+    }
+    $after = ResumeBroker $newExe $started $true
+    $script:Resumed = $true
+    Log 'installed_and_running' @{ version = $version; pid = $after.pid; operation = $plan.OperationId }
+    [IO.File]::WriteAllText(($prefix + '-result.json'), ([ordered]@{ schema = 1; state = 'installed_and_running'; version = $version;
+        previous_version = $oldVersion; operation = $plan.OperationId; after = $after; semantic_newly_enabled = $false } | ConvertTo-Json -Depth 10), $utf8)
+    exit 0
+} catch {
+    $reason = $_.Exception.Message
+    if($leavePaused) { [FlowerPinnedDelivery]::ExitStoppedWriteFence() }
+    try { $rollback = Rollback } catch {$rollback='manual_recovery_required';[Console]::Error.WriteLine('rollback_diagnostic_unavailable')}
+    try { Log 'failed' @{ reason = $reason; rollback = $rollback } } catch {[Console]::Error.WriteLine('failed_log_unavailable')}
+    if ($script:LoggingReady) {
+        [IO.File]::WriteAllText(($prefix + '-result.json'), ([ordered]@{ schema = 1; state = 'failed'; reason = $reason;
+            rollback = $rollback; version = $version; operation = $plan.OperationId; final_shared_epoch = $script:FinalSharedEpoch; active_changed = $script:ActiveChanged; task_changed = $script:TaskChanged; start_attempted = $script:StartAttempted; resumed = $script:Resumed; resume_attempted = $script:ResumeAttempted; resume_outcome_unknown = ($script:ResumeAttempted -and !$script:Resumed) } | ConvertTo-Json -Depth 8), $utf8)
+    }
+    exit 1
+} finally {
+    if($script:WriterMarkerReady) {
+        try {
+            $script:WriterMarker.State='closed'
+            [IO.File]::WriteAllText((Join-Path ([IO.Path]::GetDirectoryName($prefix)) 'maintenance-writer.json'),($script:WriterMarker|ConvertTo-Json -Compress),$utf8)
+        } catch {[Console]::Error.WriteLine('maintenance_writer_close_unconfirmed')}
+    }
+    if($leavePaused -and !$script:LiveResourcesFinalized) {FinalizeLiveUpdateResources}
+    elseif('FlowerPinnedDelivery' -as [type]) {[FlowerPinnedDelivery]::Close()}
+}

@@ -12,6 +12,7 @@ internal sealed class ResourceLocks : IDisposable
     private readonly List<Mutex> opened = [];
     internal static string Name(string resource) => "Local\\FlowerControl.Resource.v1."
         + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(resource))).ToLowerInvariant();
+    internal static Mutex Retain(string resource) => Mutex.OpenExisting(Name(resource));
     internal ResourceLocks(IEnumerable<string> resources)
     {
         try
@@ -20,7 +21,7 @@ internal sealed class ResourceLocks : IDisposable
             {
                 // Medium pre-creates and retains these exact objects without ownership.
                 // Do not create a new High-labelled lock or substitute a lock name.
-                var mutex = Mutex.OpenExisting(Name(resource)); opened.Add(mutex);
+                var mutex = Retain(resource); opened.Add(mutex);
                 try
                 {
                     if (!mutex.WaitOne(0)) throw new Boundary("resource_busy");
@@ -55,19 +56,95 @@ internal sealed class InputLedger
     private bool known = true;
     private readonly SharedWriteGate? writeGate;
     private readonly long stopEpoch;
-    internal InputLedger(Func<Native.Input[], uint>? send = null, SharedWriteGate? writeGate = null)
+    private readonly Func<bool>? stopped;
+    private long lastDispatchCheck;
+    private long lastWaitCheck;
+    private long? mouseCapture;
+    internal Action<Step[]>? PrivacyCheck;
+    internal Func<string, bool>? PreDispatchRecovery;
+    internal Action? InvalidatePrivacy;
+    internal (Bound Target, PasswordMetadata.Info Metadata)? GesturePrivacy, PendingGesturePrivacy;
+    internal void ClearGesturePrivacy() { GesturePrivacy = PendingGesturePrivacy = null; }
+    internal InputLedger(Func<Native.Input[], uint>? send = null, SharedWriteGate? writeGate = null, Func<bool>? stopped = null)
     {
         this.writeGate = writeGate; stopEpoch = writeGate?.Snapshot().Epoch ?? 0;
-        this.send = send ?? (steps => Native.SendInput((uint)steps.Length, steps, Marshal.SizeOf<Native.Input>()));
+        this.send = send ?? InputActivityLatch.Send;
+        this.stopped = stopped;
     }
     internal string State => !known ? "unknown" : held.Count != 0 ? "release_pending" : "released";
     internal bool CountKnown => known;
     internal HashSet<string> OwnTokens => held.Select(step => step.Token!).ToHashSet();
-    internal void Send(Step[] steps, Receipt result, bool activation = false, bool preparation = false, Action? finalPreflight = null)
+    internal void CheckMouseCapture(long capture)
     {
-        writeGate?.Admit(stopEpoch); // Release uses its own bypass: stopping must never prevent exact ups.
-        finalPreflight?.Invoke(); // Optional immediate IME recheck after gate admission, before any dispatch count.
-        if (!activation && !preparation) result.BusinessAttempted = true;
+        if (!held.Any(s => s.Token!.StartsWith("mouse:", StringComparison.Ordinal))) { mouseCapture = null; return; }
+        if (mouseCapture is not null && mouseCapture != capture) throw new Boundary("pointer_drag_capture_changed");
+        if (capture != 0) mouseCapture = capture;
+    }
+    internal void CheckMotionWait(Func<bool> stopped, Stopwatch clock, int deadlineMs, Action? heldCheck = null)
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (lastWaitCheck != 0
+            && Stopwatch.GetElapsedTime(lastWaitCheck, now).TotalMilliseconds < PointerPath.MotionWaitCheckMs) return;
+        lastWaitCheck = now;
+        if (stopped()) throw new Boundary("input_stopped");
+        if (clock.ElapsedMilliseconds >= deadlineMs) throw new Boundary("deadline_expired");
+        writeGate?.Admit(stopEpoch);
+        if (held.Count != 0 && Stopwatch.GetElapsedTime(lastDispatchCheck).TotalMilliseconds >= PointerPath.MotionCheckMs)
+        {
+            if (heldCheck is null) throw new Boundary("held_input_check_required");
+            heldCheck(); lastDispatchCheck = Stopwatch.GetTimestamp();
+        }
+    }
+    internal void KeyboardUps(Step[] steps, Receipt result, Action check)
+    {
+        if (State != "released" || steps.Any(step => step.Down || step.Raw.Type != 1
+                || step.Token is null || !step.Token.StartsWith("vk:", StringComparison.Ordinal)
+                || (step.Raw.Data.Key.Flags & 2) == 0)) throw new Boundary("keyboard_preparation_requires_ups");
+        check(); writeGate?.Admit(stopEpoch); check();
+        if (stopped?.Invoke() == true) throw new Boundary("input_stopped");
+        result.RequestedEvents += steps.Length;
+        known = false;
+        var count = send(steps.Select(step => step.Raw).ToArray());
+        if (count > steps.Length) throw new Boundary("input_count_unknown");
+        known = true;
+        result.SentEvents += (int)count;
+        result.KeyboardReleaseEvents += (int)count;
+        if (count != steps.Length) throw new Boundary("keyboard_preparation_incomplete");
+    }
+    internal void Send(Step[] steps, Receipt result, bool activation = false, bool preparation = false, Action? finalPreflight = null, bool pointer = false)
+    {
+        void Prepare()
+        {
+            if (steps.Any(s => s.Raw.Type == 1)) ClearGesturePrivacy();
+            if (!activation && (!pointer || OwnTokens.Any(t => t.StartsWith("mouse:", StringComparison.Ordinal)))
+                && !steps.All(s => s.Token is not null && !s.Down && OwnTokens.Contains(s.Token)))
+            {
+                long privacyAt = Stopwatch.GetTimestamp();
+                try { PrivacyCheck?.Invoke(steps); }
+                finally { PointerPath.AddTiming(result, "privacy_path", privacyAt); }
+            }
+            long gateAt = Stopwatch.GetTimestamp();
+            try { writeGate?.Admit(stopEpoch); } // Release uses its own bypass: stopping must never prevent exact ups.
+            finally { PointerPath.AddTiming(result, "write_gate", gateAt); }
+            long preflightAt = Stopwatch.GetTimestamp();
+            try { finalPreflight?.Invoke(); } // Full immediate recheck before any dispatch count.
+            finally { PointerPath.AddTiming(result, "final_preflight", preflightAt); }
+            gateAt = Stopwatch.GetTimestamp();
+            try { writeGate?.Admit(stopEpoch); } // A check/provider can itself race a new Stop.
+            finally { PointerPath.AddTiming(result, "write_gate", gateAt); }
+            long stopAt = Stopwatch.GetTimestamp();
+            try { if (stopped?.Invoke() == true) throw new Boundary("input_stopped"); }
+            finally { PointerPath.AddTiming(result, "stop_check", stopAt); }
+            lastDispatchCheck = Stopwatch.GetTimestamp();
+        }
+        try { Prepare(); }
+        catch (Boundary error)
+        {
+            if (PreDispatchRecovery?.Invoke(error.Code) != true) throw;
+            ClearGesturePrivacy(); InvalidatePrivacy?.Invoke();
+            Prepare(); // No requested count or native call existed before this recovery.
+        }
+        if (!activation && !preparation && !pointer) result.BusinessAttempted = true;
         result.RequestedEvents += steps.Length;
         known = false;
         var sending = Stopwatch.StartNew();
@@ -91,15 +168,23 @@ internal sealed class InputLedger
                 held.RemoveAt(index);
             }
         }
+        var reviewedGesture = PendingGesturePrivacy;
+        if (steps.Any(s => s.Raw.Type == 1)) ClearGesturePrivacy();
+        if (count == steps.Length && steps.Any(s => s.Down && s.Token?.StartsWith("mouse:", StringComparison.Ordinal) == true))
+            GesturePrivacy = reviewedGesture;
+        PendingGesturePrivacy = null;
+        if (count != steps.Length || !OwnTokens.Any(t => t.StartsWith("mouse:", StringComparison.Ordinal))) ClearGesturePrivacy();
         known = true;
         result.SentEvents += (int)count;
         if (activation) result.ActivationEvents += (int)count;
         else if (preparation) result.ImeEvents += (int)count;
+        else if (pointer) result.PointerEvents += (int)count;
         else result.BusinessEvents += (int)count;
         if (count != steps.Length) throw new Boundary("input_partial", Marshal.GetLastWin32Error());
     }
     internal void Release(Receipt result)
     {
+        ClearGesturePrivacy();
         if (held.Count == 0) return;
         var wasKnown = known;
         var releases = held.AsEnumerable().Reverse().Select(s => s.Release).ToArray();
@@ -192,26 +277,126 @@ internal static class Executor
         var token = (unicode ? "unicode:" : "vk:") + scan;
         return [new Step(down, token, true, up), new Step(up, token)];
     }
-    internal static void Check(Prepare prepare, Bound bound, Func<bool> stopped, Stopwatch clock, bool foreground, bool geometry, InputLedger? ledger = null)
+    internal static void CheckAuthority(Prepare prepare, Func<bool> stopped, Stopwatch clock, InputLedger? ledger = null,
+        bool checkExternal = true)
     {
         if (stopped()) throw new Boundary("input_stopped");
         if (clock.ElapsedMilliseconds >= prepare.DeadlineMs) throw new Boundary("deadline_expired");
         Native.VerifyPeer(prepare.Parent);
-        if (Native.CheckTarget(prepare.Target with { Nonce = bound.WindowNonce }, false) != bound) throw new Boundary("target_identity_changed");
-        if (foreground && !Native.Foreground(bound.Hwnd)) throw new Boundary("foreground_changed");
-        if (geometry) Native.CheckGeometry(prepare.Target, prepare.Operation.Kind == "computer_input_plan");
-        if (Protocol.UsesPhysicalInput(prepare.Operation)) ExternalInput(ledger);
+        if (checkExternal && Protocol.UsesPhysicalInput(prepare.Operation)) ExternalInput(ledger);
     }
-    internal static void Execute(Prepare prepare, Bound bound, Func<bool> stopped, Stopwatch clock, InputLedger ledger, Receipt result)
+    internal static void WaitActivationInputsReleased(Func<bool> held, Action check, Action wait)
     {
+        while (held()) { check(); wait(); }
+    }
+    internal static void EndKeyboardInput(Prepare prepare, Bound bound, Func<bool> stopped,
+        Stopwatch clock, InputLedger ledger, Receipt result)
+    {
+        void Check()
+        {
+            CheckAuthority(prepare, stopped, clock, ledger, checkExternal: false);
+            if (Native.CheckTarget(prepare.Target with { Nonce = bound.WindowNonce }, false) != bound)
+                throw new Boundary("target_identity_changed");
+            Native.Desktop();
+            if (Native.ProtectedForeground()) throw new Boundary("activation_foreground_protected");
+        }
+        Check();
+        if (ledger.State != "released") { ExternalInput(ledger); return; }
+        if (prepare.Operation.Kind == "activate")
+        {
+            // Preserve the person's held inputs if they resumed using the
+            // computer just after the takeover countdown.
+            WaitActivationInputsReleased(() => Enumerable.Range(1, 254).Any(vk => Native.GetAsyncKeyState(vk) < 0),
+                Check, () => Thread.Sleep(20));
+            return;
+        }
+        var keys = Enumerable.Range(8, 247).Where(vk => Native.GetAsyncKeyState(vk) < 0).ToHashSet();
+        foreach (var (generic, left, right) in new[] { (16, 160, 161), (17, 162, 163), (18, 164, 165) })
+            if (keys.Contains(left) || keys.Contains(right)) keys.Remove(generic);
+        if (keys.Count == 0) return;
+        var previous = Native.GetForegroundWindow();
+        var steps = keys.Order().Where(vk => Native.GetAsyncKeyState(vk) < 0)
+            .Select(vk => {
+                var step = KeyPair((ushort)vk, false)[1];
+                if (vk is 0x21 or 0x22 or 0x23 or 0x24 or 0x25 or 0x26 or 0x27 or 0x28
+                        or 0x2c or 0x2d or 0x2e or 0x5b or 0x5c or 0x6f or 0x90 or 0xa3 or 0xa5)
+                { var raw = step.Raw; raw.Data.Key.Flags |= 1; step = step with { Raw = raw }; }
+                return step;
+            }).ToArray();
+        if (steps.Length == 0) return;
+        ledger.KeyboardUps(steps, result, () => {
+            Check();
+            if (Native.GetForegroundWindow() != previous) throw new Boundary("foreground_changed");
+        });
+    }
+    internal static UserPermissionSettings Check(Prepare prepare, Bound bound, Func<bool> stopped, Stopwatch clock,
+        bool foreground, bool geometry, InputLedger? ledger = null, Receipt? result = null)
+    {
+        long stage = Stopwatch.GetTimestamp();
+        CheckAuthority(prepare, stopped, clock, ledger);
+        PointerPath.AddTiming(result, "authority_check", stage);
+        // One fresh settings read for this synchronous check. Callers may pass
+        // it down to the receiver and swept-region predicates of this same
+        // preflight; it never survives a wait, recovery or another dispatch.
+        stage = Stopwatch.GetTimestamp();
+        var permissions = UserPermissions.Read();
+        PointerPath.AddTiming(result, "permission_read", stage);
+        stage = Stopwatch.GetTimestamp();
+        try
+        {
+            if (Native.CheckTarget(prepare.Target with { Nonce = bound.WindowNonce }, false, permissions) != bound)
+                throw new Boundary("target_identity_changed");
+        }
+        finally { PointerPath.AddTiming(result, "target_check", stage); }
+        stage = Stopwatch.GetTimestamp();
+        try { if (foreground && !Native.Foreground(bound.Hwnd)) throw new Boundary("foreground_changed"); }
+        finally { PointerPath.AddTiming(result, "foreground_check", stage); }
+        stage = Stopwatch.GetTimestamp();
+        try { if (geometry) Native.CheckGeometry(prepare.Target, prepare.Operation.Kind == "computer_input_plan"); }
+        finally { PointerPath.AddTiming(result, "geometry_check", stage); }
+        return permissions;
+    }
+    internal static void RequireActivationTarget(string kind, bool implicitActivation, Func<bool> ownedPopup)
+    {
+        if ((implicitActivation || kind is not ("bind" or "activate")) && ownedPopup())
+            throw new Boundary("new_window_detected");
+    }
+    internal static bool RecoverInitialActivation(string reason, InputLedger ledger, Receipt result,
+        Action authority, Action target, Action retry)
+    {
+        if (reason != "foreground_changed" || ledger.State != "released" || result.ForegroundRecoveries != 0)
+            return false;
+        authority(); target();
+        ++result.ForegroundRecoveries;
+        retry(); // Same clock, immutable target and unsent business plan.
+        return true;
+    }
+    internal static void Execute(Prepare prepare, Bound bound, Func<bool> stopped, Stopwatch clock, InputLedger ledger, Receipt result,
+        bool implicitActivation = false, Func<bool>? waitStopped = null, ForegroundEvents? activationHistory = null,
+        ComputerPlan? inputPlan = null, PointerPath.PreparedApproach? preparedApproach = null)
+    {
+        using var ownedActivationEvents = activationHistory is null && prepare.Operation.Kind != "bind"
+            && (prepare.Operation.Kind != "activate" || implicitActivation)
+            ? new ForegroundEvents(bound, activationPhase: true) : null;
+        var activationEvents = activationHistory ?? ownedActivationEvents;
+        void ActivationTarget() => RequireActivationTarget(prepare.Operation.Kind, implicitActivation,
+            () => {
+                activationEvents?.Check();
+                return Native.ForegroundChangeReason(bound, Native.GetForegroundWindow().ToInt64()) == "new_window_detected";
+            });
+        var hwnd = new IntPtr(bound.Hwnd);
+        try
+        {
+        ActivationTarget();
+        if (prepare.Operation.Kind != "bind") EndKeyboardInput(prepare, bound, stopped, clock, ledger, result);
         Check(prepare, bound, stopped, clock, false,
               InitialGeometryRequired(prepare.Operation, Native.IsIconic(new IntPtr(bound.Hwnd))));
         if (prepare.Operation.Kind == "bind") { result.State = "bound"; return; }
         var activationAt = clock.Elapsed.TotalMilliseconds;
-        var hwnd = new IntPtr(bound.Hwnd);
         var previous = Native.GetForegroundWindow();
         if (Native.IsIconic(hwnd))
         {
+            ActivationTarget();
             if (!prepare.Operation.RestoreMinimized) throw new Boundary("target_minimized");
             result.ActivationRequested = true;
             Native.ShowWindowAsync(hwnd, 9);
@@ -227,10 +412,12 @@ internal static class Executor
         Check(prepare, bound, stopped, clock, false, false);
         if (!Native.Foreground(bound.Hwnd))
         {
+            ActivationTarget();
             if (Native.ProtectedForeground()) throw new Boundary("activation_foreground_protected");
             if (Native.SendMessageTimeoutW(hwnd, 0, IntPtr.Zero, IntPtr.Zero, 3, 200, out _) == IntPtr.Zero)
                 throw new Boundary("target_unresponsive", Marshal.GetLastWin32Error());
             Check(prepare, bound, stopped, clock, false, false);
+            ActivationTarget();
             if (Native.GetForegroundWindow() != previous && !Native.Foreground(bound.Hwnd)) throw new Boundary("foreground_changed");
             if (Native.IsShellDesktop(bound))
                 ShellDesktopWorker.Execute(prepare, bound, previous, stopped, clock, ledger, result);
@@ -246,9 +433,11 @@ internal static class Executor
                     if (Native.GetAncestor(retryForeground, 2) != hwnd)
                     {
                         if (retryForeground != previous || Native.ProtectedForeground()) throw new Boundary("foreground_changed");
+                        ActivationTarget();
                         ledger.Send(KeyPair(0x12, false), result, activation: true);
                         Check(prepare, bound, stopped, clock, false, false);
                         if (Native.GetForegroundWindow() != previous && !Native.Foreground(bound.Hwnd)) throw new Boundary("foreground_changed");
+                        ActivationTarget();
                         RequestForeground(hwnd, result);
                         WaitForegroundCompletion(prepare, bound, previous, stopped, clock);
                     }
@@ -265,20 +454,75 @@ internal static class Executor
         result.TimingsMs["activation"] = clock.Elapsed.TotalMilliseconds - activationAt;
         if (!result.Foreground) throw new Boundary("user_activation_required");
         if (prepare.Operation.Kind == "activate") { result.State = "activated"; return; }
-        using var foregroundEvents = new ForegroundEvents(bound);
-        bool PhaseStopped() { foregroundEvents.Check(); return stopped(); }
+        }
+        catch (Boundary error)
+        {
+            if (!RecoverInitialActivation(error.Code, ledger, result,
+                () => Check(prepare, bound, stopped, clock, false,
+                    InitialGeometryRequired(prepare.Operation, Native.IsIconic(hwnd)), ledger),
+                () => {
+                    ActivationTarget();
+                    if (Native.ProtectedForeground()) throw new Boundary("activation_foreground_protected");
+                },
+                () => Execute(prepare, bound, stopped, clock, ledger, result, implicitActivation, waitStopped, activationEvents))) throw;
+            return;
+        }
+        activationEvents!.EndActivation(bound);
+        ForegroundEvents? foregroundEvents = activationEvents;
+        var priority = new ForegroundPriority(() => result.ForegroundRecoveries == 0 ? ledger.State : "recovery_exhausted",
+            () => CheckAuthority(prepare, stopped, clock, ledger, checkExternal: false),
+            () => {
+                foregroundEvents?.CheckRecovery();
+                if (Native.ForegroundChangeReason(bound, Native.GetForegroundWindow().ToInt64()) == "new_window_detected")
+                    throw new Boundary("new_window_detected");
+                ++result.ForegroundRecoveries;
+                // Activation is preparation only. It cannot resend a business
+                // step or replace the bound observation/geometry.
+                Execute(prepare with { Operation = new Operation("activate", RestoreMinimized: true) },
+                    bound, stopped, clock, ledger, result, implicitActivation: true, waitStopped: waitStopped);
+                foregroundEvents?.CheckRecovery();
+                Native.CheckGeometry(prepare.Target, prepare.Operation.Kind == "computer_input_plan");
+            }, () => {
+                var previousEvents = foregroundEvents;
+                var nextEvents = new ForegroundEvents(bound);
+                try { previousEvents?.CheckRecovery(); previousEvents?.Dispose(); }
+                catch { nextEvents.Dispose(); throw; }
+                foregroundEvents = nextEvents;
+            });
+        var previousRecovery = ledger.PreDispatchRecovery;
+        ledger.PreDispatchRecovery = priority.Recover;
+        bool PhaseState(Func<bool> cancelled)
+        {
+            if (cancelled()) return true;
+            priority.Check(() => {
+                foregroundEvents!.Check();
+                if (!Native.Foreground(bound.Hwnd)) throw new Boundary("foreground_changed");
+                ExternalInput(ledger);
+            });
+            return false;
+        }
+        bool PhaseStopped() => PhaseState(stopped);
+        bool PhaseWaitStopped() => PhaseState(waitStopped ?? stopped);
+        try
+        {
         if (prepare.Operation.Kind == "computer_input_plan")
         {
-            ComputerPlans.Execute(ComputerPlans.Parse(prepare.Operation.Plan!.Value), prepare, bound, PhaseStopped, clock, ledger, result);
-            foregroundEvents.Check();
+            ComputerPlans.Execute(inputPlan ?? ComputerPlans.Parse(prepare.Operation.Plan!.Value), prepare, bound,
+                PhaseStopped, clock, ledger, result, PhaseWaitStopped, preparedApproach);
             return;
         }
         if (prepare.Operation.Kind == "text")
         {
+            void CheckText() => Check(prepare, bound, PhaseStopped, clock, true, false, ledger);
+            var context = new InputContextGuard(InputContext.Prepare(bound, CheckText, ledger, result), true);
             foreach (var batch in ComputerPlans.TextBatches(prepare.Operation.Text!))
             {
-                Check(prepare, bound, PhaseStopped, clock, true, false);
-                ledger.Send(batch.Segments[0].Steps, result);
+                context.SettlePending(() => InputContext.Read(bound), () => clock.ElapsedMilliseconds, CheckText, Thread.Sleep);
+                var steps = batch.Segments[0].Steps;
+                ledger.Send(steps, result, finalPreflight: () => {
+                    CheckText(); context.RecheckCurrent(() => InputContext.Read(bound), clock.ElapsedMilliseconds);
+                });
+                if (steps.Any(step => step.Down && step.Token == "vk:9")) context.TraversalDispatched(clock.ElapsedMilliseconds);
             }
         }
         else
@@ -294,14 +538,24 @@ internal static class Executor
             if (width <= 0 || height <= 0 || x < left || x >= (long)left + width || y < top || y >= (long)top + height)
                 throw new Boundary("desktop_topology_changed");
             var move = new Native.Input { Data = new Native.Union { Mouse = new Native.Mouse {
-                Dx = (int)Math.Round((x - (double)left) * 65535 / Math.Max(1, width - 1)),
-                Dy = (int)Math.Round((y - (double)top) * 65535 / Math.Max(1, height - 1)), Flags = 0xc001 } } };
+                Dx = PointerPath.Normalize(x, left, width),
+                Dy = PointerPath.Normalize(y, top, height), Flags = 0xc001 } } };
             var down = new Native.Input { Data = new Native.Union { Mouse = new Native.Mouse { Flags = 2 } } };
             var up = new Native.Input { Data = new Native.Union { Mouse = new Native.Mouse { Flags = 4 } } };
             Check(prepare, bound, PhaseStopped, clock, true, true);
-            ledger.Send([new Step(move), new Step(down, "mouse:left", true, up), new Step(up, "mouse:left")], result);
+            var steps = new[] { new Step(move), new Step(down, "mouse:left", true, up), new Step(up, "mouse:left") };
+            var desktop = new DesktopShape(left, top, width, height);
+            PointerPath.Approach(steps, bound, desktop, ledger, result,
+                () => Check(prepare, bound, PhaseStopped, clock, true, true),
+                waitCheck: () => ledger.CheckMotionWait(PhaseWaitStopped, clock, prepare.DeadlineMs,
+                    () => Check(prepare, bound, PhaseStopped, clock, true, true)));
+            ledger.Send(steps, result, finalPreflight: () => {
+                Check(prepare, bound, PhaseStopped, clock, true, true);
+                InputContext.CheckReceiver(bound, steps, desktop);
+            });
         }
-        foregroundEvents.Check();
         result.State = "dispatched_unverified";
+        }
+        finally { ledger.PreDispatchRecovery = previousRecovery; foregroundEvents?.Dispose(); }
     }
 }

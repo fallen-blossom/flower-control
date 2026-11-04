@@ -10,9 +10,10 @@ from dataclasses import dataclass
 
 from .jev import JevClient
 from .state import ControlError, StateStore
-from .jev_diagnostics import jev_context, JevUsage, current_context
-from .scheduling import build_jev_request, choose_local, conflict_groups
+from .jev_diagnostics import jev_context, JevUsage, current_context, _public_tool_event
+from .scheduling import build_jev_request, choose_local, conflict_groups, foreground_queue
 from .target_selection import selection_stopped
+from .call_cancellation import call_cancelled
 
 
 @dataclass(frozen=True)
@@ -37,12 +38,16 @@ def _event_binding(store, chosen=None):
 
 def _skipped(store, reason, *, decision_id="", chosen=None, opportunity=None):
     task, action = _event_binding(store, chosen)
-    store.record_event("scheduling_skipped", task=task, action=action, details={
+    details = {
         "decision_id": decision_id, "reason": reason, "skip_reason": reason,
         "opportunity": opportunity, "client_invoked": False,
         "terminal": True, "chosen_action": chosen, "http_scope": "this_arbitration_call",
         **JevUsage().snapshot(),
-    })
+    }
+    usage = current_context().get("usage")
+    if isinstance(usage, JevUsage):
+        usage.observe("scheduling_skipped", details)
+    _public_tool_event(store, "scheduling_skipped", task=task, action=action, details=details)
 
 
 def _admission_reason(items, now, policy, request):
@@ -59,6 +64,8 @@ def _admission_reason(items, now, policy, request):
         return "jev_disabled_or_not_allowed"
     if any(item.user_order is not None for item in items):
         return "explicit_user_order"
+    if foreground_queue(items):
+        return "foreground_turn_order"
     if any((now - item.created_at) * 1000 >= policy.starvation_ms for item in items):
         return "fair_wait_limit"
     if any(item.recent_occupancy_ms >= policy.occupancy_budget_ms for item in items):
@@ -152,8 +159,7 @@ async def _evaluate(store, resources, decision, client, client_factory):
         if client_invoked and not isinstance(client, JevClient) and counts["http_attempts_started"] == 0:
             # An arbitrary Choice adapter may not expose HTTP observations.
             counts.update(http_observation_complete=False, http_invocations=None)
-        store.record_event("scheduling_decision", task=event_task, action=event_action,
-                           details={"decision_id": result.decision_id, "reason": result.reason,
+        details = {"decision_id": result.decision_id, "reason": result.reason,
                                     "requested_decision_id": requested_decision_id,
                                     "chosen_action": result.action_id, "terminal": True,
                                     "http_scope": "this_arbitration_call",
@@ -166,7 +172,9 @@ async def _evaluate(store, resources, decision, client, client_factory):
                                     "elapsed_ms": round((time.monotonic() - started) * 1000),
                                     "jev_elapsed_ms": jev_elapsed_ms,
                                     "candidates": request.payload if request else None,
-                                    **counts})
+                                    **counts}
+        usage.observe("scheduling_decision", details)
+        _public_tool_event(store, "scheduling_decision", task=event_task, action=event_action, details=details)
         return result
     reason = "local"
     jev_elapsed_ms = None
@@ -251,6 +259,9 @@ async def wait_for_turn(store: StateStore, owner: str, action_id: str,
     try:
         last_reason = None
         while True:
+            if call_cancelled():
+                store.cancel(owner, action_id)
+                return AdoptedDecision("", None, "call_cancelled")
             status = store.queue_status(owner, action_id)
             if status["state"] != "queued":
                 return AdoptedDecision("", None, "not_queued")
@@ -271,11 +282,17 @@ async def wait_for_turn(store: StateStore, owner: str, action_id: str,
                     decision = await arbitrate(store, resources, client_factory=client_factory,
                                                deadline_seconds=max(0.01, min(3.0, remaining)))
                 if decision.action_id == action_id:
+                    if call_cancelled():
+                        store.cancel(owner, action_id)
+                        return AdoptedDecision("", None, "call_cancelled")
                     adopted_id = decision.decision_id
                     return decision
             if time.monotonic() >= deadline:
                 return AdoptedDecision("", None, "waiting_for_resource")
             await asyncio.sleep(min(0.05, max(0, deadline - time.monotonic())))
+    except asyncio.CancelledError:
+        store.cancel(owner, action_id)
+        raise
     finally:
         store.release_execution_call(action_id, token, decision_id=adopted_id)
 

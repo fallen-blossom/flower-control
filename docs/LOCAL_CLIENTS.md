@@ -24,7 +24,7 @@ Each MCP connection owns a fresh task scope. A client that shares a connection a
 
 Normal disconnect attempts the existing close procedure for owned Web sessions while preserving AI profile data, Stop state, and uncertain action records. A human login window is retained for the user to close normally; unfinished login after disconnect needs manual recovery.
 
-Check `flower_status` and the origin probe before a small test task. **Ctrl+Alt+9** remains the emergency stop. No Flower telemetry or remote configuration is added. Your AI client's screenshots and tool results may enter its model context; optional Jev retains its existing opt-in network behavior.
+Check `flower_status` and the origin probe before a small test task. **Ctrl+Alt+9** ends the current Computer input without changing the saved tier. No Flower telemetry or remote configuration is added. Your AI client's screenshots and tool results may enter its model context; optional Jev retains its existing opt-in network behavior.
 ## Optional second entry for local Codex
 
 Original Flower Control remains the primary entry. The `codex-compatibility` client generates a separate Flower Control Compatibility plugin with three `-compat` MCP names. It shares the administrator helper and has no chat hooks. Connection mode has no personal browser access, chat isolation, or cross-channel handoff. Whether Dot-dispatched cloud tasks load these local tools still needs a real check; changing configuration cannot guarantee host-side tool loading.

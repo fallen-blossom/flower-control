@@ -23,20 +23,22 @@ if ($CompleteTaskRegistration) {
     if (Test-Path -LiteralPath $versionTarget) { throw 'version_target_already_exists' }
     if ((Test-Path -LiteralPath $brokerRoot) -and @(Get-ChildItem -LiteralPath $brokerRoot -Force).Count -ne 0) { throw 'existing_installation_requires_explicit_update_review' }
     New-Item -ItemType Directory -Path $brokerRoot -Force | Out-Null
-    Set-Acl -LiteralPath $brokerRoot -AclObject (New-FlowerAcl $true)
+    Set-FlowerProtection $brokerRoot
     $versions = Join-Path $brokerRoot 'versions'
     New-Item -ItemType Directory -Path $versions -Force | Out-Null
-    Set-Acl -LiteralPath $versions -AclObject (New-FlowerAcl $true)
+    Set-FlowerProtection $versions
     Copy-Item -LiteralPath $versionSource -Destination $versionTarget -Recurse
     Assert-FlowerVersion $versionTarget
-    Set-Acl -LiteralPath $versionTarget -AclObject (New-FlowerAcl $true)
-    foreach ($item in Get-ChildItem -LiteralPath $versionTarget -Recurse -Force) { Set-Acl -LiteralPath $item.FullName -AclObject (New-FlowerAcl $item.PSIsContainer) }
+    Set-FlowerProtection $versionTarget
+    foreach ($item in Get-ChildItem -LiteralPath $versionTarget -Recurse -Force) { Set-FlowerProtection $item.FullName }
     Copy-Item -LiteralPath (Join-Path $packageRoot 'active.json') -Destination $activePath
-    Set-Acl -LiteralPath $activePath -AclObject (New-FlowerAcl $false)
+    Set-FlowerProtection $activePath
 }
 
+Initialize-FlowerRecovery
 try {
     Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Xml (Get-Content -LiteralPath (Join-Path $packageRoot 'task.xml') -Raw) | Out-Null
+    Assert-FlowerTaskSecurity
 } catch {
     Write-Warning '版本文件保留。核对同版本/字节/ACL、确认任务缺失后，使用本脚本 -CompleteTaskRegistration 续完；不自动删除或改写既有任务。'
     throw

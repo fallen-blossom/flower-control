@@ -6,7 +6,8 @@ import time
 
 from .targets import JevTargetSelection, local_target_selection
 from .state import ControlError
-from .jev_diagnostics import jev_context, JevUsage, current_context
+from .jev_diagnostics import jev_context, JevUsage, current_context, _public_tool_event
+from .decision_cache import decision_cache, observation_cache_key
 
 
 def selection_stopped(store, *, task=None, observation=None):
@@ -39,11 +40,15 @@ def selection_permitted(store, task, resources, scopes=(), observation=None):
                 store._require_scope(db, task, scope)
             for resource in resources:
                 row = db.execute("SELECT * FROM resources WHERE id=?", (resource,)).fetchone()
-                if row is None or row["paused"] or row["quarantined"]:
+                if row is None or row["paused"] or store._effective_quarantine(db, resource, row):
                     return False
                 store._require_owned_resource(db, task, resource)
                 store._require_scope(db, task, row["required_scope"])
             if observation:
+                from flower_control.permissions import revision
+                policy = db.execute("SELECT revision FROM observation_policy_revisions WHERE observation=?", (observation,)).fetchone()
+                if policy is None or policy[0] != revision():
+                    return False
                 obs = db.execute("SELECT * FROM observations WHERE id=?", (observation,)).fetchone()
                 if not obs or obs["task"] != task or obs["expires"] <= store.clock():
                     return False
@@ -51,7 +56,7 @@ def selection_permitted(store, task, resources, scopes=(), observation=None):
                 if not row or row[0] != obs["revision"]:
                     return False
         return not selection_stopped(store, task=task, observation=observation)
-    except ControlError:
+    except (ControlError, OSError, RuntimeError):
         return False
 
 
@@ -116,15 +121,22 @@ async def _select_batch(client, request, *, deadline, permitted, fresh):
                               result.elapsed_ms, assessments)
 
 
-async def select_target(store, task, request, *, client_factory, permitted, fresh, action_id=None):
+async def select_target(store, task, request, *, client_factory, permitted, fresh, action_id=None,
+                        prefer_batch=False):
     """Local exact references are fast; ambiguous observations share one batch.
 
     Auxiliary Noul/Score describe candidate evidence only. They neither veto a
     legal Choice on an arbitrary probability threshold nor verify task success.
+    ``prefer_batch`` preserves an existing producer's bounded batch transport
+    even when it no longer asks unused auxiliary questions.
     """
     if selection_stopped(store):
         # Do not bind an action or persist diagnostics behind a busy SQLite
         # writer when the shared gate has already stopped this write flow.
+        usage = current_context().get("usage")
+        if isinstance(usage, JevUsage):
+            usage.observe("target_selection", {"reason": "not_permitted", "skip_reason": "not_permitted",
+                "client_invoked": False, "opportunity": False})
         return JevTargetSelection(None, "not_permitted", 0)
     deadline = min(request.expires_at, time.monotonic() + 5)
     channel = request.candidates[0].channel if request.candidates else None
@@ -138,8 +150,23 @@ async def select_target(store, task, request, *, client_factory, permitted, fres
     opportunity = False
     skip_reason = None
     selection_kind = "local"
+    cache_key = None
+    provider_stamp = None
     started = time.monotonic()
     original_permitted = permitted
+    async def service_allowed():
+        check = getattr(store, "task_jev_enabled", None)
+        if not callable(check):
+            return True
+        try:
+            return await asyncio.to_thread(check, task) is True
+        except (ControlError, OSError, RuntimeError):
+            return False
+    async def global_service_allowed():
+        try:
+            return bool(store.jev_enabled and await asyncio.to_thread(store.jev_enabled))
+        except (ControlError, OSError, RuntimeError):
+            return False
     async def task_stopped():
         if selection_stopped(store):
             return True
@@ -150,14 +177,36 @@ async def select_target(store, task, request, *, client_factory, permitted, fres
         if await task_stopped():
             return False
         return await original_permitted() is True and not await task_stopped()
+    async def external_permitted():
+        return await global_service_allowed() and await service_allowed() and await permitted()
     try:
         result = await local_target_selection(request, deadline=deadline, permitted=permitted, fresh=fresh)
         if result is not None:
             skip_reason = result.reason
         else:
             opportunity = True
-            if not (store.jev_enabled and store.jev_enabled()) or client_factory is None:
-                skip_reason = "jev_disabled" if not (store.jev_enabled and store.jev_enabled()) else "client_unavailable"
+            task_allowed = await service_allowed()
+            global_allowed = bool(store.jev_enabled and store.jev_enabled())
+            if task_allowed and global_allowed:
+                from flower_control.data_paths import physical_path
+                from .decision_settings import settings_stamp
+                def provider_configuration():
+                    try:
+                        directory = physical_path(store.directory / "jev.json").parent
+                        stamp = settings_stamp(directory)
+                        return None if stamp == ("unavailable",) else stamp
+                    except (OSError, ValueError):
+                        return None
+                provider_stamp = await asyncio.to_thread(provider_configuration)
+                if provider_stamp is not None:
+                    cache_key = await asyncio.to_thread(observation_cache_key, store, task, request,
+                                                        provider_stamp=provider_stamp)
+            cached = decision_cache.get(cache_key, request)
+            if cached is not None:
+                result = JevTargetSelection(cached, "structural_cache", 0)
+                skip_reason, selection_kind = "structural_cache", "structural_cache"
+            elif not task_allowed or not (store.jev_enabled and store.jev_enabled()) or client_factory is None:
+                skip_reason = "task_jev_disabled" if not task_allowed else "jev_disabled" if not (store.jev_enabled and store.jev_enabled()) else "client_unavailable"
                 result = JevTargetSelection(request.fallback(), "local_fallback:" + skip_reason, 0)
             else:
                 client = None
@@ -166,15 +215,15 @@ async def select_target(store, task, request, *, client_factory, permitted, fres
                     client_invoked = True
                     with jev_context(task=task, decision_id=request.decision_id, channel=channel,
                                      action=action_id, observation_id=request.observation_id, usage=usage):
-                        if request.assessment_questions and callable(getattr(client, "ask_batch", None)):
+                        if (request.assessment_questions or prefer_batch) and callable(getattr(client, "ask_batch", None)):
                             selection_kind = "independent_batch"
                             result = await _select_batch(client, request, deadline=deadline,
-                                                         permitted=permitted, fresh=fresh)
+                                                         permitted=external_permitted, fresh=fresh)
                         else:
                             # Backward compatibility for existing Choice adapters.
                             selection_kind = "choice_adapter"
                             result = await client.choose_target(request, deadline=deadline,
-                                                                permitted=permitted, fresh=fresh)
+                                                                permitted=external_permitted, fresh=fresh)
                 except (TypeError, ValueError):
                     skip_reason = "invalid_request"
                     result = JevTargetSelection(request.fallback(), "local_fallback:invalid_request", 0)
@@ -197,12 +246,38 @@ async def select_target(store, task, request, *, client_factory, permitted, fres
                 result = checked
         if result is not None and result.candidate is not None and not request.contains(result.candidate):
             result = JevTargetSelection(None, "invalid_choice", result.elapsed_ms)
+        if (client_invoked or selection_kind == "structural_cache") and not await service_allowed():
+            result = JevTargetSelection(None, "task_jev_disabled", result.elapsed_ms if result else 0)
+        elif (client_invoked or selection_kind == "structural_cache") and not await global_service_allowed():
+            result = JevTargetSelection(None, "jev_disabled", result.elapsed_ms if result else 0)
+        elif (client_invoked or selection_kind == "structural_cache") and provider_stamp is not None and result is not None and result.candidate is not None:
+            if await asyncio.to_thread(provider_configuration) != provider_stamp:
+                result = JevTargetSelection(None, "permission_changed", result.elapsed_ms if result else 0)
+        if (client_invoked or selection_kind == "structural_cache") and result is not None and result.candidate is not None:
+            # The final provider read above yields too. Recheck the original
+            # target/authority after that wait, before caching or adopting it.
+            checked = await local_target_selection(request, deadline=deadline, permitted=external_permitted, fresh=fresh)
+            if checked is not None and checked.candidate is None:
+                reason = ("timeout" if checked.reason == "expired" and deadline < request.expires_at
+                          and time.monotonic() < request.expires_at else checked.reason)
+                result = JevTargetSelection(None, reason, result.elapsed_ms)
+            # The async freshness/permission callbacks may themselves change
+            # providers. Finish the tiny local stamp read without another
+            # event-loop yield, then prioritize Stop before adopting the choice.
+            if (result.candidate is not None and provider_stamp is not None
+                    and provider_configuration() != provider_stamp):
+                result = JevTargetSelection(None, "permission_changed", result.elapsed_ms)
+            if selection_stopped(store, task=task, observation=request.observation_id):
+                result = JevTargetSelection(None, "not_permitted", result.elapsed_ms)
+            elif time.monotonic() >= deadline:
+                result = JevTargetSelection(None, "expired" if time.monotonic() >= request.expires_at else "timeout", result.elapsed_ms)
+        if client_invoked and result is not None and result.reason == "selected" and result.candidate is not None:
+            decision_cache.put(cache_key, request, result.candidate)
         return result
     finally:
         reason = result.reason if result is not None else "cancelled_or_interrupted"
         counts = usage.snapshot()
-        store.record_event("target_selection", task=task, action=action_id,
-            details={"decision_id": request.decision_id, "channel": channel,
+        details = {"decision_id": request.decision_id, "channel": channel,
                 "observation_id": request.observation_id, "version": request.version,
                 "task_stage": request.task_stage,
                 "complete": request.complete, "candidate_count": len(request.candidates),
@@ -215,4 +290,10 @@ async def select_target(store, task, request, *, client_factory, permitted, fres
                 "assessments": dict(result.assessments) if result and result.assessments else None,
                 "local_baseline": request.fallback_id,
                 "different_from_local": result.target_id != request.fallback_id if result else None,
-                "candidates": request.payload, **counts})
+                "candidates": request.payload, **counts}
+        usage.observe("target_selection", details)
+        context = current_context()
+        # A trusted operation may select before its action is enqueued. Its
+        # context is correlation only; it grants no dispatch permission.
+        correlated = action_id if action_id is not None else context.get("action") if context.get("task") == task else None
+        _public_tool_event(store, "target_selection", task=task, action=correlated, details=details)

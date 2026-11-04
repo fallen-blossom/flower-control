@@ -3,6 +3,16 @@ from flower_control.control.errors import explain_error as _shared_explanation
 
 
 _LOCAL = {
+    "tree_cursor_unavailable": ("stale_observation", "当前树游标或局部观察已失效，本次没有派发输入。",
+        "先核当前已选窗口和授权，再重新执行 uia 观察并使用新返回的 ref/next_cursor；无 next_cursor 表示无续页。不要拼接新旧版本或重放旧动作。"),
+    "tree_cursor_changed": ("stale_observation", "树路径、根身份或原生游标时间已发生变化，本次没有派发输入。",
+        "重新观察当前已选窗口；需要局部继续时使用新 observation_id/root_ref，不复用旧页或自动恢复暂停。"),
+    "invalid_property_request": ("invalid_request", "单控件属性读取参数无效。", "使用 properties 模式、当前 observation_id/ref 与 properties:['help_text']。"),
+    "property_observation_unavailable": ("stale_observation", "属性读取的控件引用、目标或授权范围已失效。", "核当前已选窗口后重新观察，使用新 ref 读取；不重复业务输入。"),
+    "property_privacy_unavailable": ("privacy_boundary", "控件是密码内容，或无法确认其密码保护状态，未返回内容。", "选择明确非密码的控件，不换通道绕过保护。"),
+    "uia_privacy_unavailable": ("privacy_boundary", "无法可靠读取必要的隐私保护属性，操作已阻止。", "重新观察明确非密码控件；不要默认保护属性为 false。"),
+    "property_return_not_authorized": ("authorization_context", "属性返回前目标、授权、共享版本或保护状态发生变化，内容已压掉。", "按已有合法恢复方式确认窗口和权限，再新观察；不自动 resume。"),
+    "invalid_property_response": ("protocol_failure", "控件属性响应不符合固定读取契约，未返回内容。", "检查匹配版本的本地 worker；不重复输入。"),
     "app_foreground_indicator_unavailable": ("runtime_unavailable", "本次 App 操作的停止提示无法启动，尚未调用目标控件。",
         "检查窗口是否仍有效及本地停止提示状态，再重新观察；本次没有派发目标操作。"),
     "invalid_item_observation": ("invalid_request", "局部项目观察参数无效。",

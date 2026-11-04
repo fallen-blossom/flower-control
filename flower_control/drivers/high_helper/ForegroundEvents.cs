@@ -4,21 +4,33 @@ namespace Flower.HighHelper;
 
 // Event history belongs only to one activated short phase. Returning to the
 // target or restoring it cannot erase an earlier foreground/minimize event.
-internal sealed class ForegroundEventLatch(long target, Func<long, bool> allowed)
+internal sealed class ForegroundEventLatch(long target, Func<long, bool> allowed,
+    Func<bool>? expectedDestroyed = null, Func<long, string>? rejectedForeground = null)
 {
     private string? reason;
     internal string? Reason => Volatile.Read(ref reason);
-    internal void Fault(string code) => Interlocked.CompareExchange(ref reason, code, null);
+    internal void Fault(string code)
+    {
+        // A popup discovered after an ordinary away event still invalidates
+        // the unsent suffix. Returning to the parent cannot erase it.
+        while (true)
+        {
+            string? previous = Reason;
+            if (previous is not null && !(code == "new_window_detected"
+                && previous is "foreground_changed" or "target_minimized")) return;
+            if (Interlocked.CompareExchange(ref reason, code, previous) == previous) return;
+        }
+    }
     internal void Observe(uint kind, long hwnd, int objectId, int childId)
     {
         if (kind == 3)
         {
-            if (!allowed(hwnd)) Fault("foreground_changed");
+            if (!allowed(hwnd)) Fault(rejectedForeground?.Invoke(hwnd) ?? "foreground_changed");
         }
         else if (hwnd == target && objectId == 0 && childId == 0)
         {
             if (kind == 0x16) Fault("target_minimized");
-            else if (kind == 0x8001) Fault("target_identity_changed");
+            else if (kind == 0x8001 && expectedDestroyed?.Invoke() != true) Fault("target_identity_changed");
         }
     }
     internal void Check()
@@ -49,12 +61,26 @@ internal sealed class ForegroundEvents : IDisposable
     private uint threadId;
     private int closing;
     private bool released;
-    internal ForegroundEvents(Bound bound, Func<bool>? allowPopup = null)
+    private int activationPhase;
+    private readonly object disposeGate = new();
+    private bool disposed;
+    internal ForegroundEvents(Bound bound, Func<bool>? allowPopup = null,
+        Func<long, bool>? allowedForeground = null, Func<bool>? expectedDestroyed = null, bool activationPhase = false)
     {
-        latch = new ForegroundEventLatch(bound.Hwnd, hwnd => Native.TargetOrOwnedPopup(bound, hwnd, allowPopup?.Invoke() == true));
+        this.activationPhase = activationPhase ? 1 : 0;
+        var ordinary = allowedForeground ?? (hwnd => Native.TargetOrOwnedPopup(bound, hwnd, allowPopup?.Invoke() == true));
+        latch = new ForegroundEventLatch(bound.Hwnd,
+            hwnd => Volatile.Read(ref this.activationPhase) != 0
+                ? Native.IsWindow(new IntPtr(hwnd)) && Native.ForegroundChangeReason(bound, hwnd) != "new_window_detected"
+                : ordinary(hwnd),
+            expectedDestroyed, hwnd => !Native.IsWindow(new IntPtr(hwnd)) ? "foreground_watch_failed" : Native.ForegroundChangeReason(bound, hwnd));
         callback = (_, kind, hwnd, objectId, childId, _, _) =>
         {
-            try { latch.Observe(kind, hwnd.ToInt64(), objectId, childId); }
+            try
+            {
+                if (kind == 0x16 && hwnd.ToInt64() == bound.Hwnd && Volatile.Read(ref this.activationPhase) != 0) return;
+                latch.Observe(kind, hwnd.ToInt64(), objectId, childId);
+            }
             catch { latch.Fault("foreground_watch_failed"); }
         };
         callbackRoot = GCHandle.Alloc(callback);
@@ -67,7 +93,7 @@ internal sealed class ForegroundEvents : IDisposable
             latch.Check();
             // Register first and then sample so no input starts during setup.
             latch.Observe(3, Native.GetForegroundWindow().ToInt64(), 0, 0);
-            if (Native.IsIconic(new IntPtr(bound.Hwnd))) latch.Fault("target_minimized");
+            if (!activationPhase && Native.IsIconic(new IntPtr(bound.Hwnd))) latch.Fault("target_minimized");
             latch.Check();
         }
         catch { Dispose(); throw; }
@@ -122,19 +148,47 @@ internal sealed class ForegroundEvents : IDisposable
     internal void Check()
     {
         latch.Check();
+        Fence();
+        latch.Check();
+    }
+    private void Fence()
+    {
         // An out-of-context hook delivers on this pump. A checkpoint makes
         // already queued event callbacks observable before another dispatch,
         // including a foreground-away/back pair between ordinary samples.
         if (Volatile.Read(ref closing) != 0 || !PostThreadMessageW(threadId, 0x8000, UIntPtr.Zero, IntPtr.Zero)
             || !checkpoint.WaitOne(500)) throw new Boundary("foreground_watch_failed");
-        latch.Check();
+    }
+    internal void CheckRecovery()
+    {
+        // Drain the event queue before disposing it for one permitted focus
+        // recovery. Only ordinary switches/minimizes can be consumed here.
+        Fence();
+        try { latch.Check(); }
+        catch (Boundary error) when (error.Code is "foreground_changed" or "target_minimized") { }
+        if (latch.Reason == "new_window_detected") throw new Boundary("new_window_detected");
+    }
+    internal void EndActivation(Bound bound)
+    {
+        // Keep the same hook and popup history across activation/retry. Drain
+        // activation events before switching to the strict business predicate.
+        Check();
+        Volatile.Write(ref activationPhase, 0);
+        latch.Observe(3, Native.GetForegroundWindow().ToInt64(), 0, 0);
+        if (Native.IsIconic(new IntPtr(bound.Hwnd))) latch.Fault("target_minimized");
+        Check();
     }
     public void Dispose()
     {
+        lock (disposeGate)
+        {
+        if (disposed) return;
         if (Interlocked.Exchange(ref closing, 1) == 0 && Volatile.Read(ref threadId) != 0)
             PostThreadMessageW(threadId, 0x12, UIntPtr.Zero, IntPtr.Zero);
         if (!pump.Join(500) || !released) throw new Boundary("foreground_watch_release_unconfirmed");
         ready.Dispose();
         checkpoint.Dispose();
+        disposed = true;
+        }
     }
 }

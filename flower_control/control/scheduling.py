@@ -14,6 +14,7 @@ from math import isfinite
 from typing import Iterable
 
 from .targets import target_description
+from .resource_names import FOREGROUND_INPUT_RESOURCE
 
 
 class Phase(str, Enum):
@@ -33,6 +34,7 @@ class SelectionReason(str, Enum):
     BOUNDED_CONTINUATION = "bounded_continuation"
     SHORT_FINISH = "short_finish"
     FIFO = "fifo"
+    FOREGROUND_TURN = "foreground_turn"
 
 
 @dataclass(frozen=True)
@@ -55,8 +57,15 @@ class Candidate:
     channel: str | None = None
     foreground_needed: bool | None = None
     continuation_cost_ms: int | None = None
+    queued_sequence: int | None = None
+    last_resource_turn: float | None = None
 
     def __post_init__(self) -> None:
+        if self.queued_sequence is not None and (type(self.queued_sequence) is not int or self.queued_sequence < 0):
+            raise ValueError("invalid queue sequence")
+        if self.last_resource_turn is not None and (type(self.last_resource_turn) not in (int, float)
+                or not isfinite(self.last_resource_turn)):
+            raise ValueError("invalid foreground turn")
         for name, limit in (("task_hint", 160), ("operation", 96)):
             value = getattr(self, name)
             if value is not None:
@@ -182,7 +191,12 @@ def _wait_ms(item: Candidate, now: float) -> float:
 
 
 def _fifo(items: Iterable[Candidate]) -> Candidate:
-    return min(items, key=lambda item: (item.created_at, item.action_id))
+    return min(items, key=lambda item: (item.created_at,
+        item.queued_sequence if item.queued_sequence is not None else 0, item.action_id))
+
+
+def foreground_queue(items):
+    return any(FOREGROUND_INPUT_RESOURCE in item.resources for item in items)
 
 
 def choose_local(group: Iterable[Candidate], now: float, policy: Policy) -> Selection | None:
@@ -203,6 +217,18 @@ def choose_local(group: Iterable[Candidate], now: float, policy: Policy) -> Sele
         if len(pool) == 1:
             return Selection(pool[0].action_id, SelectionReason.USER_ORDER)
         items = tuple(pool)
+
+    if foreground_queue(items):
+        # Select the oldest request of each waiting task, then the task whose
+        # last actual dispatch in this conflict domain is oldest. A prequeued backlog
+        # cannot consume every turn. This is deterministic, without an API.
+        heads = [_fifo(item for item in items if item.task_id == task)
+                 for task in {item.task_id for item in items}]
+        winner = min(heads, key=lambda item: (
+            item.last_resource_turn is not None,
+            item.last_resource_turn if item.last_resource_turn is not None else 0,
+            item.created_at, item.queued_sequence if item.queued_sequence is not None else 0, item.action_id))
+        return Selection(winner.action_id, SelectionReason.FOREGROUND_TURN)
 
     starved = [item for item in items if _wait_ms(item, now) >= policy.starvation_ms]
     if starved:
@@ -294,6 +320,8 @@ def build_jev_request(
     items = _validated(group, now)
     if len(items) < 2 or len(conflict_groups(items)) != 1:
         return None
+    if foreground_queue(items):
+        return None  # Foreground turn order is local policy, never model ranking.
     if not isinstance(nonce, bytes) or len(nonce) < 16:
         raise ValueError("nonce must contain at least 16 random bytes")
     if any(not item.ready or not item.jev_allowed for item in items):

@@ -1,6 +1,7 @@
 # Only public source categories may enter this repository.
 /*
 !/.gitignore
+!/VERSION
 !/*.md
 !/LICENSE
 !/pyproject.toml
@@ -9,13 +10,17 @@
 !/dependency-inventory.json
 !/source-manifest.json
 !/.github/
+!/.codex-plugin/
 !/docs/
 !/flower_control/
 !/hooks/
+!/integrations/
+!/skills/
 !/tools/
 !/tests/
 !/assets/
 !/licenses/
+!/LICENSE-MIT.draft
 
 .venv/
 __pycache__/

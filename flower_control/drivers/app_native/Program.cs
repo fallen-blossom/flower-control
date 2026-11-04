@@ -12,15 +12,58 @@ using System.Text.Json;
 // lock and kill-on-close Job. Do not log request bodies or provider exceptions.
 Console.InputEncoding = new UTF8Encoding(false, true);
 Console.OutputEncoding = new UTF8Encoding(false);
+if (args.Length == 1 && args[0] == "--privacy-session")
+{
+    // The single-threaded action-local process owns one UIA connection. Each
+    // request still validates identity and obtains fresh root/focus metadata.
+    if (!Native.SetProcessDpiAwarenessContext(new nint(-4))) return 2;
+    UIA3Automation? privacyAutomation = null;
+    try
+    {
+        var started = Stopwatch.StartNew();
+        for (int count = 0; count < 128 && started.Elapsed < TimeSpan.FromSeconds(15); count++)
+        {
+            var privacyLine = Console.ReadLine();
+            if (privacyLine is null) return 0;
+            if (privacyLine.Length > 4096) return 2;
+            try
+            {
+                using var privacyDocument = JsonDocument.Parse(privacyLine);
+                privacyAutomation ??= PasswordPixels.CreateAutomation();
+                Emit(PasswordPixels.Scan(privacyDocument.RootElement, privacyAutomation));
+            }
+            catch (Exception error) { Emit(PasswordPixels.Failure(error)); return 2; }
+        }
+        // Preserve the exact peer until EOF after quota; reject extra input.
+        return Console.In.Read() == -1 ? 0 : 2;
+    }
+    finally { privacyAutomation?.Dispose(); }
+
+}
 AppCheckpoint.Start();
 var line = Console.ReadLine();
-if (line is null || line.Length > 32768)
+// Larger synthetic tree fixture only; real worker requests retain the original cap.
+int inputCap = args.Length == 1 && args[0] == "--observation-budget-only" ? 512_000 : 32768;
+if (line is null || line.Length > inputCap)
     return 2;
 var execution = new ExecutionState();
 try
 {
     using var document = JsonDocument.Parse(line);
     var request = document.RootElement;
+    if (args.Length == 1 && args[0] == "--privacy-compatibility-only")
+    {
+        Emit(new { assertions = PasswordPixels.CompatibilityTests(), nativeInputExecuted = false,
+            productionPolicyReadOrWritten = false });
+        return 0;
+    }
+    if (args.Length == 1 && args[0] == "--privacy-only")
+    {
+        // Internal screenshot companion. It never reads Name/Value/Text.
+        if (!Native.SetProcessDpiAwarenessContext(new nint(-4))) throw new ArgumentException();
+        try { Emit(PasswordPixels.Scan(request)); return 0; }
+        catch (Exception error) { Emit(PasswordPixels.Failure(error)); return 2; }
+    }
     var command = RequiredString(request, "command");
     var arguments = Required(request, "arguments");
     Validate(command, arguments);
@@ -50,6 +93,54 @@ try
         }
         Emit(new { state = "observed", target_read = false, dispatched = false, ids,
             tree_next = pages.Count > 0 ? pages.Cursor(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) : null });
+        return 0;
+    }
+    if (args.Length == 1 && args[0] == "--observation-budget-only" && command == "observe")
+    {
+        // OWN synthetic provider Oracle: shared budget and tree traversal, no UIA/window.
+        var limits = arguments.GetProperty("limits");
+        var nodes = request.GetProperty("fixture_tree").EnumerateArray().ToArray();
+        var byId = nodes.ToDictionary(n => n.GetProperty("id").GetInt32().ToString());
+        var children = nodes.ToDictionary(n => n.GetProperty("id").GetInt32().ToString(),
+            n => n.GetProperty("children").EnumerateArray().Select(x => x.GetInt32().ToString()).ToArray());
+        var siblings = new Dictionary<string, string>();
+        foreach (var list in children.Values) for (int i=0;i+1<list.Length;i++) siblings[list[i]]=list[i+1];
+        int Number(string key, int fallback) => limits.TryGetProperty(key,out var n) ? n.GetInt32() : fallback;
+        var budget = new ObservationBudget(Number("max_ms",1800),Number("max_provider_calls",5000));
+        var pages = new BoundedTreePages<string>(nodes[0].GetProperty("id").GetInt32().ToString(),
+            arguments.TryGetProperty("tree",out var cursor) ? cursor : null,
+            id=>new[]{int.Parse(id)}, id=>children[id].FirstOrDefault(),
+            id=>siblings.TryGetValue(id,out var next)?next:null, budget.RequireRemaining);
+        JsonElement? filter = limits.TryGetProperty("filter",out var f)?f:null;
+        var entries = new List<JsonElement>(); int bytes=0,visited=0,committed=0; string? trigger=null; bool truncated=false;
+        while(pages.Count>0)
+        {
+            if(budget.Expired){trigger=budget.Trigger;break;}
+            if(pages.Count>256){trigger="tree_cursor_capacity";break;}
+            if(visited>=Number("max_nodes",96)){trigger="max_nodes";break;}
+            try
+            {
+                var node=pages.Peek(); var value=byId[node.Element];
+                string Read(string key)=>budget.Read(()=>value.TryGetProperty(key,out var v)?v.GetString()??"":"","");
+                string auto=Read("automation_id"),type=Read("control_type"),name=Read("name");
+                if(value.TryGetProperty("delay_ms",out var delay)) Thread.Sleep(delay.GetInt32());
+                if(budget.Expired){trigger=budget.Trigger;break;}
+                visited++;
+                if(MatchesObservationFilter(filter,auto,type,name))
+                {
+                    int size=JsonSerializer.SerializeToUtf8Bytes(value).Length+1;
+                    if(bytes+size>Number("max_bytes",80000)){trigger="max_bytes";break;}
+                    truncated|=pages.Commit(node.Element,Number("max_depth",6)); committed++;
+                    entries.Add(value);bytes+=size;
+                }
+                else { truncated|=pages.Commit(node.Element,Number("max_depth",6)); committed++; }
+            }
+            catch(ObservationBudgetExceeded){trigger=budget.Trigger;break;}
+        }
+        Emit(new {state="observed",target_read=false,dispatched=false,entries,provider_calls=budget.Calls,
+            visited_nodes=visited,retained_bytes=bytes,budget_trigger=trigger,truncated=truncated||pages.Count>0,
+            tree_next=committed>0 && pages.Count is >0 and <=256?pages.Cursor(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()):null,
+            new_observation_required=pages.Count>256 || pages.Count>0 && committed==0});
         return 0;
     }
     if (args.Length == 1 && args[0] == "--text-page-only" && command == "read_text")
@@ -83,8 +174,22 @@ try
 }
 catch (Exception error)
 {
+    if (error is BackgroundFocusChangedBeforeWrite)
+    {
+        Emit(execution.WithTimings(new { state = "rejected", dispatched = false,
+            reason = "background_focus_changed", stage = execution.Stage }));
+        return 0;
+    }
     // Never include provider messages or request content in the receipt.
     // Mark only entry into a mutating provider call as a possible side effect.
+    if (error is ObservationBudgetExceeded budget)
+    {
+        Emit(new { state = "not_verified", dispatched = false, reason = "observation_budget_exhausted",
+            budget_trigger = budget.Trigger, provider_calls = budget.Calls,
+            new_observation_required = true,
+            recovery_hint = "observe_with_larger_budget_or_narrower_scope" });
+        return 0;
+    }
     if (error is ProviderIdentityUnavailable)
     {
         var cause = error.InnerException ?? error;
@@ -94,16 +199,25 @@ catch (Exception error)
             unsupported_property = "RuntimeId", recovery_hint = "use_computer_channel" }));
         return 0;
     }
+    var actualError = error is ProviderPropertyFailure ? error.InnerException ?? error : error;
     var reason = error is TreeCursorChanged ? "tree_cursor_changed"
-        : error.HResult == unchecked((int)0x80070005) ? "uia_access_denied"
-        : error.HResult == unchecked((int)0x80040201) ? "uia_element_unavailable"
-        : error is TimeoutException ? "uia_timeout"
+        : error is ProviderPropertyFailure { Property: "IsPassword" } ? "uia_privacy_unavailable"
+        : actualError.HResult == unchecked((int)0x80070005) ? "uia_access_denied"
+        : actualError.HResult == unchecked((int)0x80040201) ? "uia_element_unavailable"
+        : actualError is TimeoutException ? "uia_timeout"
         : execution.Stage + "_failed";
     Emit(execution.WithTimings(new { state = execution.WriteStarted ? "outcome_uncertain" : "rejected",
         dispatched = execution.WriteStarted, reason, stage = execution.Stage,
-        exception_type = error.GetType().Name, hresult = error.HResult }));
+        exception_type = actualError.GetType().Name, hresult = actualError.HResult,
+        failure_property = (error as ProviderPropertyFailure)?.Property,
+        failure_pattern = execution.Pattern,
+        cursor_cause = (error as TreeCursorChanged)?.Cause }));
     return 0;
 }
+
+static bool MatchesObservationFilter(JsonElement? filter, string automationId, string controlType, string? name) =>
+    filter is null || filter.Value.EnumerateObject().All(field => field.Value.GetString() ==
+        (field.Name == "automation_id" ? automationId : field.Name == "control_type" ? controlType : name));
 
 static void Execute(string command, JsonElement arguments, ExecutionState execution)
 {
@@ -131,6 +245,14 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         Emit(new { state = "rejected", reason = "process_instance_changed", dispatched = false });
         return;
     }
+    using var backgroundFocus = arguments.TryGetProperty("execution_mode", out _) ? new BackgroundFocusEvents(hwnd) : null;
+    if (backgroundFocus is not null)
+    {
+        execution.Background = true;
+        var initialForeground = Native.GetForegroundWindow();
+        execution.BackgroundFocusMatches = () => backgroundFocus.Unchanged &&
+            (Native.GetForegroundWindow() == initialForeground || !Native.IsForegroundRoot(hwnd));
+    }
     execution.Stage = "uia_initialization";
     var automation = AppCheckpoint.Measure(AppCheckpointStage.uia_initialize_enter,
         AppCheckpointStage.uia_initialize_exit, () => execution.Time("native_uia_initialize", () => new UIA3Automation
@@ -143,12 +265,12 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
     AppCheckpoint.Record(AppCheckpointStage.root_bind_enter);
     var root = automation.FromHandle(hwnd);
     var walker = automation.TreeWalkerFactory.GetControlViewWalker();
-    if (root.Properties.ProcessId.Value != pid)
+    if (ProviderReads.Required("ProcessId", () => root.Properties.ProcessId.Value) != pid)
     {
         Emit(new { state = "rejected", reason = "uia_root_mismatch", dispatched = false });
         return;
     }
-    var rootId = root.Properties.RuntimeId.Value ?? Array.Empty<int>();
+    var rootId = TreePages.ReadRuntimeId(() => root.Properties.RuntimeId.Value);
     var expectedRoot = IntArray(Required(target, "root_runtime_id"));
     if (expectedRoot.Length > 0 && !rootId.SequenceEqual(expectedRoot))
     {
@@ -176,11 +298,58 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         if (currentRoot is null) localScopeChanged = true;
         return currentRoot is null ? null : FindExact(walker, currentRoot, id, automationId);
     }
-    AutomationElement? RebindCurrent(int[] id, string automationId)
+    AutomationElement? RebindCurrent(int[] id, string automationId, bool allowDisabled = false)
     {
         var current = FindCurrent(id, automationId);
-        return current is not null && ReadOr(() => current.IsEnabled, false)
-            && !ReadOr(() => current.Properties.IsPassword.Value, true) ? current : null;
+        return current is not null && (allowDisabled || ProviderReads.Required("IsEnabled", () => current.IsEnabled))
+            && !PasswordProperty.Read(current) ? current : null;
+    }
+    if (command == "observe" && arguments.TryGetProperty("diagnostic", out var diagnostic))
+    {
+        execution.Stage = "uia_property_preflight";
+        var diagnosticBudget = new ObservationBudget(1800);
+        var diagnosticObservation = diagnostic.GetProperty("observation");
+        long diagnosticAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - diagnosticObservation.GetProperty("observed_at_ms").GetInt64();
+        if (diagnosticAge is < 0 or > 15_000 || !rootId.SequenceEqual(IntArray(diagnosticObservation.GetProperty("root_runtime_id"))))
+        {
+            Emit(new { state = "rejected", dispatched = false, reason = "observation_stale" });
+            return;
+        }
+        var diagnosticReference = diagnostic.GetProperty("reference");
+        var diagnosticReferenceId = IntArray(diagnosticReference.GetProperty("runtime_id"));
+        string diagnosticAutomationId = RequiredString(diagnosticReference, "automation_id");
+        var diagnosticControl = execution.Time("native_control_lookup", () => FindCurrent(diagnosticReferenceId, diagnosticAutomationId));
+        if (diagnosticControl is null)
+        {
+            Emit(new { state = "rejected", dispatched = false, reason = "control_unavailable" });
+            return;
+        }
+        if (PasswordProperty.Read(diagnosticControl))
+        {
+            Emit(new { state = "rejected", dispatched = false, reason = "property_privacy_unavailable",
+                properties = new { help_text = new { state = "redacted" } } });
+            return;
+        }
+        execution.Stage = "uia_property_read";
+        var diagnosticProperty = PropertyDiagnostics.ReadHelpText(() => {
+            bool supported = diagnosticControl.Properties.HelpText.TryGetValue(out var value);
+            return (supported, value);
+        }, diagnosticBudget.Expired);
+        execution.Stage = "uia_property_return";
+        var diagnosticCurrent = FindCurrent(diagnosticReferenceId, diagnosticAutomationId);
+        long diagnosticReturnAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - diagnosticObservation.GetProperty("observed_at_ms").GetInt64();
+        if (diagnosticReturnAge is < 0 or > 15_000 || diagnosticCurrent is null || PasswordProperty.Read(diagnosticCurrent)
+            || !Native.IsWindow(hwnd) || Native.GetWindowThreadProcessId(hwnd, out actualPid) == 0 || actualPid != pid
+            || process.StartTime.ToUniversalTime().ToFileTimeUtc() != startTime
+            || !TreePages.ReadRuntimeId(() => root.Properties.RuntimeId.Value).SequenceEqual(rootId))
+        {
+            Emit(new { state = "rejected", dispatched = false, reason = "property_return_not_authorized", content_suppressed = true });
+            return;
+        }
+        Emit(new { state = "observed", dispatched = false, pid, hwnd = (long)hwnd,
+            process_start_filetime = startTime, root_runtime_id = rootId, reference_runtime_id = diagnosticReferenceId,
+            properties = new Dictionary<string, object?> { ["help_text"] = diagnosticProperty } });
+        return;
     }
     if (command == "observe")
     {
@@ -195,40 +364,92 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         // process (for example, ApplicationFrameHost hosting Calculator).
         // Keep the exact window root as the traversal boundary.
         JsonElement? tree = arguments.TryGetProperty("tree", out var treeCursor) ? treeCursor : null;
-        if (tree is not null && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            - tree.Value.GetProperty("observed_at_ms").GetInt64() is < 0 or > 15_000)
-            throw new TreeCursorChanged();
-        var queue = new TreePages(walker, lookupRoot, tree);
+        if (tree is not null)
+        {
+            long cursorAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - tree.Value.GetProperty("observed_at_ms").GetInt64();
+            if (cursorAge < 0) throw new TreeCursorChanged("clock_invalid");
+            if (cursorAge > 15_000) throw new TreeCursorChanged("cursor_expired");
+        }
         bool truncated = false;
         // Return useful partial refs before the parent's hard worker timeout.
         // COM calls remain subject to the existing provider timeout; this
         // budget bounds traversal between calls, not an in-flight COM call.
-        var observationBudget = new ObservationBudget(1800);
+        int maxBytes = limits.TryGetProperty("max_bytes", out var bytesLimit) ? bytesLimit.GetInt32() : 80_000;
+        int maxMs = limits.TryGetProperty("max_ms", out var msLimit) ? msLimit.GetInt32() : 1800;
+        int maxCalls = limits.TryGetProperty("max_provider_calls", out var callsLimit) ? callsLimit.GetInt32() : 5000;
+        JsonElement? filter = limits.TryGetProperty("filter", out var filterValue) ? filterValue : null;
+        int visited = 0, committedNodes = 0;
+        string? budgetTrigger = null;
+        var observationBudget = new ObservationBudget(maxMs, maxCalls);
+        var queue = new TreePages(walker, lookupRoot, tree, observationBudget.RequireRemaining);
         bool truncatedByTime = false;
         while (queue.Count > 0)
         {
             if (observationBudget.Expired)
             {
-                truncated = truncatedByTime = true;
+                truncated = true;
+                truncatedByTime = observationBudget.Trigger == "max_ms";
                 break;
             }
-            if (entries.Count >= maxNodes)
+            if (queue.Count > 256)
             {
                 truncated = true;
+                budgetTrigger = "tree_cursor_capacity";
                 break;
             }
-            var (element, depth, treePath) = queue.Peek();
-            bool password = ReadOr(() => element.Properties.IsPassword.Value, true);
-            bool hasValue = ReadOr(() => element.Patterns.Value.TryGetPattern(out _), false);
-            bool hasText = ReadOr(() => element.Patterns.Text.TryGetPattern(out _), false);
-            bool hasInvoke = ReadOr(() => element.Patterns.Invoke.TryGetPattern(out _), false);
+            if (visited >= maxNodes)
+            {
+                truncated = true;
+                budgetTrigger = "max_nodes";
+                break;
+            }
+            (AutomationElement element, int depth, int[][] treePath) node;
+            try { node = queue.Peek(); }
+            catch (ObservationBudgetExceeded) { truncated = true; truncatedByTime = observationBudget.Trigger == "max_ms"; break; }
+            var (element, depth, treePath) = node;
+            observationBudget.PropertyErrors.Clear();
+            bool password = observationBudget.Read(() => PasswordProperty.Read(element), true);
+            var runtimeId = observationBudget.Read(() => element.Properties.RuntimeId.Value, Array.Empty<int>());
+            if (runtimeId.Length == 0) { truncated = true; break; }
+            var rawAutomationId = observationBudget.Read(() => element.AutomationId, (string?)null);
+            var observedAutomationId = BoundRunes(rawAutomationId ?? "", 256).Text;
+            var controlType = observationBudget.Read(() => element.ControlType.ToString(), "Unknown");
+            var screenBounds = observationBudget.Read(() => ReadScreenBounds(element), null);
+            var enabled = observationBudget.Read(() => ProviderReads.Required("IsEnabled", () => element.IsEnabled), (bool?)null);
+            var focusable = observationBudget.Read(() => ProviderReads.Required("IsKeyboardFocusable", () => element.Properties.IsKeyboardFocusable.Value), (bool?)null);
+            var focused = observationBudget.Read(() => ProviderReads.Required("HasKeyboardFocus", () => element.Properties.HasKeyboardFocus.Value), (bool?)null);
+            var offscreen = observationBudget.Read(() => ProviderReads.Required("IsOffscreen", () => element.IsOffscreen), (bool?)null);
+            string? name = null;
+            string? filterName = null;
+            bool nameTruncated = false;
+            bool nameReadError = false;
+            if (contentAllowed && !password && !observationBudget.Expired)
+            {
+                try
+                {
+                    var rawName = observationBudget.Read(() => ProviderReads.Required("Name", () => element.Name), (string?)null);
+                    filterName = rawName;
+                    if (rawName is null) nameReadError = true;
+                    else
+                    {
+                        var boundedName = BoundRunes(rawName, 128);
+                        name = boundedName.Text;
+                        nameTruncated = boundedName.Truncated;
+                    }
+                }
+                catch (Exception) { nameReadError = true; }
+            }
+            // Retain identity, label and bounds before optional pattern scans.
+            bool hasValue = observationBudget.Read(() => element.Patterns.Value.TryGetPattern(out _), false);
+            bool hasText = observationBudget.Read(() => element.Patterns.Text.TryGetPattern(out _), false);
+            bool hasInvoke = observationBudget.Read(() => element.Patterns.Invoke.TryGetPattern(out _), false);
             bool hasToggle = false;
             bool hasSelectionItem = false;
             bool hasExpandCollapse = false;
             bool hasScroll = false;
-            bool hasVirtualizedItem = ReadOr(
+            bool hasVirtualizedItem = observationBudget.Read(
                 () => element.Patterns.VirtualizedItem.TryGetPattern(out _), false);
-            bool hasItemContainer = ReadOr(
+            bool hasItemContainer = observationBudget.Read(
                 () => element.Patterns.ItemContainer.TryGetPattern(out _), false);
             string? toggleState = null;
             bool? selected = null;
@@ -241,62 +462,67 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
             bool scrollReadError = false;
             try
             {
-                hasToggle = element.Patterns.Toggle.TryGetPattern(out var togglePattern);
+                var togglePattern = observationBudget.Read(() =>
+                    element.Patterns.Toggle.TryGetPattern(out var pattern) ? pattern : null, null);
+                hasToggle = togglePattern is not null;
                 if (contentAllowed && !password && hasToggle && togglePattern is not null)
-                    toggleState = togglePattern.ToggleState.Value.ToString();
+                    toggleState = observationBudget.Read(() => ProviderReads.Required("ToggleState", () => togglePattern.ToggleState.Value).ToString(), null);
             }
             catch (Exception) { hasToggle = false; }
             try
             {
-                hasSelectionItem = element.Patterns.SelectionItem.TryGetPattern(out var selectionPattern);
+                var selectionPattern = observationBudget.Read(() =>
+                    element.Patterns.SelectionItem.TryGetPattern(out var pattern) ? pattern : null, null);
+                hasSelectionItem = selectionPattern is not null;
                 if (contentAllowed && !password && hasSelectionItem && selectionPattern is not null)
-                    selected = selectionPattern.IsSelected.Value;
+                    selected = observationBudget.Read(() => ProviderReads.Required("IsSelected", () => selectionPattern.IsSelected.Value), (bool?)null);
             }
             catch (Exception) { hasSelectionItem = false; }
             try
             {
-                hasExpandCollapse = element.Patterns.ExpandCollapse.TryGetPattern(out var expandPattern);
+                var expandPattern = observationBudget.Read(() =>
+                    element.Patterns.ExpandCollapse.TryGetPattern(out var pattern) ? pattern : null, null);
+                hasExpandCollapse = expandPattern is not null;
                 if (contentAllowed && !password && hasExpandCollapse && expandPattern is not null)
-                    expandCollapseState = expandPattern.ExpandCollapseState.Value.ToString();
+                    expandCollapseState = observationBudget.Read(() => ProviderReads.Required("ExpandCollapseState", () => expandPattern.ExpandCollapseState.Value).ToString(), null);
             }
             catch (Exception) { hasExpandCollapse = false; expandCollapseReadError = true; }
             try
             {
-                hasScroll = element.Patterns.Scroll.TryGetPattern(out var scrollPattern);
+                var scrollPattern = observationBudget.Read(() =>
+                    element.Patterns.Scroll.TryGetPattern(out var pattern) ? pattern : null, null);
+                hasScroll = scrollPattern is not null;
                 if (contentAllowed && !password && hasScroll && scrollPattern is not null)
                 {
-                    horizontallyScrollable = scrollPattern.HorizontallyScrollable.Value;
-                    verticallyScrollable = scrollPattern.VerticallyScrollable.Value;
-                    horizontalScrollPercent = scrollPattern.HorizontalScrollPercent.Value;
-                    verticalScrollPercent = scrollPattern.VerticalScrollPercent.Value;
+                    horizontallyScrollable = observationBudget.Read(() => ProviderReads.Required("HorizontallyScrollable", () => scrollPattern.HorizontallyScrollable.Value), (bool?)null);
+                    verticallyScrollable = observationBudget.Read(() => ProviderReads.Required("VerticallyScrollable", () => scrollPattern.VerticallyScrollable.Value), (bool?)null);
+                    horizontalScrollPercent = observationBudget.Read(() => ProviderReads.Required("HorizontalScrollPercent", () => scrollPattern.HorizontalScrollPercent.Value), (double?)null);
+                    verticalScrollPercent = observationBudget.Read(() => ProviderReads.Required("VerticalScrollPercent", () => scrollPattern.VerticalScrollPercent.Value), (double?)null);
                 }
             }
             catch (Exception) { hasScroll = false; scrollReadError = true; }
-            string? name = null;
-            bool nameTruncated = false;
-            bool nameReadError = false;
-            if (contentAllowed && !password)
-            {
-                try
-                {
-                    var boundedName = BoundRunes(element.Name, 128);
-                    name = boundedName.Text;
-                    nameTruncated = boundedName.Truncated;
-                }
-                catch (Exception) { nameReadError = true; }
-            }
             string? value = null;
+            string? valueSha256 = null;
             bool valueTruncated = false;
             bool valueReadError = false;
             if (contentAllowed && !password && hasValue)
             {
                 try
                 {
-                    if (element.Patterns.Value.TryGetPattern(out var valuePattern) && valuePattern is not null)
+                    var valuePattern = observationBudget.Read(() =>
+                        element.Patterns.Value.TryGetPattern(out var pattern) ? pattern : null, null);
+                    if (valuePattern is not null && !observationBudget.Expired)
                     {
-                        var boundedValue = BoundRunes(valuePattern.Value.Value, 256);
-                        value = boundedValue.Text;
-                        valueTruncated = boundedValue.Truncated;
+                        var rawValue = observationBudget.Read(() => ProviderReads.Required("Value", () => valuePattern.Value.Value), (string?)null);
+                        if (rawValue is null) valueReadError = true;
+                        else
+                        {
+                            var boundedValue = BoundRunes(rawValue, 256);
+                            if (rawValue.Length <= 1_048_576)
+                                valueSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawValue))).ToLowerInvariant();
+                            value = boundedValue.Text;
+                            valueTruncated = boundedValue.Truncated;
+                        }
                     }
                 }
                 catch (Exception)
@@ -306,16 +532,14 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
             }
             var entry = new {
                 depth, tree_path = treePath,
-                runtime_id = ReadOr(() => element.Properties.RuntimeId.Value, Array.Empty<int>()),
-                automation_id = ReadOr(() => BoundRunes(element.AutomationId, 256).Text, ""),
-                control_type = ReadOr(() => element.ControlType.ToString(), "Unknown"),
-                enabled = ReadOr(() => element.IsEnabled, false),
-                focusable = ReadOr(() => element.Properties.IsKeyboardFocusable.Value, false),
-                focused = ReadOr(() => element.Properties.HasKeyboardFocus.Value, false),
-                offscreen = ReadOr(() => element.IsOffscreen, true),
-                bounding_rect_screen = ReadScreenBounds(element),
-                clickable_point_screen = ReadClickablePoint(element),
-                password, value_supported = hasValue && !password,
+                runtime_id = runtimeId, automation_id = observedAutomationId, control_type = controlType,
+                enabled, focusable, focused, offscreen,
+                bounding_rect_screen = screenBounds,
+                clickable_point_screen = observationBudget.Read(() => ReadClickablePoint(element), null),
+                properties_incomplete = observationBudget.PropertiesIncomplete,
+                property_errors = observationBudget.PropertyErrors.ToArray(),
+                password_read_error = observationBudget.PropertyErrors.Contains("IsPassword"),
+                password, value_supported = hasValue && !password, value_sha256 = valueSha256,
                 text_supported = hasText && !password,
                 invoke_supported = hasInvoke, toggle_supported = hasToggle && !password,
                 toggle_state = toggleState,
@@ -335,15 +559,25 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
                 name_truncated = nameTruncated, name_read_error = nameReadError,
                 value_truncated = valueTruncated, value_read_error = valueReadError,
             };
+            bool matched = MatchesObservationFilter(filter, rawAutomationId ?? "", controlType, password ? null : filterName);
+            visited++;
+            if (!matched)
+            {
+                try { truncated |= queue.Commit(element, maxDepth); committedNodes++; }
+                catch (ObservationBudgetExceeded) { truncated = true; truncatedByTime = observationBudget.Trigger == "max_ms"; break; }
+                continue;
+            }
             int encodedBytes = JsonSerializer.SerializeToUtf8Bytes(entry).Length + 1;
-            if (entryBytes + encodedBytes > 80_000)
+            if (entryBytes + encodedBytes > maxBytes)
             {
                 truncated = true;
+                budgetTrigger = "max_bytes";
                 break;
             }
+            try { truncated |= queue.Commit(element, maxDepth); committedNodes++; }
+            catch (ObservationBudgetExceeded) { truncated = true; truncatedByTime = observationBudget.Trigger == "max_ms"; break; }
             entries.Add(entry);
             entryBytes += encodedBytes;
-            truncated |= queue.Commit(element, maxDepth);
         }
         if (arguments.TryGetProperty("local", out var checkedLocal))
         {
@@ -361,8 +595,13 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
             coordinate_space = "physical_screen_pixels",
             dpi_awareness = "per_monitor_v2",
             entries, truncated, truncated_by_time = truncatedByTime,
-            tree_next = queue.Count > 0 ? queue.Cursor(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) : null,
+            tree_next = committedNodes > 0 && queue.Count is > 0 and <= 256 ? queue.Cursor(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) : null,
+            new_observation_required = queue.Count > 256 || queue.Count > 0 && committedNodes == 0,
+            recovery_hint = queue.Count > 256 ? "observe_narrower_root_or_depth"
+                : queue.Count > 0 && committedNodes == 0 ? "observe_with_larger_budget_or_narrower_scope" : null,
             observation_budget_ms = observationBudget.Milliseconds,
+            provider_calls = observationBudget.Calls, visited_nodes = visited,
+            retained_bytes = entryBytes, budget_trigger = budgetTrigger ?? observationBudget.Trigger,
             window_enabled = Native.IsWindowEnabled(hwnd),
             dispatched = false });
         return;
@@ -396,22 +635,37 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         return;
     }
     var control = execution.Time("native_control_lookup", () => FindCurrent(referenceId, automationId));
-    if (control is null || command != "read_text" && !control.IsEnabled || control.Properties.IsPassword.Value)
+    bool transitionRequest = command == "invoke" && arguments.TryGetProperty("transition", out _);
+    if (control is null || command != "read_text" && !transitionRequest && !ProviderReads.Required("IsEnabled", () => control.IsEnabled) || PasswordProperty.Read(control))
     {
         Emit(new { state = "rejected", reason = localScopeChanged ? "local_item_scope_changed" : "control_unavailable", dispatched = false });
         return;
+    }
+    if (arguments.TryGetProperty("execution_mode", out var executionMode))
+    {
+        if (executionMode.GetString() != "must_background" || command is not
+            ("set_value" or "set_toggle" or "select_item" or "expand_collapse")) throw new ArgumentException();
+        var framework = ProviderReads.Required("FrameworkId", () => control.Properties.FrameworkId.Value) ?? "";
+        var className = ProviderReads.Required("ClassName", () => control.Properties.ClassName.Value) ?? "";
+        if (!BackgroundPatterns.Supports(command, framework, className))
+        {
+            Emit(new { state = "rejected", reason = "background_provider_unsupported", dispatched = false,
+                background_capable = false, foreground_requested = false });
+            return;
+        }
     }
     // Recheck exact identity and foreground immediately before the provider call.
     if (!Native.IsWindow(hwnd) || command != "read_text" && !Native.IsWindowEnabled(hwnd)
         || (command is "invoke" or "focus" or "guarded_input" && (Native.IsIconic(hwnd) || !Native.IsForegroundRoot(hwnd)))
         || Native.GetWindowThreadProcessId(hwnd, out actualPid) == 0 || actualPid != pid
-        || !root.Properties.RuntimeId.Value.SequenceEqual(rootId))
+        || !TreePages.ReadRuntimeId(() => root.Properties.RuntimeId.Value).SequenceEqual(rootId))
     {
         Emit(new { state = "rejected", reason = "target_changed_before_dispatch", dispatched = false });
         return;
     }
     if (command == "read_text")
     {
+        execution.Pattern = "Text";
         AppCheckpoint.Record(AppCheckpointStage.pattern_enter);
         bool hasTextPattern = control.Patterns.Text.TryGetPattern(out var textPattern);
         AppCheckpoint.Record(AppCheckpointStage.pattern_exit);
@@ -426,7 +680,8 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         var embedded = textPattern.DocumentRange.GetChildren();
         if (!EmbeddedTextPrivacyAllowed(embedded, out var unknownEmbedded))
         {
-            Emit(new { state = "rejected", dispatched = false, reason = "text_embedded_privacy_unavailable" });
+            Emit(new { state = "rejected", dispatched = false, reason = "text_embedded_privacy_unavailable",
+                embedded_password_unknown_count = unknownEmbedded });
             return;
         }
         var text = textPattern.DocumentRange.GetText(documentLimit + 1);
@@ -439,14 +694,14 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         }
         // Detect edits during provider reading, and rebind before content leaves.
         var current = FindCurrent(referenceId, automationId);
-        if (current is null || current.Properties.IsPassword.Value
+        if (current is null || PasswordProperty.Read(current)
             || !current.Patterns.Text.TryGetPattern(out var currentText) || currentText is null
             || !EmbeddedTextPrivacyAllowed(currentText.DocumentRange.GetChildren(), out unknownEmbedded)
             || currentText.DocumentRange.GetText(documentLimit + 1) != text
-            || !Native.IsWindow(hwnd) || !root.Properties.RuntimeId.Value.SequenceEqual(rootId))
+            || !Native.IsWindow(hwnd) || !TreePages.ReadRuntimeId(() => root.Properties.RuntimeId.Value).SequenceEqual(rootId))
         {
             Emit(new { state = "rejected", dispatched = false, reason = "text_changed_during_read",
-                requires_new_observation = true });
+                requires_new_observation = true, embedded_password_unknown_count = unknownEmbedded });
             return;
         }
         page["source"] = "TextPattern.DocumentRange";
@@ -461,9 +716,12 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         Emit(page);
         return;
     }
+    bool VisibleForInput(AutomationElement element) => ProviderReads.VisibleForInput(
+        () => element.Properties.IsOffscreen.Value, () => Native.IsWindow(hwnd) && Native.IsWindowVisible(hwnd),
+        () => ReadScreenBounds(element), () => ReadScreenBounds(root));
     if (command is "focus" or "guarded_input")
     {
-        if (!control.Properties.IsKeyboardFocusable.Value || control.IsOffscreen)
+        if (!ProviderReads.Required("IsKeyboardFocusable", () => control.Properties.IsKeyboardFocusable.Value) || !VisibleForInput(control))
         {
             Emit(new { state = "rejected", reason = "target_not_focusable", dispatched = false });
             return;
@@ -471,13 +729,13 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         if (!WaitForGo()) return;
         control = execution.Time("native_go_rebind", () => RebindCurrent(referenceId, automationId));
         if (!StillInteractive(hwnd, pid, root, rootId, true) || control is null
-            || !control.Properties.IsKeyboardFocusable.Value || control.IsOffscreen)
+            || !ProviderReads.Required("IsKeyboardFocusable", () => control.Properties.IsKeyboardFocusable.Value) || !VisibleForInput(control))
         {
             Emit(new { state = "rejected", reason = "control_changed_before_dispatch", dispatched = false });
             return;
         }
         bool dispatched = false;
-        if (!control.Properties.HasKeyboardFocus.Value)
+        if (!ProviderReads.Required("HasKeyboardFocus", () => control.Properties.HasKeyboardFocus.Value))
         {
             AppCheckpoint.Record(AppCheckpointStage.business_enter);
             execution.BeginWrite();
@@ -485,9 +743,10 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
             dispatched = true;
         }
         execution.Stage = "uia_readback";
-        var after = FindCurrent(referenceId, automationId);
+        var after = RebindCurrent(referenceId, automationId);
         bool matched = StillInteractive(hwnd, pid, root, rootId, true) && after is not null
-            && after.Properties.HasKeyboardFocus.Value;
+            && ProviderReads.Required("IsKeyboardFocusable", () => after.Properties.IsKeyboardFocusable.Value)
+            && VisibleForInput(after) && ProviderReads.Required("HasKeyboardFocus", () => after.Properties.HasKeyboardFocus.Value);
         if (command == "guarded_input" && matched)
         {
             // Only the High broker emits input. Keep this exact UIA root and
@@ -510,8 +769,8 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
                 }
                 var fresh = RebindCurrent(referenceId, automationId);
                 if (!StillInteractive(hwnd, pid, root, rootId, true) || fresh is null
-                    || fresh.IsOffscreen || !fresh.Properties.IsKeyboardFocusable.Value
-                    || !fresh.Properties.HasKeyboardFocus.Value)
+                    || !VisibleForInput(fresh) || !ProviderReads.Required("IsKeyboardFocusable", () => fresh.Properties.IsKeyboardFocusable.Value)
+                    || !ProviderReads.Required("HasKeyboardFocus", () => fresh.Properties.HasKeyboardFocus.Value))
                 {
                     Emit(new { state = "rejected", dispatched = execution.WriteStarted,
                         reason = "guarded_input_focus_changed" });
@@ -528,6 +787,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
     }
     if (command == "set_value")
     {
+        execution.Pattern = "Value";
         AppCheckpoint.Record(AppCheckpointStage.pattern_enter);
         bool hasValuePattern = control.Patterns.Value.TryGetPattern(out var pattern);
         AppCheckpoint.Record(AppCheckpointStage.pattern_exit);
@@ -552,20 +812,84 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
             return;
         }
         var foregroundBeforeProvider = Native.GetForegroundWindow();
+        bool backgroundValue = arguments.TryGetProperty("execution_mode", out _);
+        nint backgroundEdit = nint.Zero;
+        if (backgroundValue)
+        {
+            if (ProviderReads.Required("Value.IsReadOnly", () => pattern.IsReadOnly.Value))
+            {
+                Emit(new { state = "rejected", reason = "control_read_only", dispatched = false });
+                return;
+            }
+            backgroundEdit = (nint)ProviderReads.Required("NativeWindowHandle", () => control.Properties.NativeWindowHandle.Value);
+            BackgroundPatterns.RequireEdit(hwnd, backgroundEdit, pid);
+        }
+        nint richEdit = nint.Zero;
+        if (!backgroundValue)
+        {
+            // Some providers expose no HWND; retain their existing Value path.
+            nint candidate;
+            try { candidate = (nint)control.Properties.NativeWindowHandle.Value; }
+            catch (FlaUI.Core.Exceptions.PropertyNotSupportedException) { candidate = nint.Zero; }
+            if (BackgroundPatterns.IsNativeRichEdit(candidate))
+            {
+                if (value.Contains('\0'))
+                {
+                    Emit(new { state = "rejected", reason = "invalid_value", dispatched = false });
+                    return;
+                }
+                if (ProviderReads.Required("Value.IsReadOnly", () => pattern.IsReadOnly.Value))
+                {
+                    Emit(new { state = "rejected", reason = "control_read_only", dispatched = false });
+                    return;
+                }
+                if (!StillInteractive(hwnd, pid, root, rootId, true))
+                {
+                    Emit(new { state = "rejected", reason = "foreground_required", dispatched = false });
+                    return;
+                }
+                BackgroundPatterns.RequireRichEdit(hwnd, candidate, pid, ReadScreenBounds(control));
+                richEdit = candidate;
+            }
+        }
+        if (arguments.TryGetProperty("expected_value_hash", out var expectedValueHash))
+        {
+            string? currentValue = ProviderReads.Required("Value", () => pattern.Value.Value);
+            if (currentValue is null || currentValue.Length > 1_048_576 || Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(currentValue))).ToLowerInvariant() != expectedValueHash.GetString())
+            {
+                Emit(new { state = "rejected", reason = "target_content_changed", dispatched = false, requires_new_observation = true });
+                return;
+            }
+        }
         AppCheckpoint.Record(AppCheckpointStage.business_enter);
         execution.BeginWrite();
-        execution.Time("native_pattern_call", () => pattern.SetValue(value));
+        execution.Time("native_pattern_call", () => {
+            if (backgroundValue) BackgroundPatterns.SetValue(backgroundEdit, value);
+            else if (richEdit != nint.Zero) BackgroundPatterns.ReplaceRichEdit(richEdit, value, () => {
+                var fresh = RebindCurrent(referenceId, automationId);
+                if (fresh is null || !StillInteractive(hwnd, pid, root, rootId, true)
+                    || (nint)ProviderReads.Required("NativeWindowHandle", () => fresh.Properties.NativeWindowHandle.Value) != richEdit
+                    || !fresh.Patterns.Value.TryGetPattern(out var freshPattern) || freshPattern is null
+                    || ProviderReads.Required("Value.IsReadOnly", () => freshPattern.IsReadOnly.Value))
+                    throw new ArgumentException("rich_edit_target_changed");
+                BackgroundPatterns.RequireRichEdit(hwnd, richEdit, pid, ReadScreenBounds(fresh));
+            });
+            else pattern.SetValue(value);
+        });
         execution.Stage = "uia_readback";
         using var readbackTimer = execution.Measure("native_internal_readback");
         var foregroundAfterProvider = Native.GetForegroundWindow();
         var after = FindCurrent(referenceId, automationId);
         bool sameTarget = Native.IsWindow(hwnd) && !Native.IsIconic(hwnd)
             && after is not null;
-        bool matched = sameTarget && after!.Patterns.Value.TryGetPattern(out var afterPattern)
-            && afterPattern is not null && afterPattern.Value.Value == value;
+        string? readback = sameTarget && after!.Patterns.Value.TryGetPattern(out var afterPattern)
+            && afterPattern is not null ? ProviderReads.Required("Value", () => afterPattern.Value.Value) : null;
+        bool matched = readback is not null && TextValueComparison.Matches(value, readback);
         var foregroundAfterReadback = Native.GetForegroundWindow();
         Emit(new { state = matched ? "verified" : "not_verified", dispatched = true,
-            verification = "exact_control_value_readback", business_outcome_verified = false,
+            verification = TextValueComparison.Verification(value, readback, matched),
+            business_outcome_verified = false,
+            value_comparison = !matched ? "not_matched" : readback != value ? "line_endings_normalized" : "exact",
             foreground_diagnostic = new {
                 foreground_before_provider = (long)foregroundBeforeProvider,
                 foreground_after_provider = (long)foregroundAfterProvider,
@@ -577,6 +901,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
     }
     if (command == "set_toggle")
     {
+        execution.Pattern = "Toggle";
         AppCheckpoint.Record(AppCheckpointStage.pattern_enter);
         bool hasTogglePattern = control.Patterns.Toggle.TryGetPattern(out var pattern);
         AppCheckpoint.Record(AppCheckpointStage.pattern_exit);
@@ -602,7 +927,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         }
         bool dispatched = false;
         var desiredState = desired ? ToggleState.On : ToggleState.Off;
-        if (pattern.ToggleState.Value != desiredState)
+        if (ProviderReads.Required("ToggleState", () => pattern.ToggleState.Value) != desiredState)
         {
             AppCheckpoint.Record(AppCheckpointStage.business_enter);
             execution.BeginWrite();
@@ -613,13 +938,14 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         using var readbackTimer = execution.Measure("native_internal_readback");
         var after = FindCurrent(referenceId, automationId);
         bool matched = after is not null && after.Patterns.Toggle.TryGetPattern(out var afterPattern)
-            && afterPattern is not null && afterPattern.ToggleState.Value == desiredState;
+            && afterPattern is not null && ProviderReads.Required("ToggleState", () => afterPattern.ToggleState.Value) == desiredState;
         Emit(new { state = matched ? "verified" : "not_verified", dispatched,
             verification = "exact_control_toggle_readback", business_outcome_verified = false });
         return;
     }
     if (command == "select_item")
     {
+        execution.Pattern = "SelectionItem";
         bool desired = !arguments.TryGetProperty("desired", out var selectionDesired) || selectionDesired.GetBoolean();
         AppCheckpoint.Record(AppCheckpointStage.pattern_enter);
         bool hasSelectionItemPattern = control.Patterns.SelectionItem.TryGetPattern(out var pattern);
@@ -644,7 +970,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
             return;
         }
         bool dispatched = false;
-        if (pattern.IsSelected.Value != desired)
+        if (ProviderReads.Required("IsSelected", () => pattern.IsSelected.Value) != desired)
         {
             AppCheckpoint.Record(AppCheckpointStage.business_enter);
             execution.BeginWrite();
@@ -659,7 +985,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         {
             var after = FindCurrent(referenceId, automationId);
             return after is not null && after.Patterns.SelectionItem.TryGetPattern(out var afterPattern)
-                && afterPattern is not null && afterPattern.IsSelected.Value == desired;
+                && afterPattern is not null && ProviderReads.Required("IsSelected", () => afterPattern.IsSelected.Value) == desired;
         });
         Emit(new { state = matched ? "verified" : "not_verified", dispatched,
             verification = "exact_control_selection_readback", business_outcome_verified = false });
@@ -667,6 +993,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
     }
     if (command == "expand_collapse")
     {
+        execution.Pattern = "ExpandCollapse";
         AppCheckpoint.Record(AppCheckpointStage.pattern_enter);
         bool hasExpandCollapsePattern = control.Patterns.ExpandCollapse.TryGetPattern(out var pattern);
         AppCheckpoint.Record(AppCheckpointStage.pattern_exit);
@@ -698,10 +1025,10 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         }
         bool dispatched = false;
         ExpandCollapseState beforeState;
-        try { beforeState = pattern.ExpandCollapseState.Value; }
-        catch (Exception)
+        try { beforeState = ProviderReads.Required("ExpandCollapseState", () => pattern.ExpandCollapseState.Value); }
+        catch (Exception error)
         {
-            Emit(new { state = "rejected", reason = "expand_collapse_state_unavailable", dispatched = false });
+            Emit(execution.WithTimings(ProviderReads.Rejection(error, "expand_collapse_state_unavailable", execution.Stage, execution.Pattern)));
             return;
         }
         if (desired == "Expanded" && beforeState != ExpandCollapseState.Expanded)
@@ -724,7 +1051,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         string? observedState = null;
         if (after is not null && after.Patterns.ExpandCollapse.TryGetPattern(out var afterPattern)
             && afterPattern is not null)
-            observedState = afterPattern.ExpandCollapseState.Value.ToString();
+            observedState = ProviderReads.Required("ExpandCollapseState", () => afterPattern.ExpandCollapseState.Value).ToString();
         bool matched = observedState == desired;
         Emit(new { state = matched ? "verified" : "not_verified", dispatched,
             expand_collapse_state = observedState,
@@ -733,6 +1060,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
     }
     if (command == "scroll")
     {
+        execution.Pattern = "Scroll";
         AppCheckpoint.Record(AppCheckpointStage.pattern_enter);
         bool hasScrollPattern = control.Patterns.Scroll.TryGetPattern(out var pattern);
         AppCheckpoint.Record(AppCheckpointStage.pattern_exit);
@@ -751,10 +1079,10 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         }
         bool vertical = direction is "up" or "down";
         bool scrollable;
-        try { scrollable = vertical ? pattern.VerticallyScrollable.Value : pattern.HorizontallyScrollable.Value; }
-        catch (Exception)
+        try { scrollable = vertical ? ProviderReads.Required("VerticallyScrollable", () => pattern.VerticallyScrollable.Value) : ProviderReads.Required("HorizontallyScrollable", () => pattern.HorizontallyScrollable.Value); }
+        catch (Exception error)
         {
-            Emit(new { state = "rejected", reason = "scroll_axis_state_unavailable", dispatched = false });
+            Emit(execution.WithTimings(ProviderReads.Rejection(error, "scroll_axis_state_unavailable", execution.Stage, execution.Pattern)));
             return;
         }
         if (!scrollable)
@@ -776,10 +1104,10 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
             Emit(new { state = "rejected", reason = "control_changed_before_dispatch", dispatched = false });
             return;
         }
-        try { scrollable = vertical ? pattern.VerticallyScrollable.Value : pattern.HorizontallyScrollable.Value; }
-        catch (Exception)
+        try { scrollable = vertical ? ProviderReads.Required("VerticallyScrollable", () => pattern.VerticallyScrollable.Value) : ProviderReads.Required("HorizontallyScrollable", () => pattern.HorizontallyScrollable.Value); }
+        catch (Exception error)
         {
-            Emit(new { state = "rejected", reason = "scroll_axis_state_unavailable", dispatched = false });
+            Emit(execution.WithTimings(ProviderReads.Rejection(error, "scroll_axis_state_unavailable", execution.Stage, execution.Pattern)));
             return;
         }
         if (!scrollable)
@@ -805,8 +1133,8 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         if (after is not null && after.Patterns.Scroll.TryGetPattern(out var afterPattern)
             && afterPattern is not null)
         {
-            horizontalPercent = afterPattern.HorizontalScrollPercent.Value;
-            verticalPercent = afterPattern.VerticalScrollPercent.Value;
+            horizontalPercent = ProviderReads.Required("HorizontalScrollPercent", () => afterPattern.HorizontalScrollPercent.Value);
+            verticalPercent = ProviderReads.Required("VerticalScrollPercent", () => afterPattern.VerticalScrollPercent.Value);
             readBack = true;
         }
         Emit(new { state = readBack ? "verified" : "not_verified", dispatched = true,
@@ -817,6 +1145,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
     }
     if (command == "realize_item")
     {
+        execution.Pattern = "ItemContainer";
         if (arguments.TryGetProperty("local", out var previousLocal)
             && previousLocal.GetProperty("anchors").GetArrayLength() >= 8)
         {
@@ -871,6 +1200,11 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
                 dispatched = false });
             return;
         }
+        if (PasswordProperty.Read(item))
+        {
+            Emit(new { state = "rejected", reason = "control_unavailable", dispatched = false });
+            return;
+        }
         if (!item.Patterns.VirtualizedItem.TryGetPattern(out var virtualized)
             || virtualized is null)
         {
@@ -889,7 +1223,7 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         using var readbackTimer = execution.Measure("native_internal_readback");
         if (!StillInteractive(hwnd, pid, root, rootId, false)
             || !LocalScope.BelongsTo(walker, item, control) || item.Name != itemName
-            || item.Properties.IsPassword.Value)
+            || PasswordProperty.Read(item))
         {
             Emit(new { state = "not_verified", dispatched = true,
                 reason = "realized_item_scope_unavailable", verification = "fresh_observation_required" });
@@ -904,9 +1238,10 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         return;
     }
     AppCheckpoint.Record(AppCheckpointStage.pattern_enter);
+    execution.Pattern = "Invoke";
     bool hasInvokePattern = control.Patterns.Invoke.TryGetPattern(out var invoke);
     AppCheckpoint.Record(AppCheckpointStage.pattern_exit);
-    if (!hasInvokePattern || invoke is null)
+    if ((!hasInvokePattern || invoke is null) && !transitionRequest)
     {
         Emit(new { state = "rejected", reason = "invoke_pattern_unavailable", dispatched = false });
         return;
@@ -918,16 +1253,77 @@ static void Execute(string command, JsonElement arguments, ExecutionState execut
         Emit(new { state = "rejected", reason = "target_changed_before_dispatch", dispatched = false });
         return;
     }
-    control = execution.Time("native_go_rebind", () => RebindCurrent(referenceId, automationId));
-    if (control is null || !control.Patterns.Invoke.TryGetPattern(out invoke)
-        || invoke is null)
+    control = execution.Time("native_go_rebind", () => RebindCurrent(referenceId, automationId, transitionRequest));
+    bool readyToInvoke = control is not null && ProviderReads.Required("IsEnabled", () => control.IsEnabled)
+        && control.Patterns.Invoke.TryGetPattern(out invoke) && invoke is not null;
+    if (!readyToInvoke && !transitionRequest)
     {
         Emit(new { state = "rejected", reason = "control_changed_before_dispatch", dispatched = false });
         return;
     }
+    if (arguments.TryGetProperty("transition", out var transition))
+    {
+        var conditions = Flower.App.TransitionGate.Parse(transition);
+        // Complete bounded subtree lookups before the final property reads.
+        // Never do a second tree scan after testing the business precondition.
+        var conditionControls = conditions.Select(condition => FindCurrent(condition.RuntimeId, condition.AutomationId)).ToArray();
+        control = execution.Time("native_go_rebind", () => RebindCurrent(referenceId, automationId, true));
+        if (control is null || !StillInteractive(hwnd, pid, root, rootId, true))
+        {
+            Emit(new { state = "rejected", reason = "control_changed_before_dispatch", dispatched = false });
+            return;
+        }
+        readyToInvoke = ProviderReads.Required("IsEnabled", () => control.IsEnabled)
+            && control.Patterns.Invoke.TryGetPattern(out invoke) && invoke is not null;
+        object? ReadCondition(Flower.App.TransitionCondition condition)
+        {
+            var current = conditionControls[ReferenceEquals(condition, conditions[0]) ? 0 : 1];
+            if (current is null || PasswordProperty.Read(current)
+                || !TreePages.ReadRuntimeId(() => current.Properties.RuntimeId.Value).SequenceEqual(condition.RuntimeId)
+                || !ProviderReads.MatchesAutomationId(condition.AutomationId, () => current.AutomationId))
+                throw new ArgumentException();
+            return condition.Field switch
+            {
+                "name" => ProviderReads.Required("Name", () => current.Properties.Name.Value),
+                "focused" => ProviderReads.Required("HasKeyboardFocus", () => current.Properties.HasKeyboardFocus.Value),
+                "value" when current.Patterns.Value.TryGetPattern(out var valuePattern) && valuePattern is not null
+                    => ProviderReads.Required("Value", () => valuePattern.Value.Value),
+                "selected" when current.Patterns.SelectionItem.TryGetPattern(out var selectedPattern) && selectedPattern is not null
+                    => ProviderReads.Required("IsSelected", () => selectedPattern.IsSelected.Value),
+                "toggle_state" when current.Patterns.Toggle.TryGetPattern(out var togglePattern) && togglePattern is not null
+                    => ProviderReads.Required("ToggleState", () => togglePattern.ToggleState.Value).ToString(),
+                "expand_collapse_state" when current.Patterns.ExpandCollapse.TryGetPattern(out var expandPattern) && expandPattern is not null
+                    => ProviderReads.Required("ExpandCollapseState", () => expandPattern.ExpandCollapseState.Value).ToString(),
+                _ => throw new ArgumentException()
+            };
+        }
+        var decision = execution.Time("native_transition_preflight", () =>
+            Flower.App.TransitionGate.Check(conditions, ReadCondition));
+        // Property reads may block. Check time and Win32 identity/foreground
+        // again, with no host round trip or UIA tree search before Invoke.
+        long transitionAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - observedAt;
+        if (transitionAge is < 0 or > 15_000 || !Native.IsWindow(hwnd) || !Native.IsWindowEnabled(hwnd)
+            || Native.IsIconic(hwnd) || !Native.IsForegroundRoot(hwnd)
+            || Native.GetWindowThreadProcessId(hwnd, out actualPid) == 0 || actualPid != pid)
+        {
+            Emit(new { state = "rejected", reason = "target_changed_before_dispatch", dispatched = false });
+            return;
+        }
+        if (decision is not null)
+        {
+            Emit(new { state = decision == "already_satisfied" ? "verified" : "rejected",
+                reason = decision, dispatched = false });
+            return;
+        }
+        if (!readyToInvoke)
+        {
+            Emit(new { state = "rejected", reason = "invoke_control_unavailable", dispatched = false });
+            return;
+        }
+    }
     AppCheckpoint.Record(AppCheckpointStage.business_enter);
     execution.BeginWrite();
-    execution.Time("native_pattern_call", () => invoke.Invoke());
+    execution.Time("native_pattern_call", () => invoke!.Invoke());
     Emit(new { state = "not_verified", dispatched = true,
         verification = "business_postcondition_required" });
 }
@@ -936,7 +1332,7 @@ static bool StillInteractive(nint hwnd, int pid, AutomationElement root, int[] r
     Native.IsWindow(hwnd) && Native.IsWindowEnabled(hwnd)
     && (!needsForeground || (!Native.IsIconic(hwnd) && Native.IsForegroundRoot(hwnd)))
     && Native.GetWindowThreadProcessId(hwnd, out var actualPid) != 0 && actualPid == pid
-    && root.Properties.RuntimeId.Value.SequenceEqual(rootId);
+    && TreePages.ReadRuntimeId(() => root.Properties.RuntimeId.Value).SequenceEqual(rootId);
 
 static bool WaitForGo()
 {
@@ -953,8 +1349,8 @@ static AutomationElement? FindExact(ITreeWalker walker, AutomationElement root,
         AppCheckpointStage.exact_lookup_exit, () =>
     {
         // Rebind only within the currently selected window's UIA subtree.
-        bool Matches(AutomationElement element) => element.Properties.RuntimeId.Value.SequenceEqual(runtimeId)
-            && element.AutomationId == automationId;
+        bool Matches(AutomationElement element) => TreePages.ReadRuntimeId(() => element.Properties.RuntimeId.Value).SequenceEqual(runtimeId)
+            && ProviderReads.MatchesAutomationId(automationId, () => element.AutomationId);
         if (Matches(root))
             return root;
         var queue = new Queue<(AutomationElement Element, int Depth)>();
@@ -986,6 +1382,17 @@ static AutomationElement? FindExact(ITreeWalker walker, AutomationElement root,
 
 static void Validate(string command, JsonElement arguments)
 {
+    if (arguments.TryGetProperty("transition", out var transition))
+    {
+        if (command != "invoke") throw new ArgumentException();
+        _ = Flower.App.TransitionGate.Parse(transition);
+    }
+    if (arguments.TryGetProperty("expected_value_hash", out var valueHash)
+        && (command != "set_value" || valueHash.GetString() is not { } hash
+            || !System.Text.RegularExpressions.Regex.IsMatch(hash, "^[a-f0-9]{64}$"))) throw new ArgumentException();
+    if (arguments.TryGetProperty("execution_mode", out var executionMode)
+        && (executionMode.GetString() != "must_background" || command is not
+            ("set_value" or "set_toggle" or "select_item" or "expand_collapse"))) throw new ArgumentException();
     if (command is not ("observe" or "set_value" or "invoke" or "focus" or "guarded_input" or "set_toggle" or "select_item"
         or "expand_collapse" or "scroll" or "realize_item" or "read_text"))
         throw new ArgumentException();
@@ -1008,6 +1415,11 @@ static void Validate(string command, JsonElement arguments)
     }
     if (command == "observe")
     {
+        if (arguments.TryGetProperty("diagnostic", out var diagnostic))
+        {
+            if (privacy != "content_allowed" || arguments.TryGetProperty("tree", out _)) throw new ArgumentException();
+            PropertyDiagnostics.Validate(diagnostic, target);
+        }
         if (arguments.TryGetProperty("tree", out var tree))
         {
             TreePages.Validate(tree);
@@ -1015,9 +1427,22 @@ static void Validate(string command, JsonElement arguments)
                 throw new ArgumentException();
         }
         var limits = Required(arguments, "limits");
-        if (RequiredInt(limits, "max_nodes") is < 1 or > 192
-            || RequiredInt(limits, "max_depth") is < 0 or > 8)
+        var allowedLimits = new HashSet<string> { "max_nodes", "max_depth", "max_bytes", "max_ms", "max_provider_calls", "filter", "projection" };
+        if (limits.ValueKind != JsonValueKind.Object || limits.EnumerateObject().Any(field => !allowedLimits.Contains(field.Name))
+            || RequiredInt(limits, "max_nodes") is < 1 or > 500 || RequiredInt(limits, "max_depth") is < 0 or > 12)
             throw new ArgumentException();
+        foreach (var pair in new[] { ("max_bytes", 1_000_000), ("max_ms", 2000), ("max_provider_calls", 5000) })
+            if (limits.TryGetProperty(pair.Item1, out var value) && (value.GetInt32() < 1 || value.GetInt32() > pair.Item2)) throw new ArgumentException();
+        if (limits.TryGetProperty("projection", out var projection) && projection.GetString() is not ("full" or "compact" or "actionable")) throw new ArgumentException();
+        if (limits.TryGetProperty("filter", out var filter))
+        {
+            if (filter.ValueKind != JsonValueKind.Object) throw new ArgumentException();
+            foreach (var field in filter.EnumerateObject())
+                if (field.Name is not ("automation_id" or "control_type" or "name")
+                    || field.Value.GetString() is not { Length: > 0 } text
+                    || text.EnumerateRunes().Count() > 256 || text.EnumerateRunes().Any(Rune.IsControl)
+                    || field.Name == "name" && privacy != "content_allowed") throw new ArgumentException();
+        }
         return;
     }
     if (privacy != "content_allowed")
@@ -1077,17 +1502,12 @@ static bool EmbeddedTextPrivacyAllowed(AutomationElement[] embedded, out int unk
     {
         try
         {
-            if (element.Properties.IsPassword.Value)
+            if (PasswordProperty.Read(element))
                 return false;
         }
-        catch (Exception) { unknown++; }
+        catch (Exception) { unknown++; return false; }
     }
     return true;
-}
-static T ReadOr<T>(Func<T> reader, T fallback)
-{
-    try { return reader(); }
-    catch (Exception) { return fallback; }
 }
 static string RequiredString(JsonElement parent, string key) => Required(parent, key).GetString() ?? throw new ArgumentException();
 static int RequiredInt(JsonElement parent, string key) => Required(parent, key).GetInt32();
@@ -1135,7 +1555,13 @@ static int[]? ReadClickablePoint(AutomationElement element)
     }
     catch (Exception) { return null; }
 }
-static void Emit(object value) => Console.WriteLine(JsonSerializer.Serialize(value));
+static void Emit(object value)
+{
+    var encoded = JsonSerializer.Serialize(value);
+    if (Encoding.UTF8.GetByteCount(encoded) + 1 > 1_100_000)
+        encoded = "{\"state\":\"not_verified\",\"dispatched\":false,\"reason\":\"tree_message_too_large\",\"new_observation_required\":true}";
+    Console.WriteLine(encoded);
+}
 
 static class Native
 {

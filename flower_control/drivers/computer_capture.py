@@ -22,7 +22,7 @@ import win32gui
 
 from flower_control.control.native import process_identity
 from .computer_native import Rect, WindowIdentity, assert_window, window_geometry
-from .worker_python import worker_python
+from .worker_python import worker_command
 
 
 _MAX_BMP = 54 + 3840 * 2160 * 4
@@ -30,9 +30,10 @@ _MAX_COMPRESSED = 32_000_000
 
 
 class CaptureError(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, diagnostics=None):
         super().__init__(code)
         self.code = code
+        self.diagnostics = diagnostics
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,9 @@ class CaptureResult:
     elapsed_ms: float
     content_verified: bool = False
     fallback_reason: str | None = None
+    privacy_revision: str | None = None
+    privacy_rects: tuple = ()
+    capture_stage_timings_ms: dict | None = None
 
 
 def _safe_environment() -> dict[str, str]:
@@ -125,8 +129,8 @@ def _attempt(identity: WindowIdentity, *, backend: str, geometry,
     process = None
     try:
         process = subprocess.Popen(
-            [worker_python(), "-B", "-m", "flower_control.drivers.computer_capture_worker",
-             process_identity(), stop_name],
+            worker_command("flower_control.drivers.computer_capture_worker",
+             process_identity(), stop_name),
             cwd=str(Path(__file__).resolve().parents[2]), env=_safe_environment(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             startupinfo=startup, creationflags=subprocess.CREATE_NO_WINDOW)

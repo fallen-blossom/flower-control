@@ -22,7 +22,7 @@ _SOURCES = frozenset({"stage_bound", "measurement", "host"})
 _ORDINARY = frozenset({"foreground_changed", "target_minimized", "geometry_changed",
     "external_keyboard", "external_mouse", "ime_changed", "new_window_detected",
     "content_changed", "capture_changed", "provider_changed"})
-_INTERRUPTIONS = _ORDINARY | {"explicit_stop", "target_closed", "authorization_revoked", "deadline_exceeded"}
+_INTERRUPTIONS = _ORDINARY | {"explicit_stop", "user_pause", "human_handoff", "target_closed", "authorization_revoked", "deadline_exceeded"}
 
 
 def validate_cost_context(estimated_ms, context):
@@ -136,8 +136,8 @@ def stage_summary(store, db, action):
     front = db.execute("SELECT paused,quarantined FROM resources WHERE id=?", (FOREGROUND_INPUT_RESOURCE,)).fetchone()
     automatic = (row["interruption"] in _ORDINARY and row["stop_received"] is None
         and not task["paused"] and not task["revoked"] and target is not None
-        and not target["paused"] and not target["quarantined"]
-        and front is not None and not front["paused"] and not front["quarantined"])
+        and not target["paused"] and not store._effective_quarantine(db, row["target"], target)
+        and front is not None and not front["paused"] and not store._effective_quarantine(db, FOREGROUND_INPUT_RESOURCE, front))
     hints = db.execute("SELECT estimated_ms FROM action_hints WHERE action=?", (action["id"],)).fetchone()
     context_row = db.execute("SELECT details FROM action_context WHERE action=?", (action["id"],)).fetchone()
     context = json.loads(context_row[0]) if context_row else {}
@@ -157,7 +157,7 @@ def stage_summary(store, db, action):
         "input_release_confirmed_at": binding[1] if binding else None,
         "input_release_confirmation_clock": "unix_wall_time" if binding is not None and binding[1] is not None else None,
         "release_completed": True if release == "released" else False if release == "release_pending" else None,
-        "requires_new_observation": row["interruption"] is not None,
+        "requires_new_observation": row["interruption"] is not None or bool(row["requires_observation"]),
         "automatic_reentry": bool(automatic),
         "reobserve_without_user_resume": bool(automatic and lease in {"released", "recovered"} and release not in {"unknown", "release_pending"}),
         "replay_old_action": False,
@@ -199,22 +199,26 @@ class ForegroundStage:
             self._record_interruption(db, action, reason)
         return self.snapshot()
 
-    def interrupt_after_external(self, lease, reason):
+    def interrupt_after_external(self, lease, reason=None):
         """Record a terminal native interruption inside its original dispatch.
 
         The facade has accepted done and the native mutex may already be free.
         This method records metadata only, preserving authoritative release state.
         Call before StateStore.finish and before leaving the before_go context.
+        With no reason, preserve only the native need for a fresh observation;
+        a rejected plan does not imply interference, pause or automatic reentry.
         """
         from flower_control.drivers.high_helper import ExternalDispatchLease, HighHelperError
-        if type(reason) is not str or reason not in _INTERRUPTIONS:
+        if reason is not None and (type(reason) is not str or reason not in _INTERRUPTIONS):
             raise ControlError("invalid_stage_interruption")
         if type(lease) is not ExternalDispatchLease:
             raise ControlError("external_terminal_unverified")
         try:
-            lease.terminal_for_interruption()
+            terminal = lease.terminal_for_interruption()
         except HighHelperError as error:
             raise ControlError("external_terminal_unverified") from error
+        if reason is None and terminal["RequiresNewObservation"] is not True:
+            raise ControlError("external_observation_not_required")
         with self.store.transaction() as db:
             action = db.execute("SELECT * FROM actions WHERE id=? AND owner=?", (self.action_id, self.owner)).fetchone()
             binding = db.execute("SELECT * FROM input_release_bindings WHERE action=?", (self.action_id,)).fetchone()
@@ -229,7 +233,11 @@ class ForegroundStage:
                     or stage["dispatcher_process"] != lease.executor_process
                     or stage["target"] not in lease.resources):
                 raise ControlError("external_terminal_binding_mismatch")
-            self._record_interruption(db, action, reason)
+            if reason is not None:
+                self._record_interruption(db, action, reason)
+            else:
+                db.execute("UPDATE foreground_stages SET requires_observation=1 WHERE action=?", (self.action_id,))
+                db.execute("UPDATE observations SET expires=0 WHERE task=? AND resource=?", (action["task"], stage["target"]))
         return self.snapshot()
 
     def _record_interruption(self, db, action, reason):

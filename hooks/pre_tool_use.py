@@ -19,7 +19,11 @@ def main(*, host: str = "codex") -> int:
         body = sys.stdin.buffer.read(8 * 1024 * 1024 + 1)
         if len(body) > 8 * 1024 * 1024:
             raise ValueError("hook_event_too_large")
-        result = issue_for_hook(json.loads(body), live_ledger(), host=host)
+        event = json.loads(body)
+        from flower_control.authorization.uac_preflight import synchronize
+        context = synchronize(event, host=host)
+        result = issue_for_hook(event, live_ledger(), host=host)
+        if context is not None: result["hookSpecificOutput"]["additionalContext"] = context
     except Exception as error:
         # Report only a fixed internal code, never the event or exception text:
         # tool arguments can contain passwords and private page content.

@@ -53,9 +53,9 @@ class OwnedModalLayoutTests(unittest.TestCase):
     def test_minimized_selected_window_keeps_preparation_panel_only(self):
         self.assertEqual(self.layout(minimized=True), (None, (0, 0, 1920, 1040)))
 
-    def test_execute_stage_keeps_the_frame_for_any_foreground(self):
+    def test_execute_stage_does_not_draw_over_an_unrelated_foreground(self):
         self.assertEqual(self.layout(owner=0, prepare=False),
-                         ("selected-window-geometry", (0, 0, 1920, 1040)))
+                         (None, (0, 0, 1920, 1040)))
 
 
 if __name__ == "__main__":

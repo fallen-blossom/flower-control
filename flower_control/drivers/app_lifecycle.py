@@ -44,9 +44,14 @@ def safe_launch_diagnostic(result):
             "reason": {"process_identity_unavailable", "launch_authority_changed", "launch_observation_failed"}}.items():
         if result.get(name) in choices:
             diagnostic[name] = result[name]
-    for name in ("process_running", "window_selection_required"):
+    for name in ("process_running", "window_selection_required", "hidden_window_requested"):
         if type(result.get(name)) is bool:
             diagnostic[name] = result[name]
+    if result.get("startup_visibility_request") in {"normal", "visible_without_activation"}:
+        diagnostic["startup_visibility_request"] = result["startup_visibility_request"]
+    if type(result.get("foreground_at_last_observation")) is bool:
+        diagnostic["foreground_at_last_observation"] = result["foreground_at_last_observation"]
+    diagnostic["continuous_nonactivation_verified"] = False
     related = []
     for identity in result.get("related_processes", [])[:16]:
         if (type(identity) is dict and type(identity.get("pid")) is int and identity["pid"] > 0
@@ -96,8 +101,13 @@ def _visible_windows(pid: int, created: int) -> list[dict]:
                 return
             identity = bind_window(hwnd)
             assert_window(identity)
+            try:
+                foreground = win32gui.GetForegroundWindow() == hwnd
+            except Exception:
+                foreground = None  # A diagnostic failure cannot lose the window.
             found.append({"target": asdict(identity),
                           "title": win32gui.GetWindowText(hwnd)[:160],
+                          "visibility": "visible", "foreground_at_observation": foreground,
                           "minimized": bool(win32gui.IsIconic(hwnd))})
         except Exception:
             return
@@ -241,6 +251,13 @@ def launch_application(executable: str, args: list[str], *, mode: str,
             "windows": candidates,
             "process_running": process.poll() is None,
             "requested_mode": mode,
+            # SW_SHOWNOACTIVATE is a visible startup request, not a guarantee
+            # about the app's subsequent behavior or a hidden-window route.
+            "startup_visibility_request": "visible_without_activation" if mode == "background" else "normal",
+            "hidden_window_requested": False,
+            "foreground_at_last_observation": True if any(w.get("foreground_at_observation") is True for w in candidates)
+                else False if candidates and all(w.get("foreground_at_observation") is False for w in candidates) else None,
+            "continuous_nonactivation_verified": False,
             "window_selection_required": bool(candidates),
             "related_processes": identities,
             "launch_chain_reason": chain_error,
@@ -283,6 +300,9 @@ def request_normal_close(identity: WindowIdentity, *,
 
     win32gui.EnumWindows(collect_before, None)
     recheck()
+    # Window/process identity checks can perform I/O. Recheck the original
+    # close scope after that I/O, immediately before the one native message.
+    preflight()
     try:
         sent = win32gui.PostMessage(identity.hwnd, win32con.WM_CLOSE, 0, 0)
         if sent is False:

@@ -8,7 +8,7 @@ from flower_control.control.arbitration import wait_for_turn_sync
 from flower_control.control.native import physical_window_resource
 from flower_control.control.state import ControlError
 from flower_control.control.worker_call import command_hash
-from flower_control.drivers.high_helper import HighHelperClient, HighHelperError, HighTarget
+from flower_control.drivers.high_helper import ActiveHelperClient, HighHelperError, HighTarget
 from flower_control.drivers.high_broker_types import AppRequest, InputBinding
 
 
@@ -21,7 +21,7 @@ class AppHighRoute:
 class AppHighBridge:
     def __init__(self, store, task, *, client=None, inspect=None):
         self.store, self.task = store, task
-        self.client = client or HighHelperClient(channel="flower-app")
+        self.client = client or ActiveHelperClient(channel="flower-app")
         self.inspect = inspect or HighTarget.inspect
         self._lock = threading.RLock()
         self._session = None

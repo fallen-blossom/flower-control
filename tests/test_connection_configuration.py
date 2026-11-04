@@ -6,8 +6,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from release.github.tools.configure_connection_mcp import configure, CLIENT_IMAGES
-from release.github.tools.configure_claude_plugin import CHANNELS, write_json
+try:
+    from release.github.tools.configure_connection_mcp import configure, CLIENT_IMAGES
+    from release.github.tools.configure_claude_plugin import CHANNELS, write_json
+except ModuleNotFoundError:
+    # The public source archive exports this generator at tools/, not under
+    # the developer-only release/github draft tree.
+    from tools.configure_connection_mcp import configure, CLIENT_IMAGES
+    from tools.configure_claude_plugin import CHANNELS, write_json
 
 
 class ConnectionConfigurationTests(unittest.TestCase):
@@ -85,6 +91,21 @@ class ConnectionConfigurationTests(unittest.TestCase):
         manifest = json.loads((output / ".codex-plugin/plugin.json").read_bytes())
         self.assertEqual(manifest["name"], "flower-control-compatibility")
         self.assertIn("Optional", manifest["description"])
+        root_manifest = json.loads((output / "plugin.json").read_bytes())
+        self.assertEqual(root_manifest["mcpServers"], "./.mcp.json")
+        self.assertEqual(root_manifest["extensions"], {"com.openai": {"interface": manifest["interface"]}})
+
+    def test_codex_compatibility_does_not_require_versioned_host_paths(self):
+        self.prepared("cursor")
+        path = self.package / "versions" / self.version / "broker.json"
+        policy = json.loads(path.read_bytes())
+        policy["CodexPackageFamilies"] = []
+        policy["CodexImageRoots"] = []
+        write_json(path, policy)
+        output = self.base / "compatibility-signed-host"
+        record = configure(self.package, output, self.root, client="codex-compatibility")
+        self.assertEqual(record["primary_entry"], "codex-chat")
+        self.assertTrue((output / ".mcp.json").exists())
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Internal F1 capture session; not selected by production MCP tools yet."""
+"""Exact-window capture session selected by the production Computer runtime."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -17,10 +17,14 @@ import win32event
 from flower_control.control.native import process_identity
 from .computer_capture import CaptureError, CaptureResult, _safe_environment
 from .computer_native import Rect, WindowIdentity, assert_window, window_geometry
-from .worker_python import worker_python
+from .worker_python import worker_command
 
 
 MAX_BMP_BYTES = 54 + 3840 * 2160 * 4
+# Reuse the exact-window process/device across normal model thinking gaps.
+# Each frame still has its original fresh-request and three-second budget.
+SESSION_LIFETIME_SECONDS = 60
+SESSION_IDLE_SECONDS = 30
 _DIAGNOSTIC_STAGES = frozenset({"worker_started", "child_started", "session_ready", "request_received",
     "capture_started", "snapshot_started", "frame_written", "frame_wait", "fresh_frame_timeout", "error",
     "pool_create", "session_create", "capture_start", "frame_read", "frame_encode", "session_close", "pool_close",
@@ -129,7 +133,7 @@ class ComputerCaptureSession:
         assert_window(identity)
         self.identity = identity
         self.geometry = window_geometry(identity)
-        self.expires = time.monotonic() + 8
+        self.expires = time.monotonic() + SESSION_LIFETIME_SECONDS
         self.request_id = 0
         self.frame_id = 0
         self.gate = threading.Lock()
@@ -141,7 +145,7 @@ class ComputerCaptureSession:
         self._diagnostic_gate = threading.Lock()
         try:
             self.worker = subprocess.Popen(
-                [worker_python(), "-m", "flower_control.drivers.computer_capture_session_worker"],
+                worker_command("flower_control.drivers.computer_capture_session_worker"),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=str(Path(__file__).resolve().parents[2]),
                 env=_safe_environment(), creationflags=subprocess.CREATE_NO_WINDOW)
@@ -202,7 +206,7 @@ class ComputerCaptureSession:
                 if window_geometry(self.identity) != self.geometry:
                     raise CaptureError("capture_target_changed")
             except BaseException:
-                self.close(abort=True)
+                self._abort_after_failure()
                 raise
             self.request_id += 1
             began = time.monotonic()
@@ -239,17 +243,34 @@ class ComputerCaptureSession:
                     header["snapshot_id"], header["requested_ticks"], header["acquired_ticks"],
                     header["source_rendered_after_request"])
             except BaseException:
-                self.close(abort=True)
+                self._abort_after_failure()
                 raise
+
+    def _abort_after_failure(self):
+        try:
+            self.close(abort=True)
+        except Exception as error:
+            from .host_cleanup import cleanup_warning
+            cleanup_warning("computer", "capture_session_abort", error)
 
     def close(self, *, abort=False):
         if self.closed:
+            if getattr(self, "_close_pending", False):
+                # Admission stays closed. Do not re-send native Stop/kill;
+                # after exact exit only retry the remaining owned I/O handles.
+                if self.worker.poll() is None:
+                    raise CaptureError("capture_session_cleanup_pending")
+                self._close_io()
+                self._close_pending = False
             return
         self.closed = True
+        self._close_pending = True
+        self._stop_handle_closed = False
         # Normal EOF lets the native capture device and session dispose.
         # Abort/parent death retain exact Job termination, never a broad kill.
         self.shutdown_mode = "abort" if abort else "eof"
         self.shutdown_error = None
+        first_error = None
         try:
             if abort:
                 win32event.SetEvent(self.stop_event)
@@ -270,18 +291,43 @@ class ComputerCaptureSession:
                 except subprocess.TimeoutExpired:
                     self.worker.kill()
                 self.worker.wait(timeout=1)
-        finally:
+        except BaseException as error:
+            first_error = error
+        try:
+            self._close_io()
+        except BaseException as error:
+            if first_error is None:
+                raise
+            from .host_cleanup import cleanup_warning
+            cleanup_warning("computer", "capture_session_io", error)
+        if first_error is not None:
+            raise first_error
+        self._close_pending = False
+
+    def _close_io(self):
+        first_error = None
+        try:
+            self.diagnostic_reader.join(timeout=.25)
+        except Exception as error:
+            first_error = error
+        for stream in (self.worker.stdin, self.worker.stdout, self.worker.stderr):
             try:
-                self.diagnostic_reader.join(timeout=.25)
-            finally:
-                try:
-                    for stream in (self.worker.stdin, self.worker.stdout, self.worker.stderr):
-                        try:
-                            stream.close()
-                        except OSError:
-                            self.shutdown_error = self.shutdown_error or "stream_close_failed"
-                finally:
-                    self.stop_event.Close()
+                stream.close()
+            except OSError:
+                self.shutdown_error = self.shutdown_error or "stream_close_failed"
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if not getattr(self, "_stop_handle_closed", False):
+            try:
+                self.stop_event.Close()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+            else:
+                self._stop_handle_closed = True
+        if first_error is not None:
+            raise first_error
 
     def __enter__(self):
         return self

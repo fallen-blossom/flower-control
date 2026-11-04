@@ -2,46 +2,50 @@
 
 [简体中文](BROWSER_PROFILES.zh-CN.md)
 
-Flower Web opens its own managed Chromium-family windows (Brave by default). An existing login in your everyday browser window does not become a Flower Web login automatically.
+Flower Web uses its own managed Chromium-family browser profiles. The default-browser setting can follow Windows or select an installed Brave, Chrome, or Edge. Firefox is not a Web-channel target.
 
-This guide covers the Web channel's managed profiles. The Web channel accepts the Chromium-family Brave, Chrome, and Edge; Brave is the verified configuration, and Chrome and Edge are pending verification in this preview. App and Computer can work with other selected browser windows, using the existing interface and login without creating a Flower Web session.
+Your everyday browser login is not copied into Flower. A public page may be readable while the same site asks Flower's profile to log in.
 
-| Profile | Use | Permission | Data after normal close |
+## Three profile purposes
+
+| Profile | Use | Authorization | Data after normal close |
 | --- | --- | --- | --- |
-| Temporary | Public research, development, short-lived tasks | Normal task authority | Isolated session; no login carried into a new session |
-| AI | Accounts you want the agent to use in ordinary work | No extra profile confirmation | Retained |
-| Personal / Luohua | Your separate personal account environment | Once per chat, for the whole profile | Retained |
+| Temporary | Public pages, development, one-off work | Ordinary task authority | Isolated session; login is not carried into a new temporary session |
+| AI | The account you want the agent to use for ordinary work | No separate personal-profile grant | Retained in the AI profile |
+| Personal / Luohua | Your separate personal account environment | Explicit grant in the current chat, separately for each browser | Retained |
 
-Permission to use a profile does not authorize an unrelated purchase, post, or disclosure. State what task you want the agent to do.
+Permission to use a profile does not authorize an unrelated purchase, post, or disclosure. Describe the actual task.
 
-## Log in to the AI browser
+Profiles with the same name in different browsers remain separate. Selecting Brave does not authorize a Luohua profile in Chrome. Settings can report open, create, incomplete create, and read errors.
 
-Ask Codex:
+## First login in the AI profile
 
-> Open Flower's AI browser for me to log in to this site. Keep the account data in the dedicated AI profile.
+Ask:
 
-Codex uses `flower_web_begin_ai_login`. This opens a human-login window without the page automation worker or CDP control. Log in yourself, complete any security checks, then **close that login window normally**. Tell Codex that you have closed it. `flower_web_finish_ai_login` checks the original window has ended and reopens the same profile for agent work.
+> Open Flower's AI browser so I can log in to this site. Keep the account in the AI profile.
 
-Do not merely minimize the login window. Flower does not take over a still-running human login window. Cancellation keeps your data and leaves a live login window under your control.
+Flower uses `flower_web_begin_ai_login`. That opens a human-login window without the page automation worker or CDP control. Log in yourself, complete any security check, then close the login window normally and tell Codex it is closed. `flower_web_finish_ai_login` checks that the original window ended, then reopens the same profile for agent work.
 
-On a later task, Flower can open the AI profile directly. A website may still expire the session or request verification. Repeat the human login process in this same AI profile when needed; do not copy cookies or browser credential files from another profile.
+Do not only minimize the window. Flower does not take over a live human-login window. Cancelling keeps the data and leaves the live window under your control.
 
-## Use your personal profile
+A site can still expire the session or request verification later. Repeat the human login in the same AI profile. Do not copy cookies or browser credential files from another browser.
 
-Ask, for example:
+## Grant the personal profile
 
-> Use my Flower personal / Luohua browser for this task. I authorize this chat to use that profile.
+For example:
 
-Codex records the decision once for the current chat. It applies across the three Flower channels and that chat's subagents, not to a new independent chat. You can pause, deny, or revoke it. A generic resume restores ordinary task execution; it does not restore a permission you revoked.
+> Use my Flower Luohua browser for this browser profile in this chat. I authorize this chat to use it.
 
-For the first personal login, use the same human-login pattern through `flower_web_begin_luohua_login` and `flower_web_finish_luohua_login`. There is no Flower authorization card, Windows Hello, or PIN prompt in the current permission flow.
+The grant applies to the current chat and that browser profile, including the chat's subagents, not to a new independent chat and not automatically to another browser. You can revoke or deny it. A generic “continue” restores ordinary task execution; it does not restore a revoked personal-profile grant.
 
-## If a page asks you to log in
+For the first personal login, use `flower_web_begin_luohua_login` and `flower_web_finish_luohua_login`. Log in yourself and close the window normally. The current flow does not add a Flower authorization card, Windows Hello, or PIN prompt.
 
-First check which browser profile you are using. Public pages may display useful content and a login banner together; reading that content does not prove an authenticated session. Temporary profiles normally have no saved login. A logged-in ordinary Brave window belongs to a different profile; Computer can operate that window when you select it, but Web does not silently attach to it.
+## Logged-in everyday browser
 
-Normal Brave updates are supported when a previously managed browser was cleanly closed and its recorded processes are gone. A still-running or unrecognized old instance needs normal reconciliation rather than deleting its identity record. If Flower refuses it, keep the data and report the exact error.
+App or Computer can work with a browser window you explicitly select, using that window's existing UI and login. This does not turn the ordinary browser into a Flower Web profile. Web does not silently attach to it.
 
-## Where the data lives
+A previously managed browser can normally follow a Brave update when it was cleanly closed and its old processes are gone. A still-running or unrecognized instance needs normal reconciliation. Do not delete its identity record to force a new profile.
 
-Control state is under `%LOCALAPPDATA%\FlowerControl\state-v1`. Dedicated profile paths are generated locally by Flower. Use the session result to locate the exact profile; do not guess and remove a similarly named directory. Browser data can contain cookies and login credentials. Keep it out of issue attachments and public release packages.
+## Local data
+
+Control state is under `%LOCALAPPDATA%\FlowerControl\state-v1`. Dedicated profile paths are generated locally. Use the session result for the exact path; do not guess and delete a similarly named directory. Browser data can contain cookies and credentials, so keep it out of issues, chats, and release packages.

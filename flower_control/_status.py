@@ -25,6 +25,7 @@ _LIMITATIONS = {
     "flower-computer": [
         "UIA 候选和可见停止提示已有实现；纯画布仍依赖宿主视觉，完整连续任务尚未整体通过。",
         "已列出的工具仍需可信聊天、新鲜目标和前台核对才能输入。",
+        "全局 desktop 工具无需预选窗口；截图为逐个获准窗口脱敏后的合成，透明/瞬态窗口可能不同或黑色，不是逐像素全屏等价。窗口锁定入口保留。",
     ],
 }
 
@@ -44,7 +45,7 @@ def loaded_source(source_path: str) -> dict[str, str | None]:
         package_root = path.parent
         for item in sorted(package_root.rglob("*")):
             relative = item.relative_to(package_root)
-            native_source = (item.suffix == ".cs" and not
+            native_source = (item.suffix in {".cs", ".cpp"} and not
                              {"bin", "obj"}.intersection(part.lower() for part in relative.parts[:-1]))
             if item.is_file() and (item.suffix == ".py" or native_source):
                 package_hash.update(relative.as_posix().encode("utf-8") + b"\0")
@@ -91,13 +92,51 @@ def status_details(channel: str, source: dict[str, str | None], *,
             "executor": executor_metadata(),
             "on_disk_source": on_disk,
             "high_broker": broker,
+            "effective_control": effective_control_state(channel, broker),
             "limitations": list(_LIMITATIONS[channel])}
+
+
+def effective_control_state(channel, broker):
+    """Explain existing switches; this snapshot never admits an operation."""
+    status = broker.get("status") if isinstance(broker, dict) else None
+    if not isinstance(status, dict) or broker.get("connected") is not True:
+        return {"state": "unknown", "channel_writes": "unknown", "authority_granted": False,
+                "reason": "current_control_switches_unavailable"}
+    tier = status.get("authority_tier")
+    stopped, computer_paused = status.get("global_write_stopped"), status.get("computer_paused")
+    if type(tier) is not int or tier not in {-1, 0, 1, 2} or type(stopped) is not bool or type(computer_paused) is not bool:
+        return {"state": "unknown", "channel_writes": "unknown", "authority_granted": False,
+                "reason": "current_control_switches_unavailable"}
+    disabled = tier == -1
+    state = ("disabled_by_tier" if disabled else "all_writes_stopped" if stopped
+             else "computer_paused" if computer_paused else "enabled")
+    blocked = disabled or stopped
+    executor_reasons = [key for key in ("paused", "stopping", "desktop_locked", "release_fault", "role_transition")
+                        if status.get(key) is True]
+    incomplete = any(type(status.get(key)) is not bool for key in ("paused", "stopping", "desktop_locked", "release_fault"))
+    if not blocked and executor_reasons:
+        state = "executor_unavailable"
+        # DOM work is independent of native focus/input. The actual Web call
+        # still checks its own shared Stop, profile and page authority.
+        blocked = channel != "flower-web"
+    writes = "blocked" if blocked else "unknown" if incomplete else "requires_target_checks"
+    if incomplete and state == "enabled":
+        state = "unknown"
+    return {"state": state, "authority_tier": tier, "all_writes_stopped": stopped,
+            "computer_paused": computer_paused,
+            "computer_input_writes": ("blocked" if disabled or stopped or computer_paused or executor_reasons
+                                      else "unknown" if incomplete else "requires_target_checks"),
+            "non_computer_writes": writes,
+            "channel_writes": writes, "executor_unavailable_reasons": executor_reasons,
+            "authority_granted": False,
+            "computer_pause_affects_web_or_app": False,
+            "meaning": "仅说明 Flower 开关状态；具体操作仍检查目标、权限、Stop 和实际结果。"}
 
 
 def high_broker_status(channel):
     try:
-        from .drivers.high_helper import HighHelperClient
-        return HighHelperClient(channel=channel).probe_status()
+        from .drivers.high_helper import ActiveHelperClient
+        return ActiveHelperClient(channel=channel).probe_status()
     except Exception:
         return {"state": "unknown", "reason": "broker_status_probe_unavailable",
                 "installed": None, "running": None, "connected": False,
@@ -108,7 +147,8 @@ def create_server(channel: str, *, source_path: str) -> FastMCP:
     if channel not in _CHANNELS:
         raise ValueError(f"Unknown Flower channel: {channel}")
 
-    server = FastMCP(channel)
+    from flower_control.tool_guidance import task_method_instructions
+    server = FastMCP(channel, instructions=task_method_instructions(channel))
     source = loaded_source(source_path)
 
     def build_status() -> dict[str, object]:

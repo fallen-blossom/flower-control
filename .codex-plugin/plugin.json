@@ -1,0 +1,23 @@
+{
+  "name": "flower-control",
+  "version": "0.1.0-preview.3",
+  "description": "Let AI operate Windows webpages, desktop controls and screen interfaces through three local MCP servers.",
+  "author": {
+    "name": "Flower Control"
+  },
+  "interface": {
+    "displayName": "Flower Control",
+    "shortDescription": "Local Web, App & Computer",
+    "composerIcon": "./assets/branding/flower-control-icon.png",
+    "logo": "./assets/branding/flower-control-icon.png",
+    "icon_small": "./assets/branding/flower-control-icon.png",
+    "icon_large": "./assets/branding/flower-control-icon.png",
+    "longDescription": "Flower Web reads and operates managed Brave, Chrome and Edge pages, including forms, tabs, uploads and separate temporary, AI and Luohua profiles. Flower App operates named Windows controls such as fields, lists, menus and dialogs. Flower Computer captures a selected window and uses mouse, keyboard, dragging and scrolling for canvases, image buttons and other visual interfaces. Four visible tiers cover fully stopped, ordinary control, administrator windows and bounded administrator execution; UAC secure desktop and the legacy system takeover remain frozen. Control executes on your PC without a Flower cloud relay, plugin telemetry, remote configuration or automatic updates. Your AI host processes returned content under its own data policy. Temporary and AI profiles need no additional profile authorization. Luohua access requires an explicit grant in the current chat, separately for each browser. Ctrl+Alt+9, HUD Stop and tray Stop end Computer input without changing the saved tier or replaying an uncertain action. Check loaded capabilities and current permissions before use.",
+    "developerName": "Flower Control",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use Flower for webpages and Windows apps. Check available channels, respect permissions and Stop, and verify the actual result."
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

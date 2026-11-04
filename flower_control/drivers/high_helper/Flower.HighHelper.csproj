@@ -8,10 +8,23 @@
     <RestoreSources>$(MSBuildThisFileDirectory)</RestoreSources>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon>../../../assets/branding/flower-petal/flower-petal.ico</ApplicationIcon>
+    <ApplicationIcon>../../../assets/branding/tray-states-v4/05-disabled.ico</ApplicationIcon>
     <AppHostDotNetSearch>Global</AppHostDotNetSearch>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="DshZstdDecoder.cjs" LogicalName="Flower.Dsh.ZstdDecoder.cjs" />
+    <EmbeddedResource Include="SettingsEnglish.json" LogicalName="Flower.Settings.English.json" />
     <RuntimeHostConfigurationOption Include="System.StartupHookProvider.IsSupported" Value="false" />
+    <!-- Embed the reviewed six-state v4 set directly. Every state is a fixed asset; no
+         external icon path or runtime permission is accepted. -->
+    <EmbeddedResource Include="../../../assets/branding/tray-states-v4/*.ico" LogicalName="Flower.Tray.%(Filename)%(Extension)" />
+    <!-- Fixed settings artwork supplied by the user on 2026-10-19. Decoded
+         locally only; the runtime never reads a chat cache or generates art. -->
+    <EmbeddedResource Include="../../../assets/settings/crystal-flower-v1/background.png" LogicalName="Flower.Settings.background.png" />
+    <EmbeddedResource Include="../../../assets/branding/flower-control-icon.png" LogicalName="Flower.Settings.brand.png" />
+    <EmbeddedResource Include="../../../assets/settings/user-repaired-20261019/flower-dim.png" LogicalName="Flower.Settings.flower-dim.png" />
+    <EmbeddedResource Include="../../../assets/settings/user-repaired-20261019/flower-states.png" LogicalName="Flower.Settings.flower-states.png" />
+    <EmbeddedResource Include="../../../assets/settings/user-repaired-20261019/controls.png" LogicalName="Flower.Settings.controls.png" />
+    <EmbeddedResource Include="../../../assets/settings/quiet-leaf-v2/leaf.png" LogicalName="Flower.Settings.quiet-leaf.png" />
   </ItemGroup>
 </Project>

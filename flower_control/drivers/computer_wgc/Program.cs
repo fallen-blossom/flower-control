@@ -16,6 +16,7 @@ using WinRT;
 internal static class Program
 {
     private const int MaxPixels = 3840 * 2160;
+    private const int MaxSessionSeconds = 60;
     private const string NonceProperty = "FlowerControl.WindowNonce.v1";
     private static readonly Guid CaptureItemIid = new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
     private static readonly Guid CaptureInteropIid = new("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356");
@@ -75,12 +76,12 @@ internal static class Program
         }
     }
 
-    // Internal F1 mode: fixed target, resources reused for at most eight seconds.
+    // Fixed target/device, bounded lifetime; every frame starts a fresh snapshot.
     // No production MCP entry selects this mode until its live probe is verified.
     private static async Task<int> RunCaptureSession(nint hwnd, int pid, long nonce,
                                                     long created, TargetSnapshot snapshot)
     {
-        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(MaxSessionSeconds));
         using var capture = new PersistentCapture(hwnd);
         Diagnostic("session_ready", qpc_frequency: Stopwatch.Frequency);
         Stream output = Console.OpenStandardOutput();

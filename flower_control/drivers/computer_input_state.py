@@ -75,21 +75,22 @@ def check_mouse_receiver(steps, identity, geometry):
     if capture:
         if win32gui.GetAncestor(capture, win32con.GA_ROOT) != identity.hwnd:
             raise NativeInputError("mouse_receiver_changed")
-        return
+        return capture
     desktop = None
     points = []
     for step in steps:
         mouse = step.raw.data.mi
         if step.raw.type == 0 and mouse.dwFlags & 0x8000:
             desktop = desktop or virtual_desktop()
-            points.append((desktop.left + round(mouse.dx * max(1, desktop.width - 1) / 65535),
-                           desktop.top + round(mouse.dy * max(1, desktop.height - 1) / 65535)))
+            points.append((desktop.left + mouse.dx * desktop.width // 65536,
+                           desktop.top + mouse.dy * desktop.height // 65536))
     if not points:
         points = [win32gui.GetCursorPos()]
     for point in points:
         receiver = win32gui.WindowFromPoint(point)
         if not receiver or win32gui.GetAncestor(receiver, win32con.GA_ROOT) != identity.hwnd:
             raise NativeInputError("mouse_receiver_changed")
+    return 0
 
 
 def activation_probe(identity):
@@ -176,8 +177,13 @@ def _read_local_candidates(identity, thread, focus) -> dict:
     return report
 
 
-def read_input_context(identity) -> InputContext:
-    """Call under target preflight; unknown IMM is not proof of inactive IME."""
+def read_input_context(identity, *, include_candidates: bool = True) -> InputContext:
+    """Call under target preflight; unknown IMM is not proof of inactive IME.
+
+    Composite input-mode reads already enumerate the exact target-thread
+    candidate windows themselves. They may skip the fallback here and keep
+    one binding check around that single enumeration.
+    """
     try:
         thread, pid = win32process.GetWindowThreadProcessId(identity.hwnd)
     except win32gui.error:
@@ -206,7 +212,7 @@ def read_input_context(identity) -> InputContext:
         composition = "unknown" if count < 0 or not released else "active" if count > 0 else "inactive"
         if composition != "unknown":
             source = "windows_imm_count"
-    if composition != "active":
+    if composition != "active" and include_candidates:
         candidates = _read_local_candidates(identity, thread, focus)
         if candidates["state"] == "known":
             composition = ("active" if candidates["candidate_visible"] or
@@ -297,8 +303,17 @@ def read_input_mode(identity) -> dict:
             if not success:
                 raise NativeInputError("input_mode_query_failed")
             values[name] = value.value
-        composition = read_input_context(identity)
+        # Compose the mode report from one IMM composition read and one exact
+        # target-thread candidate enumeration. The candidate fallback inside
+        # read_input_context would repeat the same native probe immediately.
+        composition = read_input_context(identity, include_candidates=False)
         candidates = _read_local_candidates(identity, before[0], before[1])
+        if composition.composition != "active" and candidates.get("state") == "known":
+            composition = InputContext(
+                composition.focus, composition.layout,
+                "active" if candidates["candidate_visible"] or
+                candidates["composition_window_visible"] else "inactive",
+                candidates.get("source", "unknown"), composition.composition_bytes)
         if (_input_mode_binding(identity) != before or
                 composition.focus is not None and composition.focus != before[1] or
                 composition.layout is not None and composition.layout != before[2]):

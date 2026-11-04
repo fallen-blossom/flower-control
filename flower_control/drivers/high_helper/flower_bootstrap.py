@@ -14,6 +14,10 @@ def main():
     root = Path(__file__).resolve().parent
     policy = json.loads((root / "broker.json").read_bytes())
     source = Path(policy["Repository"])
+    # Protected version policy and the source resolver use one actual root.
+    # This selects storage only; it never carries profile/chat authorization.
+    if policy.get("DataRoot"):
+        os.environ["FLOWER_DATA_ROOT"] = policy["DataRoot"]
     probe = len(sys.argv) == 3
     if probe:
         # asyncio's local socketpair is allowed. No DNS or external connection,

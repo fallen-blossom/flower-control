@@ -34,7 +34,7 @@ def configure(package: Path, output: Path, source_root: Path = ROOT, *, client: 
                         "capabilities": ["Read", "Interactive", "Write"]}
         write_json(output / "plugin.json", {"name": "flower-control-compatibility", "version": "0.1.0+compat." + version[:8],
             "description": "Optional connection-mode preview. Original Flower Control remains the primary entry; cloud-local compatibility untested.",
-            "extensions": {"com.openai": {"interface": presentation}}})
+            "mcpServers": "./.mcp.json", "extensions": {"com.openai": {"interface": presentation}}})
         write_json(output / ".codex-plugin/plugin.json", {"name": "flower-control-compatibility", "version": "0.1.0+compat." + version[:8],
             "description": "Optional connection-mode preview; original Flower Control remains the primary entry. No chat isolation or private profile.",
             "mcpServers": "./.mcp.json", "interface": presentation})

@@ -65,6 +65,8 @@ class ForegroundWatch:
         self.thread_id: int | None = None
         self.thread: threading.Thread | None = None
         self._callback = _callback_type(self._event)
+        self.input_activity_enabled = False
+        self._input_activity = None
 
     def _event(self, _hook, event, hwnd, object_id, child_id, _thread, _time):
         try:
@@ -137,6 +139,10 @@ class ForegroundWatch:
             self.closed.set()
 
     def start(self):
+        if self.input_activity_enabled:
+            from .input_activity import InputActivityWatch
+            self._input_activity = InputActivityWatch()
+            self._input_activity.start()
         if self.thread is not None:
             raise ControlError("foreground_watch_already_started")
         self.thread = threading.Thread(target=self._run, name="flower-foreground-watch", daemon=True)
@@ -152,12 +158,21 @@ class ForegroundWatch:
             raise
 
     def check(self):
+        if self._input_activity is not None:
+            self._input_activity.check()
         if self.error or not self.ready.is_set() or self.closed.is_set():
             raise ControlError("foreground_watch_unavailable")
         self._sample_live()
         self.barrier.check()
 
     def close(self):
+        try:
+            if self._input_activity is not None:
+                self._input_activity.close()
+        finally:
+            self._close_events()
+
+    def _close_events(self):
         self._stop_requested.set()
         if self.thread is None or self.closed.is_set():
             return

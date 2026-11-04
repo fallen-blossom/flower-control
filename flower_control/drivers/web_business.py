@@ -11,11 +11,12 @@ from pathlib import Path
 from flower_control.control.jev_diagnostics import BusinessResultProducer
 from flower_control.control.state import ControlError
 from .web_artifacts import MAX_ARTIFACT_BYTES, _check_no_reparse
+from .web_text import dom_text_digest
 
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
-        separators=(",", ":"), allow_nan=False).encode('utf-8')).hexdigest()
+        separators=(",", ":"), allow_nan=False).encode('utf-8',errors='backslashreplace')).hexdigest()
 
 
 def probe_request(command, arguments):
@@ -37,7 +38,7 @@ def probe_request(command, arguments):
 def match_probe(command, arguments, probe):
     if command in {'fill', 'type'}:
         value = arguments['text']
-        return (probe.get('value_sha256') == hashlib.sha256(value.encode('utf-8')).hexdigest()
+        return (probe.get('value_sha256') == dom_text_digest(value)
                 and probe.get('value_length') == len(value))
     if command == 'set_checked':
         return type(probe.get('checked')) is bool and probe['checked'] is arguments['checked']

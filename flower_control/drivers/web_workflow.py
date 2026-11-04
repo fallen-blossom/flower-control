@@ -1,11 +1,11 @@
 """Bound editor/save/run/result identities, without guessing a site's backend."""
 from __future__ import annotations
 
-import hashlib
 import re
 import secrets
 
 from flower_control.control.state import ControlError
+from .web_text import dom_text_digest
 
 
 FIELDS = ("document_uri", "content_sha256", "model_version", "save_id", "run_id", "result_id", "status")
@@ -21,20 +21,32 @@ class WebWorkflow:
         identity = await self.driver.editor_inspect(reference, check=check)
         if identity["document_identity_kind"] != "document_uri":
             raise ControlError("workflow_file_identity_unavailable")
+        total = identity["length"]
+        if type(total) is not int or total < 0:
+            raise ControlError("workflow_editor_changed")
+        if total > 1_000_000:
+            raise ControlError("workflow_document_too_large")
         offset, parts = 0, []
         while True:
             page = await self.driver.editor_read(reference, offset=offset, limit=64000, check=check)
             if (page["document_identity"] != identity["document_identity"]
+                    or page["document_identity_kind"] != identity["document_identity_kind"]
+                    or page["document_uri"] != identity["document_uri"]
                     or page["model_version"] != identity["model_version"]):
                 raise ControlError("workflow_editor_changed")
-            if page["total"] > 1_000_000:
-                raise ControlError("workflow_document_too_large")
+            end = min(offset + 64000, total)
+            next_offset = end if end < total else None
+            if (type(page["total"]) is not int or page["total"] != total
+                    or type(page["text"]) is not str or len(page["text"]) != end - offset
+                    or page["next_offset"] != next_offset
+                    or next_offset is not None and type(page["next_offset"]) is not int):
+                raise ControlError("workflow_editor_changed")
             parts.append(page["text"])
             if page["next_offset"] is None:
                 break
             offset = page["next_offset"]
         return {"document_uri": identity["document_uri"], "model_version": identity["model_version"],
-                "content_sha256": hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()}
+                "content_sha256": dom_text_digest("".join(parts))}
 
     async def _records(self, selectors, attributes, *, check):
         await check()
@@ -83,6 +95,8 @@ class WebWorkflow:
             raise ControlError("workflow_editor_changed")
         if self.driver.generation != generation:
             raise ControlError("workflow_page_changed")
+        if self.driver.clock() >= now + arguments.get("ttl", 120):
+            raise ControlError("workflow_binding_stale")
         token = secrets.token_urlsafe(18)
         self.bindings[token] = {"editor": editor, "reference": arguments["editor_reference"],
             "selectors": {phase: arguments[phase + "_selector"] for phase in ("save", "run", "result")},
@@ -119,6 +133,8 @@ class WebWorkflow:
             raise ControlError("workflow_editor_changed")
         if self.driver.generation != binding["generation"]:
             raise ControlError("workflow_page_changed")
+        if binding["expires"] <= self.driver.clock():
+            raise ControlError("workflow_binding_stale")
         saved = records["save"]
         baseline_save = binding["baseline"]["save"]
         if (not self._same_document(saved, editor) or not saved["save_id"]

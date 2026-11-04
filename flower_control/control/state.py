@@ -15,10 +15,10 @@ import threading
 import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Literal, get_args
 
 from .native import (AbandonedResource, ExecutionLocks, FOREGROUND_INPUT_RESOURCE,
-                     ResourceBusy, boot_identity, process_identity, process_is_alive)
+                     ResourceBusy, boot_identity, process_identity, process_is_alive, process_is_verified_alive)
 from .scheduling import Candidate, Phase, Policy, choose_local, build_jev_request
 from .diagnostics import safe_metadata
 from .targets import target_description
@@ -31,6 +31,20 @@ class ControlError(RuntimeError):
         self.code = code
 
 
+HumanHandoffKind = Literal["UAC", "login_secret", "MFA", "captcha", "license_or_key",
+    "payment_or_private_data", "external_auth_or_redirect", "system_permission",
+    "physical_action", "inaccessible_modal", "legal_or_account_decision", "unknown_blocker"]
+HUMAN_HANDOFF_KINDS = frozenset(get_args(HumanHandoffKind))
+
+
+def human_handoff_kind(value=None) -> HumanHandoffKind:
+    """Classify a blocker; this metadata never grants sensitive-action authority."""
+    value = "unknown_blocker" if value is None else value
+    if type(value) is not str or value not in HUMAN_HANDOFF_KINDS:
+        raise ControlError("invalid_handoff_kind")
+    return value
+
+
 def _json(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -39,16 +53,49 @@ def _id() -> str:
     return secrets.token_urlsafe(24)
 
 
+def _permission_revision():
+    from flower_control.permissions import revision, PermissionError
+    try:
+        return revision()
+    except PermissionError as error:
+        raise ControlError(error.code) from None
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS task_write_epochs(task TEXT PRIMARY KEY, epoch INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS action_write_epochs(action TEXT PRIMARY KEY, epoch INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS observation_write_epochs(observation TEXT PRIMARY KEY, epoch INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS observation_policy_revisions(observation TEXT PRIMARY KEY, revision TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS app_expired_refresh_reads(
+ action TEXT PRIMARY KEY, parent TEXT NOT NULL, source TEXT NOT NULL,
+ shared_resource TEXT, shared_revision INTEGER);
+CREATE TABLE IF NOT EXISTS action_policy_revisions(action TEXT PRIMARY KEY, revision TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS action_pointer_effects(action TEXT PRIMARY KEY, events INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS action_pointer_receipts(ledger TEXT PRIMARY KEY, action TEXT NOT NULL, events INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks(
  id TEXT PRIMARY KEY, host_binding TEXT, revision INTEGER NOT NULL DEFAULT 0,
  paused INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0,
  focus INTEGER NOT NULL DEFAULT 0, focus_sequence INTEGER NOT NULL DEFAULT -1,
  created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS task_lifecycle(
+ task TEXT PRIMARY KEY REFERENCES tasks(id), sequence INTEGER NOT NULL DEFAULT 0);
+CREATE TRIGGER IF NOT EXISTS task_lifecycle_transition
+AFTER UPDATE OF paused, revoked ON tasks
+WHEN old.paused != new.paused OR old.revoked != new.revoked
+BEGIN
+  INSERT INTO task_lifecycle(task,sequence) VALUES(new.id,1)
+  ON CONFLICT(task) DO UPDATE SET sequence=sequence+1;
+END;
+CREATE TABLE IF NOT EXISTS task_service_settings(
+ task TEXT PRIMARY KEY REFERENCES tasks(id), jev_allowed INTEGER NOT NULL DEFAULT 1,
+ revision INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL,
+ CHECK(jev_allowed IN (0,1)));
+CREATE TABLE IF NOT EXISTS human_handoffs(
+ id TEXT PRIMARY KEY, task TEXT NOT NULL REFERENCES tasks(id), boot TEXT NOT NULL,
+ created REAL NOT NULL, expires REAL NOT NULL, state TEXT NOT NULL,
+ extensions INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL,
+ kind TEXT NOT NULL DEFAULT 'unknown_blocker');
 CREATE TABLE IF NOT EXISTS grants(
  task TEXT NOT NULL REFERENCES tasks(id), scope TEXT NOT NULL, event_id TEXT NOT NULL,
  expires REAL NOT NULL, PRIMARY KEY(task,scope));
@@ -58,13 +105,63 @@ CREATE TABLE IF NOT EXISTS profile_authorizations(
  task TEXT PRIMARY KEY REFERENCES tasks(id),
  state TEXT NOT NULL CHECK(state IN ('allowed','paused','denied','revoked')),
  updated REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS browser_profile_authorizations(
+ task TEXT NOT NULL REFERENCES tasks(id), browser TEXT NOT NULL CHECK(browser IN ('edge','chrome')),
+ state TEXT NOT NULL CHECK(state IN ('allowed','paused','denied','revoked')),
+ updated REAL NOT NULL, PRIMARY KEY(task,browser));
 CREATE TABLE IF NOT EXISTS owners(
  id TEXT PRIMARY KEY, task TEXT NOT NULL REFERENCES tasks(id), process TEXT NOT NULL,
  live_until REAL NOT NULL, retired INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS owner_replacements(
+ prior TEXT PRIMARY KEY REFERENCES owners(id), replacement TEXT NOT NULL UNIQUE REFERENCES owners(id),
+ task TEXT NOT NULL REFERENCES tasks(id));
+CREATE TABLE IF NOT EXISTS web_created_targets(
+ id TEXT PRIMARY KEY, action TEXT NOT NULL UNIQUE REFERENCES actions(id), task TEXT NOT NULL REFERENCES tasks(id),
+ resource TEXT NOT NULL, browser_process TEXT NOT NULL, target TEXT, page_id TEXT,
+ state TEXT NOT NULL, created REAL NOT NULL, hidden_requested INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS web_create_resource_baselines(
+ action TEXT NOT NULL REFERENCES actions(id), resource TEXT NOT NULL,
+ revision INTEGER NOT NULL, PRIMARY KEY(action,resource));
+CREATE TABLE IF NOT EXISTS web_target_close_receipts(
+ pending TEXT PRIMARY KEY REFERENCES web_created_targets(id), action TEXT NOT NULL REFERENCES actions(id),
+ resource TEXT NOT NULL, browser_process TEXT NOT NULL, target TEXT NOT NULL, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS web_creation_recovery_proofs(
+ pending TEXT PRIMARY KEY REFERENCES web_created_targets(id), action TEXT NOT NULL REFERENCES actions(id),
+ close_action TEXT NOT NULL REFERENCES actions(id), browser_process TEXT NOT NULL, target TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS web_action_page_targets(
+ action TEXT PRIMARY KEY REFERENCES actions(id), browser_process TEXT NOT NULL, target TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS web_user_tab_claims(
+ browser_process TEXT NOT NULL, target TEXT NOT NULL, task TEXT NOT NULL REFERENCES tasks(id),
+ page_id TEXT NOT NULL, PRIMARY KEY(browser_process,target));
 CREATE TABLE IF NOT EXISTS resources(
  id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0,
  quarantined INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0,
  required_scope TEXT, generation TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS web_quarantine_recovery_permits(
+ resource TEXT PRIMARY KEY REFERENCES resources(id), pending TEXT NOT NULL REFERENCES web_created_targets(id),
+ epoch INTEGER NOT NULL, boot TEXT NOT NULL DEFAULT '', keeper TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS web_quarantine_recovery_debts(
+ resource TEXT PRIMARY KEY REFERENCES resources(id), pending TEXT NOT NULL REFERENCES web_created_targets(id));
+CREATE TABLE IF NOT EXISTS web_quarantine_incidents(
+ resource TEXT NOT NULL REFERENCES resources(id), revision INTEGER NOT NULL,
+ action TEXT REFERENCES actions(id), PRIMARY KEY(resource,revision));
+CREATE TRIGGER IF NOT EXISTS web_quarantine_incident_capture
+AFTER UPDATE OF quarantined ON resources
+WHEN NEW.quarantined=1 AND EXISTS(SELECT 1 FROM web_quarantine_recovery_debts WHERE resource=NEW.id)
+BEGIN
+ INSERT INTO web_quarantine_incidents(resource,revision,action) VALUES(NEW.id,NEW.revision,NULL);
+END;
+CREATE TRIGGER IF NOT EXISTS web_quarantine_debt_preserve
+BEFORE UPDATE OF quarantined ON resources
+WHEN NEW.quarantined=0 AND EXISTS(SELECT 1 FROM web_quarantine_recovery_debts WHERE resource=NEW.id)
+BEGIN
+ SELECT RAISE(ABORT, 'web_recovery_epoch_bound');
+END;
+CREATE TRIGGER IF NOT EXISTS web_quarantine_permit_invalidate
+AFTER UPDATE OF quarantined ON resources
+BEGIN
+ DELETE FROM web_quarantine_recovery_permits WHERE resource=NEW.id;
+END;
 CREATE TABLE IF NOT EXISTS observations(
  id TEXT PRIMARY KEY, task TEXT NOT NULL, resource TEXT NOT NULL,
  revision INTEGER NOT NULL, generation TEXT NOT NULL, expires REAL NOT NULL);
@@ -90,8 +187,24 @@ CREATE TABLE IF NOT EXISTS occupancy(
 CREATE TABLE IF NOT EXISTS worker_permits(
  action TEXT PRIMARY KEY REFERENCES actions(id), token_hash TEXT NOT NULL,
  worker_process TEXT NOT NULL, command_hash TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS worker_completions(
+ action TEXT PRIMARY KEY REFERENCES actions(id), worker_process TEXT NOT NULL, command_hash TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS web_worker_quarantine_incidents(
+ resource TEXT NOT NULL, revision INTEGER NOT NULL, action TEXT, PRIMARY KEY(resource,revision));
+CREATE TABLE IF NOT EXISTS web_worker_recovery_baselines(resource TEXT PRIMARY KEY, revision INTEGER NOT NULL);
+CREATE TRIGGER IF NOT EXISTS web_worker_quarantine_capture
+AFTER UPDATE OF quarantined ON resources WHEN NEW.quarantined=1
+BEGIN
+ INSERT OR REPLACE INTO web_worker_quarantine_incidents VALUES(NEW.id,NEW.revision,NULL);
+END;
 CREATE TABLE IF NOT EXISTS owned_resources(
  resource TEXT PRIMARY KEY REFERENCES resources(id), task TEXT NOT NULL REFERENCES tasks(id));
+CREATE TABLE IF NOT EXISTS owned_resource_claims(
+ resource TEXT NOT NULL REFERENCES resources(id), owner TEXT NOT NULL REFERENCES owners(id),
+ PRIMARY KEY(resource,owner));
+CREATE TABLE IF NOT EXISTS released_resource_claims(
+ resource TEXT NOT NULL REFERENCES resources(id), owner TEXT NOT NULL REFERENCES owners(id),
+ PRIMARY KEY(resource,owner));
 CREATE TABLE IF NOT EXISTS decision_requests(
  decision TEXT PRIMARY KEY REFERENCES decisions(id), process TEXT NOT NULL,
  token TEXT NOT NULL, expires REAL NOT NULL);
@@ -100,9 +213,90 @@ CREATE TABLE IF NOT EXISTS control_events(
  monotonic REAL NOT NULL, event TEXT NOT NULL, task TEXT, action TEXT,
  details TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS control_events_task ON control_events(task,seq);
+-- Recovery facts are independent of the rotating diagnostic event log.
+CREATE TABLE IF NOT EXISTS web_recovery_resource_counts(
+ resource TEXT PRIMARY KEY, dispatches INTEGER NOT NULL DEFAULT 0,
+ quarantines INTEGER NOT NULL DEFAULT 0, reissues INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS web_recovery_count_baselines(
+ action TEXT NOT NULL, resource TEXT NOT NULL, dispatches INTEGER NOT NULL,
+ quarantines INTEGER NOT NULL, reissues INTEGER NOT NULL, PRIMARY KEY(action,resource));
+CREATE TABLE IF NOT EXISTS web_recovery_dispatch_order(action TEXT PRIMARY KEY, seq INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS web_recovery_reissues(
+ action TEXT NOT NULL, resource TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(action,resource));
+CREATE TABLE IF NOT EXISTS web_recovery_proof_order(pending TEXT PRIMARY KEY, seq INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS computer_stop_count_baselines(
+ action TEXT NOT NULL, resource TEXT NOT NULL, revision INTEGER NOT NULL,
+ dispatches INTEGER NOT NULL, quarantines INTEGER NOT NULL, reissues INTEGER NOT NULL,
+ PRIMARY KEY(action,resource));
+CREATE TABLE IF NOT EXISTS computer_stop_late_release(action TEXT PRIMARY KEY);
+CREATE TRIGGER IF NOT EXISTS web_recovery_count_quarantine
+AFTER UPDATE OF quarantined ON resources WHEN NEW.quarantined=1
+BEGIN
+ INSERT OR IGNORE INTO web_recovery_resource_counts(resource) VALUES(NEW.id);
+ UPDATE web_recovery_resource_counts SET quarantines=quarantines+1 WHERE resource=NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS web_recovery_count_dispatch
+AFTER INSERT ON control_events WHEN NEW.event='action_dispatched'
+BEGIN
+ INSERT OR IGNORE INTO web_recovery_resource_counts(resource)
+ SELECT value FROM actions,json_each(actions.resources) WHERE actions.id=NEW.action;
+ UPDATE web_recovery_resource_counts SET dispatches=dispatches+1 WHERE resource IN
+ (SELECT value FROM actions,json_each(actions.resources) WHERE actions.id=NEW.action);
+ INSERT OR IGNORE INTO web_recovery_dispatch_order VALUES(NEW.action,NEW.seq);
+END;
+CREATE TRIGGER IF NOT EXISTS web_recovery_finish_order
+AFTER INSERT ON control_events WHEN NEW.event='action_finished'
+BEGIN
+ DELETE FROM web_recovery_dispatch_order WHERE action=NEW.action AND EXISTS
+ (SELECT 1 FROM actions WHERE id=NEW.action AND state NOT IN ('running','outcome_uncertain'));
+ DELETE FROM web_action_page_targets WHERE action=NEW.action AND EXISTS
+ (SELECT 1 FROM actions WHERE id=NEW.action AND state NOT IN ('running','outcome_uncertain'));
+ DELETE FROM web_recovery_count_baselines WHERE action=NEW.action AND EXISTS
+ (SELECT 1 FROM actions WHERE id=NEW.action AND state NOT IN ('running','outcome_uncertain'));
+ DELETE FROM computer_stop_count_baselines WHERE action=NEW.action AND EXISTS
+ (SELECT 1 FROM actions WHERE id=NEW.action AND state NOT IN ('running','outcome_uncertain'));
+ DELETE FROM computer_stop_late_release WHERE action=NEW.action AND EXISTS
+ (SELECT 1 FROM actions WHERE id=NEW.action AND state NOT IN ('running','outcome_uncertain'));
+END;
+CREATE TRIGGER IF NOT EXISTS computer_stop_late_release_capture
+AFTER INSERT ON control_events WHEN NEW.event IN ('external_input_release_recovered','input_release_confirmed') AND NEW.action IS NOT NULL
+BEGIN
+ INSERT OR IGNORE INTO computer_stop_late_release SELECT id FROM actions
+ WHERE id=NEW.action AND state IN ('running','outcome_uncertain');
+END;
+CREATE TRIGGER IF NOT EXISTS web_recovery_count_reissue
+AFTER INSERT ON control_events WHEN NEW.event IN ('web_creation_recovered','web_foreground_refreshed','web_borrower_refreshed')
+BEGIN
+ INSERT OR IGNORE INTO web_recovery_resource_counts(resource)
+ SELECT value FROM actions,json_each(actions.resources) WHERE actions.id=NEW.action AND
+ (NEW.event='web_creation_recovered' OR (NEW.event='web_foreground_refreshed' AND value='desktop-foreground-input-v1') OR
+ (NEW.event='web_borrower_refreshed' AND value IN (SELECT resource FROM web_created_targets WHERE action=NEW.action)));
+ INSERT OR IGNORE INTO web_recovery_reissues(action,resource,count)
+ SELECT NEW.action,value,0 FROM actions,json_each(actions.resources) WHERE actions.id=NEW.action AND
+ (NEW.event='web_creation_recovered' OR (NEW.event='web_foreground_refreshed' AND value='desktop-foreground-input-v1') OR
+ (NEW.event='web_borrower_refreshed' AND value IN (SELECT resource FROM web_created_targets WHERE action=NEW.action)));
+ UPDATE web_recovery_resource_counts SET reissues=reissues+1 WHERE resource IN
+ (SELECT resource FROM web_recovery_reissues WHERE action=NEW.action AND
+ (NEW.event='web_creation_recovered' OR (NEW.event='web_foreground_refreshed' AND resource='desktop-foreground-input-v1') OR
+ (NEW.event='web_borrower_refreshed' AND resource IN (SELECT resource FROM web_created_targets WHERE action=NEW.action))));
+ UPDATE web_recovery_reissues SET count=count+1 WHERE action=NEW.action AND
+ (NEW.event='web_creation_recovered' OR (NEW.event='web_foreground_refreshed' AND resource='desktop-foreground-input-v1') OR
+ (NEW.event='web_borrower_refreshed' AND resource IN (SELECT resource FROM web_created_targets WHERE action=NEW.action)));
+END;
 CREATE TABLE IF NOT EXISTS window_handoffs(
  id TEXT PRIMARY KEY, task TEXT NOT NULL, target TEXT NOT NULL,
  expires REAL NOT NULL, consumed INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS business_runs(
+ id TEXT PRIMARY KEY, task TEXT NOT NULL REFERENCES tasks(id), goal TEXT NOT NULL,
+ state TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL,
+ revision INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS business_steps(
+ id TEXT PRIMARY KEY, run TEXT NOT NULL REFERENCES business_runs(id), task TEXT NOT NULL,
+ channel TEXT NOT NULL, parent TEXT, state TEXT NOT NULL, summary TEXT NOT NULL,
+ created REAL NOT NULL, updated REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS business_steps_run ON business_steps(run,created);
+CREATE TABLE IF NOT EXISTS business_run_finishes(
+ run TEXT PRIMARY KEY REFERENCES business_runs(id), summary TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS action_waiters(
  action TEXT PRIMARY KEY REFERENCES actions(id), expires REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS waiter_calls(
@@ -116,10 +310,13 @@ CREATE TABLE IF NOT EXISTS foreground_stages(
  channel TEXT NOT NULL, operation TEXT NOT NULL, dispatcher_process TEXT NOT NULL,
  boot TEXT NOT NULL, started REAL NOT NULL, deadline REAL,
  ended REAL, lease_released REAL, interruption TEXT, interrupted REAL,
- stop_received REAL);
+ stop_received REAL, requires_observation INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS input_release_bindings(
  action TEXT PRIMARY KEY REFERENCES actions(id), executor_process TEXT NOT NULL,
  ledger_identity TEXT NOT NULL, token_hash TEXT NOT NULL, confirmed REAL);
+CREATE TABLE IF NOT EXISTS sequence_final_readbacks(
+ action TEXT PRIMARY KEY REFERENCES actions(id), owner TEXT NOT NULL,
+ started REAL NOT NULL);
 """
 
 _CARD_SCHEMA = """
@@ -141,9 +338,9 @@ CREATE TABLE IF NOT EXISTS card_requests(
 _COMPUTER_SEQUENCE_SCHEMA = """
 CREATE TABLE computer_sequence_progress(
  action TEXT PRIMARY KEY REFERENCES actions(id),
- total_steps INTEGER NOT NULL CHECK(total_steps BETWEEN 2 AND 3),
- sent_prefix INTEGER NOT NULL DEFAULT 0 CHECK(sent_prefix BETWEEN 0 AND 3),
- partial_step INTEGER CHECK(partial_step BETWEEN 0 AND 2),
+ total_steps INTEGER NOT NULL CHECK(total_steps BETWEEN 2 AND 8),
+ sent_prefix INTEGER NOT NULL DEFAULT 0 CHECK(sent_prefix BETWEEN 0 AND 8),
+ partial_step INTEGER CHECK(partial_step BETWEEN 0 AND 7),
  input_release TEXT NOT NULL CHECK(input_release IN ('released','unknown','release_pending')),
  final_state TEXT CHECK(final_state IN ('sequence_completed','sequence_stopped','outcome_uncertain')),
  updated REAL NOT NULL);
@@ -152,7 +349,7 @@ CREATE TABLE computer_sequence_progress(
 
 class _ExternalSequence:
     def __init__(self, store, owner, action_id, decision_id, total_steps):
-        if type(total_steps) is not int or not 2 <= total_steps <= 3:
+        if type(total_steps) is not int or not 2 <= total_steps <= 8:
             raise ControlError("invalid_sequence_progress")
         self.store, self.owner, self.action_id, self.decision_id = store, owner, action_id, decision_id
         self.total_steps, self.index, self.previous, self.dispatch = total_steps, 0, None, None
@@ -227,11 +424,16 @@ class StateStore:
         self._dispatch_locks: dict[str, ExecutionLocks] = {}
         # Authenticated helper ownership is separate from this thread's handles.
         self._external_dispatches: dict[str, object] = {}
+        # Stop uses this only to reject ordinary work without waiting for SQLite.
+        # An exact active metadata lease still repeats every durable check.
+        self._external_metadata_bindings: dict[str, tuple[str, object]] = {}
         self._last_stop_recorded = -1
         self._stop_record_lock = threading.Lock()
         db = self._connect()
         try:
-            db.executescript(_SCHEMA)
+            from .business_plan import SCHEMA as business_schema
+            from .business_calls import SCHEMA as public_call_schema
+            db.executescript(_SCHEMA + business_schema + public_call_schema)
         finally:
             db.close()
         with self.transaction() as db:
@@ -241,6 +443,24 @@ class StateStore:
             if version and version[0] == "1" and db.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='card_requests'").fetchone():
                 raise ControlError("incompatible_schema")
+            if "kind" not in {column["name"] for column in
+                    db.execute("PRAGMA table_info(human_handoffs)")}:
+                db.execute("ALTER TABLE human_handoffs ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown_blocker'")
+            if "requires_observation" not in {column["name"] for column in
+                    db.execute("PRAGMA table_info(foreground_stages)")}:
+                db.execute("ALTER TABLE foreground_stages ADD COLUMN requires_observation INTEGER NOT NULL DEFAULT 0")
+            if "hidden_requested" not in {column["name"] for column in db.execute("PRAGMA table_info(web_created_targets)")}:
+                db.execute("ALTER TABLE web_created_targets ADD COLUMN hidden_requested INTEGER NOT NULL DEFAULT 0")
+            permit_columns = {column["name"] for column in db.execute("PRAGMA table_info(web_quarantine_recovery_permits)")}
+            for column in ("boot", "keeper"):
+                if column not in permit_columns:
+                    db.execute(f"ALTER TABLE web_quarantine_recovery_permits ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            # An earlier interrupted candidate may already contain a permit.
+            # Preserve its debt but never make missing keeper/boot valid.
+            db.execute("INSERT OR IGNORE INTO web_quarantine_recovery_debts(resource,pending) "
+                       "SELECT resource,pending FROM web_quarantine_recovery_permits")
+            self._migrate_web_recovery_evidence(db)
+            self._migrate_computer_stop_evidence(db)
             # v1 -> v2 DDL and version update share this BEGIN IMMEDIATE
             # transaction. A failed upgrade leaves the old ledger intact.
             for statement in _CARD_SCHEMA.split(";"):
@@ -280,6 +500,20 @@ class StateStore:
             if [(key["table"], key["from"], key["to"]) for key in foreign_keys] != [
                     ("actions", "action", "id")]:
                 raise ControlError("incompatible_schema")
+            # Widen the old finite plan bounds in one transaction. Every old
+            # prefix, unknown/release fact and action foreign key is copied;
+            # no input/action is revived and a failed copy rolls back intact.
+            import re
+            normalize_schema = lambda text: re.sub(r"\s+", " ", text.strip().rstrip(";"))
+            table_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='computer_sequence_progress'").fetchone()[0]
+            old_schema = _COMPUTER_SEQUENCE_SCHEMA.replace("BETWEEN 2 AND 8", "BETWEEN 2 AND 3").replace("BETWEEN 0 AND 8", "BETWEEN 0 AND 3").replace("BETWEEN 0 AND 7", "BETWEEN 0 AND 2")
+            if normalize_schema(table_sql) == normalize_schema(old_schema):
+                db.execute("ALTER TABLE computer_sequence_progress RENAME TO computer_sequence_progress_previous_bounds")
+                db.execute(_COMPUTER_SEQUENCE_SCHEMA)
+                db.execute("INSERT INTO computer_sequence_progress SELECT * FROM computer_sequence_progress_previous_bounds")
+                db.execute("DROP TABLE computer_sequence_progress_previous_bounds")
+            elif normalize_schema(table_sql) != normalize_schema(_COMPUTER_SEQUENCE_SCHEMA):
+                raise ControlError("incompatible_schema")
             from .input_boot import SCHEMA as input_context_schema
             if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                               "AND name='input_context_resets'").fetchone():
@@ -318,6 +552,15 @@ class StateStore:
                     self._record_event(db, "input_context_retired_after_windows_boot", task=row["task"],
                         action=row["id"], details={"previous_boot": row["boot"], "current_boot": self.boot,
                         "original_release_preserved": True, "new_target_required": True})
+            if old_boot and old_boot[0] == self.boot:
+                from .input_boot import retire_missed_released_bindings
+                retired = retire_missed_released_bindings(db, old_boot[0], self.boot,
+                    native_boot=boot_identity() if self._native_boot else None, observed=time.time())
+                for row in retired:
+                    self._record_event(db, "input_context_retired_after_windows_boot", task=row["task"],
+                        action=row["id"], details={"previous_boot": row["boot"], "current_boot": self.boot,
+                        "original_release_preserved": True, "new_target_required": True,
+                        "missed_binding_migration": True})
             db.execute("INSERT OR REPLACE INTO meta VALUES ('schema',?)", (self.schema_version,))
             db.execute("INSERT OR REPLACE INTO meta VALUES ('boot',?)", (self.boot,))
 
@@ -470,6 +713,37 @@ class StateStore:
             self._initialize_task_write_epoch(db, task)
         return task
 
+    @staticmethod
+    def _task_jev_allowed(db, task):
+        row = db.execute("SELECT jev_allowed FROM task_service_settings WHERE task=?", (task,)).fetchone()
+        return row is None or bool(row[0])
+
+    def task_jev_enabled(self, task: str) -> bool:
+        """Task opt-out is an upper bound, never permission to enable the service."""
+        with self.read_transaction() as db:
+            self._task(db, task)
+            return self._task_jev_allowed(db, task)
+
+    def task_jev_policy(self, task: str, *, enabled: bool | None = None) -> dict:
+        if enabled is not None and type(enabled) is not bool:
+            raise ControlError("invalid_jev_task_setting")
+        context = self.transaction() if enabled is not None else self.read_transaction()
+        with context as db:
+            self._task(db, task)
+            if enabled is not None:
+                previous = self._task_jev_allowed(db, task)
+                if previous != enabled:
+                    db.execute("INSERT INTO task_service_settings(task,jev_allowed,revision,updated) VALUES (?,?,1,?) "
+                               "ON CONFLICT(task) DO UPDATE SET jev_allowed=excluded.jev_allowed,"
+                               "revision=revision+1,updated=excluded.updated", (task, int(enabled), self.clock()))
+                    db.execute("UPDATE tasks SET revision=revision+1 WHERE id=?", (task,))
+            row = db.execute("SELECT jev_allowed,revision FROM task_service_settings WHERE task=?", (task,)).fetchone()
+            allowed, revision = (bool(row[0]), row[1]) if row else (True, 0)
+        global_enabled = bool(self.jev_enabled and self.jev_enabled())
+        return {"scope": "this_chat", "allowed": allowed, "revision": revision,
+                "global_enabled": global_enabled, "effective": allowed and global_enabled,
+                "enables_new_provider": False, "grants_authorization": False}
+
     def _initialize_task_write_epoch(self, db, task: str):
         """A new task starts in the current gate; reconnects never call this."""
         status = self.write_gate.snapshot()
@@ -572,7 +846,7 @@ class StateStore:
         yield
 
     @contextmanager
-    def worker_write_admission(self, action_id, token, command_hash):
+    def worker_write_admission(self, action_id, token, command_hash, *, guard_resource=None):
         """Same admission for the real permitted worker, without impersonating its owner."""
         if self.write_stopped():
             raise ControlError("global_write_stopped")
@@ -580,6 +854,21 @@ class StateStore:
         with self.transaction() as db:
             action = db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
             epoch = self._check_write_epoch(db, action)
+            if guard_resource is not None:
+                # Driver-only shared-browser fence, checked at actual context
+                # entry alongside the existing epoch, never at construction.
+                # It is not claimed as an exclusive action resource: separate
+                # tabs may run concurrently. No writer crosses browser awaits.
+                row = db.execute("SELECT paused,quarantined,required_scope FROM resources WHERE id=?",
+                                 (guard_resource,)).fetchone()
+                if (row is None or row["paused"] or row["quarantined"]
+                        and not self._quarantine_permit_active(db, guard_resource)):
+                    raise ControlError("shared_profile_action_recovery_required")
+                self._require_scope(db, action["task"], row["required_scope"])
+                if db.execute("SELECT 1 FROM actions a,json_each(a.resources) r "
+                              "WHERE a.state IN ('queued','running') AND r.value=? LIMIT 1",
+                              (guard_resource,)).fetchone():
+                    raise ControlError("shared_profile_legacy_action_in_flight")
         try:
             if epoch is not None:
                 self.write_gate.admit(epoch)
@@ -626,22 +915,30 @@ class StateStore:
     def renew_or_replace_owner(self, task: str, owner: str) -> str:
         """Keep a live owner, or replace its expired/retired instance for this task."""
         with self.transaction() as db:
-            row = db.execute("SELECT * FROM owners WHERE id=?", (owner,)).fetchone()
-            if not row or row["task"] != task:
-                raise ControlError("owner_expired_or_missing")
-            if row["process"] != process_identity():
-                raise ControlError("owner_process_mismatch")
             self._task(db, task)
-            now = self.clock()
-            if not row["retired"] and row["live_until"] > now:
-                db.execute("UPDATE owners SET live_until=? WHERE id=?", (now + 120, owner))
-                return owner
-            if not row["retired"]:
-                self._retire_owner(db, owner)
-            replacement = _id()
-            db.execute("INSERT INTO owners(id,task,process,live_until) VALUES (?,?,?,?)",
-                       (replacement, task, process_identity(), now + 120))
-            return replacement
+            for _ in range(128):
+                row = db.execute("SELECT * FROM owners WHERE id=?", (owner,)).fetchone()
+                if not row or row["task"] != task:
+                    raise ControlError("owner_expired_or_missing")
+                if row["process"] != process_identity():
+                    raise ControlError("owner_process_mismatch")
+                now = self.clock()
+                if not row["retired"] and row["live_until"] > now:
+                    db.execute("UPDATE owners SET live_until=? WHERE id=?", (now + 120, owner))
+                    return owner
+                following = db.execute("SELECT replacement FROM owner_replacements WHERE prior=? AND task=?", (owner, task)).fetchone()
+                if following:
+                    owner = following[0]
+                    continue
+                if not row["retired"]:
+                    self._retire_owner(db, owner)
+                replacement = _id()
+                db.execute("INSERT INTO owners(id,task,process,live_until) VALUES (?,?,?,?)",
+                           (replacement, task, process_identity(), now + 120))
+                db.execute("INSERT INTO owner_replacements(prior,replacement,task) VALUES (?,?,?)",
+                           (owner, replacement, task))
+                return replacement
+            raise ControlError("owner_replacement_limit")
 
     def _task(self, db, task):
         row = db.execute("SELECT * FROM tasks WHERE id=?", (task,)).fetchone()
@@ -674,6 +971,32 @@ class StateStore:
             if not grant or grant[0] <= self.clock():
                 raise ControlError("task_authorization_required")
 
+    def _quarantine_permit_active(self, db, resource):
+        """A recovery is valid only in its original uninterrupted Stop epoch.
+
+        The resource's quarantine bit stays set, so older clients cannot
+        consume a recovery they do not understand. Any later quarantine write
+        invalidates this permit through a database trigger, including old code.
+        """
+        permit = db.execute("SELECT epoch,boot,keeper FROM web_quarantine_recovery_permits WHERE resource=?",
+                            (resource,)).fetchone()
+        if not permit:
+            return False
+        try:
+            # The issuing MCP process retains the session gate singleton for
+            # its whole life. If it exits, a recreated epoch-zero gate cannot
+            # revive this permit, even within the same Windows boot.
+            keeper = permit["keeper"]
+            if permit["boot"] != self.boot or not process_is_verified_alive(keeper):
+                return False
+            status = self.write_gate.snapshot()
+            return not status.stopped and status.epoch == permit["epoch"]
+        except Exception:
+            return False
+
+    def _effective_quarantine(self, db, resource, row):
+        return bool(row and row["quarantined"] and not self._quarantine_permit_active(db, resource))
+
     def bind_owned_resource(self, owner: str, resource: str):
         """Bind a newly owned temporary target; never infer sharing from its ID."""
         with self.transaction() as db:
@@ -682,6 +1005,67 @@ class StateStore:
             if existing and existing[0] != connection["task"]:
                 raise ControlError("target_belongs_to_another_task")
             db.execute("INSERT OR IGNORE INTO owned_resources VALUES (?,?)", (resource, connection["task"]))
+            db.execute("DELETE FROM released_resource_claims WHERE resource=? AND owner=?", (resource, owner))
+            db.execute("INSERT OR IGNORE INTO owned_resource_claims VALUES (?,?)", (resource, owner))
+            # Preserve live pre-upgrade clients using this same target. New
+            # clients register explicit claims above; this covers legacy rows.
+            db.execute("INSERT OR IGNORE INTO owned_resource_claims "
+                       "SELECT ?,a.owner FROM actions a JOIN owners o ON a.owner=o.id "
+                       "WHERE a.task=? AND o.retired=0 AND o.live_until>? "
+                       "AND EXISTS (SELECT 1 FROM json_each(a.resources) WHERE value=?) "
+                       "AND NOT EXISTS (SELECT 1 FROM released_resource_claims r WHERE r.resource=? AND r.owner=a.owner)",
+                       (resource, connection["task"], self.clock(), resource, resource))
+
+    def finish_owned_resources(self, owner: str, *, phase_release=False,
+                               preserve_observations=False, phase_release_check=None) -> dict:
+        """Release this connection's claims, preserving peers and unknown effects."""
+        if phase_release_check is not None and not phase_release:
+            raise ValueError("phase_check_requires_phase_release")
+        with (self.transaction(timeout=.02) if phase_release_check is not None else self.transaction()) as db:
+            connection = self._owner(db, owner, diagnostics=True)
+            if phase_release_check is not None:
+                phase_release_check(db)
+            resources = [row[0] for row in db.execute(
+                "SELECT resource FROM owned_resource_claims WHERE owner=?", (owner,))]
+            released = retained = 0
+            for resource in resources:
+                peers = db.execute("SELECT o.id,o.process,o.live_until FROM owned_resource_claims c "
+                    "JOIN owners o ON c.owner=o.id WHERE c.resource=? AND c.owner<>? AND o.retired=0",
+                    (resource, owner)).fetchall()
+                peer = False
+                for row in peers:
+                    if not process_is_alive(row["process"]):
+                        # Only peers of this target are considered. Their old
+                        # running effects retain normal unknown-result rules.
+                        self._retire_owner(db, row["id"], release_orphan=True)
+                    elif row["live_until"] > self.clock():
+                        peer = True
+                unresolved = db.execute("SELECT 1 FROM actions a "
+                    "WHERE a.state IN ('queued','running','outcome_uncertain') "
+                    "AND EXISTS (SELECT 1 FROM json_each(a.resources) WHERE value=?) LIMIT 1",
+                    (resource,)).fetchone()
+                target = db.execute("SELECT quarantined FROM resources WHERE id=?", (resource,)).fetchone()
+                if peer or unresolved or target and target[0]:
+                    if phase_release and peer and not unresolved and not (target and target[0]):
+                        # Withdraw this idle connection's claim while a peer
+                        # still owns the task resource. Do not retire the
+                        # connection or resolve unknown effects.
+                        db.execute("DELETE FROM owned_resource_claims WHERE owner=? AND resource=?", (owner, resource))
+                        db.execute("INSERT OR IGNORE INTO released_resource_claims VALUES (?,?)", (resource, owner))
+                    retained += 1
+                    continue
+                db.execute("DELETE FROM owned_resources WHERE resource=? AND task=?",
+                           (resource, connection["task"]))
+                if not preserve_observations:
+                    db.execute("UPDATE resources SET revision=revision+1 WHERE id=?", (resource,))
+                if not preserve_observations:
+                    db.execute("UPDATE observations SET expires=0 WHERE resource=? AND task=?",
+                               (resource, connection["task"]))
+                released += 1
+                db.execute("DELETE FROM owned_resource_claims WHERE owner=? AND resource=?", (owner, resource))
+                if phase_release:
+                    db.execute("INSERT OR IGNORE INTO released_resource_claims VALUES (?,?)", (resource, owner))
+            return {"released": released, "retained_for_peer_or_unresolved": retained}
 
     def same_chat_after_reboot(self, task: str, previous: object) -> bool:
         """Identify a prior boot's chat task without reviving its authority."""
@@ -836,28 +1220,33 @@ class StateStore:
             db.execute("INSERT OR REPLACE INTO meta VALUES ('focus_sequence',?)", (str(sequence),))
             return True
 
-    def pause_task(self, task: str):
+    def pause_task(self, task: str, *, reason="explicit_stop"):
         with self.transaction() as db:
             self._task(db, task)
             db.execute("UPDATE tasks SET paused=1,revision=revision+1 WHERE id=?", (task,))
-            self._stop_task_actions(db, task)
+            self._stop_task_actions(db, task, reason=reason)
 
-    def _stop_task_actions(self, db, task: str):
+    def _stop_task_actions(self, db, task: str, *, reason="explicit_stop"):
         """Record Stop in the same transaction as its authorization mutation."""
         db.execute("UPDATE observations SET expires=0 WHERE task=?", (task,))
         db.execute("UPDATE actions SET cancel_requested=1 WHERE task=? AND state='running'", (task,))
         db.execute("UPDATE actions SET state='cancelled',cancel_requested=1,updated=? "
                    "WHERE task=? AND state='queued'", (self.clock(), task))
-        db.execute("UPDATE foreground_stages SET stop_received=COALESCE(stop_received,?),"
-                   "interruption='explicit_stop',interrupted=COALESCE(interrupted,?) "
-                   "WHERE action IN (SELECT id FROM actions WHERE task=?) AND lease_released IS NULL",
-                   (self.clock(), self.clock(), task))
+        for row in db.execute("SELECT action FROM foreground_stages WHERE action IN "
+                "(SELECT id FROM actions WHERE task=?) AND lease_released IS NULL", (task,)).fetchall():
+            self._mark_stage_interruption(db, row["action"], reason)
 
     def _mark_stage_stop(self, db, action_id: str):
+        self._mark_stage_interruption(db, action_id, "explicit_stop")
+
+    def _mark_stage_interruption(self, db, action_id: str, reason):
+        if reason not in {"explicit_stop", "user_pause", "human_handoff", "target_closed"}:
+            raise ControlError("invalid_pause_reason")
         now = self.clock()
-        db.execute("UPDATE foreground_stages SET stop_received=COALESCE(stop_received,?),"
-                   "interruption='explicit_stop',interrupted=COALESCE(interrupted,?) WHERE action=?",
-                   (now, now, action_id))
+        db.execute("UPDATE foreground_stages SET "
+                   "stop_received=CASE WHEN ?='explicit_stop' THEN COALESCE(stop_received,?) ELSE stop_received END,"
+                   "interruption=CASE WHEN stop_received IS NOT NULL THEN interruption ELSE ? END,"
+                   "interrupted=COALESCE(interrupted,?) WHERE action=?", (reason, now, reason, now, action_id))
 
     def resume_from_user_event(self, task: str):
         epoch = self.write_gate.snapshot().epoch
@@ -886,8 +1275,10 @@ class StateStore:
             for resource in resources:
                 db.execute("UPDATE resources SET paused=0,revision=revision+1 WHERE id=?", (resource,))
 
-    def pause_computer_target(self, task: str, resource: str) -> None:
+    def pause_computer_target(self, task: str, resource: str, *, reason="explicit_stop") -> None:
         """Stop only one owned window and cancel its pending Computer actions."""
+        if reason not in {"explicit_stop", "user_pause", "human_handoff", "target_closed"}:
+            raise ControlError("invalid_pause_reason")
         with self.transaction() as db:
             self._task(db, task)
             owned = db.execute("SELECT task FROM owned_resources WHERE resource=?",
@@ -910,7 +1301,32 @@ class StateStore:
                 else:
                     db.execute("UPDATE actions SET cancel_requested=1 WHERE id=?",
                                (action["id"],))
-                self._mark_stage_stop(db, action["id"])
+                self._mark_stage_interruption(db, action["id"], reason)
+
+    def _migrate_computer_stop_evidence(self, db):
+        if db.execute("SELECT 1 FROM meta WHERE key='computer_stop_counts_v1'").fetchone():
+            return
+        db.execute("INSERT OR IGNORE INTO computer_stop_late_release SELECT DISTINCT action FROM control_events "
+                   "WHERE action IS NOT NULL AND event IN ('external_input_release_recovered','input_release_confirmed')")
+        rows = db.execute("SELECT * FROM actions WHERE state='outcome_uncertain' AND result_code='broker_paused'").fetchall()
+        for action in rows:
+            resources = json.loads(action["resources"])
+            targets = [r for r in resources if r != FOREGROUND_INPUT_RESOURCE]
+            event = db.execute("SELECT seq FROM control_events WHERE event='action_dispatched' AND action=?", (action["id"],)).fetchone()
+            if (len(targets) != 1 or not event or
+                    self._legacy_released_computer_stop(db, action["task"], targets[0]) != action["id"]):
+                continue
+            dispatches = [json.loads(row[0]) for row in db.execute(
+                "SELECT a.resources FROM control_events e JOIN actions a ON a.id=e.action "
+                "WHERE e.event='action_dispatched' AND e.seq>=?", (event[0],))]
+            for resource in resources:
+                db.execute("INSERT OR IGNORE INTO web_recovery_resource_counts(resource) VALUES (?)", (resource,))
+                count = sum(resource in values for values in dispatches)
+                db.execute("INSERT OR IGNORE INTO computer_stop_count_baselines "
+                           "SELECT ?,r.id,r.revision-?-1,c.dispatches-?,c.quarantines-1,c.reissues "
+                           "FROM resources r JOIN web_recovery_resource_counts c ON c.resource=r.id WHERE r.id=?",
+                           (action["id"], count, count, resource))
+        db.execute("INSERT INTO meta VALUES ('computer_stop_counts_v1','1')")
 
     def _legacy_released_computer_stop(self, db, task, resource):
         """Identify only the old known broker Stop misclassified by the driver.
@@ -947,15 +1363,21 @@ class StateStore:
                 or not effects or effects["read_only"] or effects["input_release"] != "released"
                 or effects["activation_dispatched"] is None or effects["business_dispatched"] != 1
                 or db.execute("SELECT 1 FROM computer_sequence_progress WHERE action=?", (action["id"],)).fetchone()
+                or db.execute("SELECT 1 FROM computer_stop_late_release WHERE action=?", (action["id"],)).fetchone()
                 or db.execute("SELECT 1 FROM control_events WHERE action=? AND event IN "
                               "('external_input_release_recovered','input_release_confirmed')", (action["id"],)).fetchone()):
             return None
         # Successful original dispatch already checked both resources were not
         # quarantined. Older uncertainty may have recovered shared foreground
         # while retaining its original target; it is not this Stop's blocker.
-        dispatched = db.execute("SELECT seq FROM control_events WHERE event='action_dispatched' AND action=?",
+        dispatched = db.execute("SELECT seq FROM web_recovery_dispatch_order WHERE action=?", (action["id"],)).fetchone()
+        if dispatched is None:
+            dispatched = db.execute("SELECT seq FROM control_events WHERE event='action_dispatched' AND action=?",
                                 (action["id"],)).fetchone()
         if dispatched is None:
+            return None
+        durable = {r["resource"]: r for r in db.execute("SELECT * FROM computer_stop_count_baselines WHERE action=?", (action["id"],))}
+        if durable and set(durable) != affected:
             return None
         for other in db.execute("SELECT rowid AS record_order,* FROM actions WHERE state IN ('running','outcome_uncertain')"):
             if other["id"] == action["id"] or not affected.intersection(json.loads(other["resources"])):
@@ -964,6 +1386,12 @@ class StateStore:
                                   (other["id"],)).fetchone()[0]
             later_dispatch = db.execute("SELECT 1 FROM control_events WHERE event='action_dispatched' "
                                         "AND action=? AND seq>=?", (other["id"], dispatched[0])).fetchone()
+            order = db.execute("SELECT seq FROM web_recovery_dispatch_order WHERE action=?", (other["id"],)).fetchone()
+            if order and order[0] >= dispatched[0]:
+                return None
+            if (durable and not order and not later_dispatch and finished is None
+                    and (other["dispatched"] or other["record_order"] >= action["record_order"])):
+                return None
             # Monotonic timestamps from earlier boots are not comparable.
             # Existing terminal rows without events can also predate this
             # healthy dispatch; insertion order keeps that history unchanged.
@@ -987,6 +1415,17 @@ class StateStore:
         dispatches = sum(resource in json.loads(row[0]) for row in db.execute(
             "SELECT a.resources FROM control_events e JOIN actions a ON a.id=e.action "
             "WHERE e.event='action_dispatched' AND e.seq>=?", (dispatched[0],)))
+        if durable:
+            for member in affected:
+                totals = db.execute("SELECT * FROM web_recovery_resource_counts WHERE resource=?", (member,)).fetchone()
+                base = durable[member]
+                if (not totals or totals["quarantines"] - base["quarantines"] != 1
+                        or totals["reissues"] != base["reissues"]):
+                    return None
+            if durable[resource]["revision"] != observed["revision"]:
+                return None
+            totals = db.execute("SELECT dispatches FROM web_recovery_resource_counts WHERE resource=?", (resource,)).fetchone()
+            dispatches = totals[0] - durable[resource]["dispatches"]
         if target["revision"] != observed["revision"] + dispatches + 1:
             return None
         return action["id"]
@@ -1003,8 +1442,12 @@ class StateStore:
                                 (resource,)).fetchone()
             front = db.execute("SELECT paused,quarantined,revision FROM resources WHERE id=?",
                                (FOREGROUND_INPUT_RESOURCE,)).fetchone()
-            quarantined = bool(target and target["quarantined"] or front and front["quarantined"])
+            quarantined = (self._effective_quarantine(db, resource, target) or
+                           self._effective_quarantine(db, FOREGROUND_INPUT_RESOURCE, front))
             legacy_stop = self._legacy_released_computer_stop(db, task, resource) if quarantined else None
+            if legacy_stop and db.execute("SELECT 1 FROM web_quarantine_recovery_debts WHERE resource IN (?,?) LIMIT 1",
+                                          (resource, FOREGROUND_INPUT_RESOURCE)).fetchone():
+                raise ControlError("computer_recovery_required")
             if not target or quarantined and legacy_stop is None:
                 raise ControlError("computer_recovery_required")
             self._require_scope(db, task, target["required_scope"])
@@ -1055,8 +1498,12 @@ class StateStore:
                                 (resource,)).fetchone()
             front = db.execute("SELECT paused,quarantined,revision FROM resources WHERE id=?",
                                (FOREGROUND_INPUT_RESOURCE,)).fetchone()
-            quarantined = bool(target and target["quarantined"] or front and front["quarantined"])
+            quarantined = (self._effective_quarantine(db, resource, target) or
+                           self._effective_quarantine(db, FOREGROUND_INPUT_RESOURCE, front))
             legacy_stop = self._legacy_released_computer_stop(db, task, resource) if quarantined else None
+            if legacy_stop and db.execute("SELECT 1 FROM web_quarantine_recovery_debts WHERE resource IN (?,?) LIMIT 1",
+                                          (resource, FOREGROUND_INPUT_RESOURCE)).fetchone():
+                raise ControlError("computer_recovery_required")
             if (not target or quarantined and (legacy_stop is None or len(snapshot) != 4)
                     or front and front["paused"]):
                 raise ControlError("computer_recovery_required")
@@ -1098,19 +1545,44 @@ class StateStore:
         """Historical internal name; the name alone does not prove human input."""
         return self.resume_computer_from_chat_request(task, resource, snapshot)
 
-    def retire_owner(self, owner: str):
+    def retire_owner(self, owner: str, *, release_orphan: bool = False):
         with self.transaction() as db:
             self._owner(db, owner, diagnostics=True)
-            self._retire_owner(db, owner)
+            self._retire_owner(db, owner, release_orphan=release_orphan)
 
-    def _retire_owner(self, db, owner: str):
+    def _retire_owner(self, db, owner: str, *, release_orphan: bool = False):
         db.execute("UPDATE owners SET retired=1 WHERE id=?", (owner,))
+        task_row = db.execute("SELECT task FROM owners WHERE id=?", (owner,)).fetchone()
+        task = task_row["task"] if task_row is not None else None
+        claimed = [row[0] for row in db.execute(
+            "SELECT resource FROM owned_resource_claims WHERE owner=?", (owner,))]
+        if release_orphan:
+            db.execute("DELETE FROM owned_resource_claims WHERE owner=?", (owner,))
         for action in db.execute("SELECT * FROM actions WHERE owner=? AND state='running'", (owner,)).fetchall():
             self._interrupt_action(db, action, "owner_retired")
             db.execute("UPDATE actions SET cancel_requested=1 WHERE id=?", (action["id"],))
         db.execute("UPDATE actions SET state='cancelled' WHERE owner=? AND state='queued'", (owner,))
         db.execute("UPDATE occupancy SET ended=? WHERE ended IS NULL AND action IN "
                    "(SELECT id FROM actions WHERE owner=?)", (self.clock(), owner))
+        if task is not None and release_orphan:
+            # A dead/EOF owner must not keep a target reserved after all of its
+            # peers are gone. Preserve ownership for live peers and for any
+            # still-unresolved effect on this exact resource.
+            for resource in claimed:
+                live_peer = db.execute(
+                    "SELECT 1 FROM owned_resource_claims c JOIN owners o ON c.owner=o.id "
+                    "WHERE c.resource=? AND o.retired=0 AND o.live_until>? LIMIT 1",
+                    (resource, self.clock())).fetchone()
+                unresolved = db.execute(
+                    "SELECT 1 FROM actions a WHERE a.state IN ('queued','running','outcome_uncertain') "
+                    "AND EXISTS (SELECT 1 FROM json_each(a.resources) WHERE value=?) LIMIT 1",
+                    (resource,)).fetchone()
+                if live_peer is None and unresolved is None:
+                    db.execute("DELETE FROM owned_resources WHERE resource=? AND task=?",
+                               (resource, task))
+                    db.execute("UPDATE resources SET revision=revision+1 WHERE id=?", (resource,))
+                    db.execute("UPDATE observations SET expires=0 WHERE resource=? AND task=?",
+                               (resource, task))
 
     def revoke_task(self, task: str):
         with self.transaction() as db:
@@ -1121,13 +1593,16 @@ class StateStore:
                        "WHERE action IN (SELECT id FROM actions WHERE task=?) AND lease_released IS NULL", (task,))
 
     def observe(self, owner: str, resource: str, generation: str, *, ttl: float = 15,
-                purpose: str | None = None) -> str:
+                purpose: str | None = None, policy_revision: str | None = None) -> str:
         # Only the internal App TextPattern page continuation needs the already
         # accepted 300s idle window. General/UIA references keep their defaults.
         maximum = 300 if purpose == "app_text_page" else 120
         if purpose not in (None, "app_text_page") or type(ttl) not in (int, float) or not 0 < ttl <= maximum or not generation:
             raise ControlError("invalid_observation")
         with self.transaction() as db:
+            observed_policy = _permission_revision()
+            if policy_revision is not None and observed_policy != policy_revision:
+                raise ControlError("user_policy_requires_new_observation")
             connection = self._owner(db, owner)
             if self._task(db, connection["task"])["paused"]:
                 raise ControlError("user_paused")
@@ -1146,13 +1621,74 @@ class StateStore:
                        (observation, connection["task"], resource, row["revision"], generation,
                         self.clock() + ttl))
             db.execute("INSERT INTO observation_write_epochs VALUES (?,?)", (observation, self.write_gate.snapshot().epoch))
+            db.execute("INSERT INTO observation_policy_revisions VALUES (?,?)", (observation, observed_policy))
             return observation
+
+    def reserve_expired_app_write(self, owner: str, *, action_id: str, fingerprint: str,
+                                  resource: str, scope: str, observation: str,
+                                  generation: str, policy_revision: str, refresh_action: str,
+                                  shared_resource: str | None, shared_revision: int | None) -> bool:
+        """Atomically consume an expired App write ID without dispatching it."""
+        with self.transaction() as db:
+            connection = self._owner(db, owner)
+            if db.execute("SELECT 1 FROM actions WHERE id=?", (action_id,)).fetchone():
+                return False
+            task = self._task(db, connection["task"])
+            self._require_owned_resource(db, connection["task"], resource)
+            self._require_scope(db, connection["task"], scope)
+            old = db.execute("SELECT * FROM observations WHERE id=?", (observation,)).fetchone()
+            row = db.execute("SELECT * FROM resources WHERE id=?", (resource,)).fetchone()
+            old_policy = db.execute("SELECT revision FROM observation_policy_revisions WHERE observation=?", (observation,)).fetchone()
+            old_epoch = db.execute("SELECT epoch FROM observation_write_epochs WHERE observation=?", (observation,)).fetchone()
+            task_epoch = db.execute("SELECT epoch FROM task_write_epochs WHERE task=?", (connection["task"],)).fetchone()
+            gate = self.write_gate.snapshot()
+            if (task["paused"] or gate.stopped or not old or not row or not old_policy or not old_epoch
+                    or old["task"] != connection["task"] or old["resource"] != resource
+                    or not 0 < old["expires"] <= self.clock()
+                    or old["revision"] != row["revision"] or old["generation"] != generation
+                    or row["generation"] != generation or row["paused"] or self._effective_quarantine(db, resource, row)
+                    or old_policy[0] != policy_revision or _permission_revision() != policy_revision
+                    or old_epoch[0] != gate.epoch
+                    or max(task_epoch[0] if task_epoch else 0, gate.resume_all_epoch) < gate.epoch):
+                raise ControlError("observation_unavailable")
+            now = self.clock()
+            db.execute("INSERT INTO actions(id,owner,task,fingerprint,resources,scope,observation,"
+                       "generation,state,created,updated,dispatched,result_code) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (action_id, owner, connection["task"], fingerprint, _json([resource]), scope,
+                        observation, generation, "not_verified", now, now, 0, "observation_expired_reselection_required"))
+            db.execute("INSERT INTO action_write_epochs VALUES (?,?)", (action_id, gate.epoch))
+            db.execute("INSERT INTO action_policy_revisions VALUES (?,?)", (action_id, policy_revision))
+            db.execute("INSERT INTO action_effects(action,read_only,activation_dispatched,business_dispatched,input_release) VALUES (?,0,0,0,NULL)", (action_id,))
+            db.execute("INSERT INTO action_hints VALUES (?,?,NULL)", (action_id, Phase.WORK.value))
+            db.execute("INSERT INTO action_context VALUES (?,?)", (action_id, "{}"))
+            db.execute("INSERT INTO app_expired_refresh_reads VALUES (?,?,?,?,?)", (refresh_action,
+                action_id, observation, shared_resource, shared_revision))
+            self._record_event(db, "action_finished", task=connection["task"], action=action_id,
+                               details={"state": "not_verified", "reason": "observation_expired_reselection_required"})
+            return True
 
     def enqueue(self, owner: str, *, action_id: str, fingerprint: str, resources: tuple[str, ...],
                 scope: str | None = None, observation: str | None = None,
                 generation: str | None = None, phase: Phase = Phase.WORK,
                 estimated_ms: int | None = None, context: dict | None = None,
                 read_only: bool = False):
+        result = self._enqueue(owner, action_id=action_id, fingerprint=fingerprint, resources=resources,
+            scope=scope, observation=observation, generation=generation, phase=phase,
+            estimated_ms=estimated_ms, context=context, read_only=read_only)
+        from .call_cancellation import current_call_cancel, CallCancellation
+        cancellation = current_call_cancel.get()
+        if isinstance(cancellation, CallCancellation):
+            cancellation.track(self, owner, action_id)
+        return result
+
+    def _enqueue(self, owner: str, *, action_id: str, fingerprint: str, resources: tuple[str, ...],
+                 scope: str | None = None, observation: str | None = None,
+                 generation: str | None = None, phase: Phase = Phase.WORK,
+                 estimated_ms: int | None = None, context: dict | None = None,
+                 read_only: bool = False):
+        from .call_cancellation import call_cancelled
+        if call_cancelled():
+            raise ControlError("call_cancelled")
         if type(read_only) is not bool or (read_only and FOREGROUND_INPUT_RESOURCE in resources):
             raise ControlError("invalid_read_only_action")
         if not isinstance(phase, Phase) or (estimated_ms is not None and
@@ -1198,11 +1734,12 @@ class StateStore:
                         observation, generation, now, now))
             action = db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
             db.execute("INSERT INTO action_write_epochs VALUES (?,?)", (action_id, self.write_gate.snapshot().epoch))
+            db.execute("INSERT INTO action_policy_revisions VALUES (?,?)", (action_id, _permission_revision()))
             if read_only:
                 db.execute("INSERT INTO action_effects VALUES (?,1,0,0,NULL)", (action_id,))
             db.execute("INSERT INTO action_hints VALUES (?,?,?)", (action_id, phase.value, estimated_ms))
             db.execute("INSERT INTO action_context VALUES (?,?)", (action_id, _json(context)))
-            self._check_action(db, action)
+            self._check_action(db, action, business_dependencies=False)
             self._record_event(db, "action_queued", task=connection["task"], action=action_id,
                                details={"phase": phase.value, "estimated_ms": estimated_ms,
                                         "resources": [r.split(":", 1)[0] for r in resources]})
@@ -1218,7 +1755,21 @@ class StateStore:
         context = json.loads(context[0]) if context else {}
         return context.get("operation") == "bind" and context.get("channel") in {"app", "computer"}
 
-    def _check_action(self, db, action):
+    def _check_action(self, db, action, *, business_dependencies=True):
+        from .call_cancellation import call_cancelled
+        if call_cancelled():
+            raise ControlError("call_cancelled")
+        from .business_plan import check_action
+        check_action(db, action, dependencies=business_dependencies)
+        policy_revision = _permission_revision()
+        recorded = db.execute("SELECT revision FROM action_policy_revisions WHERE action=?", (action["id"],)).fetchone()
+        if (recorded[0] if recorded else "absent") != policy_revision:
+            raise ControlError("user_policy_requires_new_observation")
+        if action["observation"]:
+            recorded = db.execute("SELECT revision FROM observation_policy_revisions WHERE observation=?",
+                                  (action["observation"],)).fetchone()
+            if (recorded[0] if recorded else "absent") != policy_revision:
+                raise ControlError("user_policy_requires_new_observation")
         try:
             self._check_write_epoch(db, action)
         except WriteGateError as error:
@@ -1229,6 +1780,29 @@ class StateStore:
             raise ControlError("owner_expired_or_missing")
         effects = db.execute("SELECT read_only FROM action_effects WHERE action=?", (action["id"],)).fetchone()
         read_only = bool(effects and effects[0])
+        refresh = db.execute("SELECT * FROM app_expired_refresh_reads WHERE action=?", (action["id"],)).fetchone()
+        if refresh:
+            parent = db.execute("SELECT task,state,result_code FROM actions WHERE id=?", (refresh["parent"],)).fetchone()
+            original = db.execute("SELECT * FROM observations WHERE id=?", (refresh["source"],)).fetchone()
+            original_epoch = db.execute("SELECT epoch FROM observation_write_epochs WHERE observation=?", (refresh["source"],)).fetchone()
+            original_policy = db.execute("SELECT revision FROM observation_policy_revisions WHERE observation=?", (refresh["source"],)).fetchone()
+            original_resource = db.execute("SELECT * FROM resources WHERE id=?", (original["resource"],)).fetchone() if original else None
+            gate = self.write_gate.snapshot()
+            delta = 1 if action["state"] == "running" else 0
+            if (not read_only or not parent or parent["task"] != action["task"]
+                    or parent["state"] != "not_verified" or parent["result_code"] != "observation_expired_reselection_required"
+                    or not original or original["task"] != action["task"] or not 0 < original["expires"] <= self.clock()
+                    or not original_epoch or gate.stopped or original_epoch[0] != gate.epoch
+                    or not original_policy or original_policy[0] != policy_revision
+                    or not original_resource or original_resource["revision"] != original["revision"] + delta
+                    or original_resource["generation"] != original["generation"]
+                    or original_resource["paused"] or self._effective_quarantine(db, original["resource"], original_resource)):
+                raise ControlError("observation_unavailable")
+            if refresh["shared_resource"] is not None:
+                shared = db.execute("SELECT revision,paused,quarantined FROM resources WHERE id=?", (refresh["shared_resource"],)).fetchone()
+                if (not shared or refresh["shared_revision"] is None or shared["revision"] != refresh["shared_revision"] + delta
+                        or shared["paused"] or self._effective_quarantine(db, refresh["shared_resource"], shared)):
+                    raise ControlError("observation_unavailable")
         binding = self._metadata_binding(db, action["id"], read_only=read_only)
         if action["cancel_requested"] or task["paused"] and not binding:
             raise ControlError("user_paused_or_cancelled")
@@ -1254,7 +1828,9 @@ class StateStore:
         for resource in resources:
             self._require_owned_resource(db, action["task"], resource)
             row = db.execute("SELECT * FROM resources WHERE id=?", (resource,)).fetchone()
-            if row["paused"] and not binding or row["quarantined"] and not read_only:
+            if (row["paused"] and not binding or row["quarantined"] and not read_only
+                    and not self._quarantine_permit_active(db, resource)
+                    and not self._is_web_instance_close(db, action, resource)):
                 raise ControlError("resource_paused_or_quarantined")
             self._require_scope(db, action["task"], row["required_scope"])
         if action["scope"]:
@@ -1271,6 +1847,28 @@ class StateStore:
             revision = db.execute("SELECT revision FROM resources WHERE id=?", (obs["resource"],)).fetchone()[0]
             if obs["expires"] <= self.clock() or obs["revision"] != revision or obs["generation"] != action["generation"]:
                 raise ControlError("observation_stale")
+
+    @staticmethod
+    def _is_web_instance_close(db, action, resource):
+        """Narrow native lifecycle exception, never an ordinary Web write.
+
+        Only the existing trusted close adapter can create this FINISH action.
+        The exact empty close_browser fingerprint also binds the worker permit,
+        so context metadata cannot authorize click/navigate/fill. This does not
+        clear quarantine; closed-process evidence must establish recovery later.
+        """
+        from .worker_call import command_hash
+        if (not action["id"].startswith("web-close:")
+                or len(action["id"]) != len("web-close:") + 32
+                or action["fingerprint"] != command_hash("close_browser", {})
+                or json.loads(action["resources"]) != [resource]
+                or not resource.startswith(("web-profile:", "web-session:", "web-borrower:"))):
+            return False
+        hint = db.execute("SELECT phase FROM action_hints WHERE action=?", (action["id"],)).fetchone()
+        context = db.execute("SELECT details FROM action_context WHERE action=?", (action["id"],)).fetchone()
+        return (hint is not None and hint[0] == Phase.FINISH.value and context is not None
+                and json.loads(context[0]) == {"channel":"web", "operation":"close_browser",
+                                             "foreground_needed":False})
 
     def _snapshot(self, db, seed: tuple[str, ...]):
         queued = db.execute("SELECT * FROM actions WHERE state='queued' ORDER BY created,id").fetchall()
@@ -1350,13 +1948,19 @@ class StateStore:
     def _scheduling_candidates(self, db, domain, action_ids):
         now = self.clock()
         local_jev_enabled = bool(self.jev_enabled and self.jev_enabled())
-        history = [row for row in db.execute("SELECT * FROM occupancy WHERE ended IS NULL OR ended>?",
+        history = [row for row in db.execute("SELECT rowid AS turn_sequence,* FROM occupancy WHERE ended IS NULL OR ended>?",
                                             (now - 30,)).fetchall()
                    if set(domain).intersection(json.loads(row["resources"]))]
         used = {}
         for row in history:
             elapsed = max(0, (row["ended"] or now) - max(row["started"], now - 30))
             used[row["task"]] = used.get(row["task"], 0) + int(elapsed * 1000)
+        resource_turns = {}
+        for row in history:
+            # Every actual use of this conflict domain consumes a turn. A
+            # background-only request sharing the same target must not retain
+            # perpetual "never used foreground" priority over waiting input.
+            resource_turns[row["task"]] = max(resource_turns.get(row["task"], 0), row["turn_sequence"])
         finished = sorted((row for row in history if row["ended"] is not None),
                           key=lambda r: r["ended"], reverse=True)
         last_task = finished[0]["task"] if finished and now - finished[0]["ended"] <= 2 else None
@@ -1369,7 +1973,7 @@ class StateStore:
             prior_end = row["started"]
         result = []
         for action_id in action_ids:
-            action = db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+            action = db.execute("SELECT rowid AS queued_sequence,* FROM actions WHERE id=?", (action_id,)).fetchone()
             task = self._task(db, action["task"])
             hints = db.execute("SELECT * FROM action_hints WHERE action=?", (action_id,)).fetchone()
             context_row = db.execute("SELECT details FROM action_context WHERE action=?", (action_id,)).fetchone()
@@ -1382,7 +1986,9 @@ class StateStore:
                                     action["created"], bool(task["focus"]), last_task == task["id"],
                                     continuation_ms if last_task == task["id"] else 0,
                                     used.get(task["id"], 0), hints["estimated_ms"], Phase(hints["phase"]),
-                                    None, local_jev_enabled, True, **candidate_context))
+                                    None, local_jev_enabled and self._task_jev_allowed(db, task["id"]), True,
+                                    queued_sequence=action["queued_sequence"],
+                                    last_resource_turn=resource_turns.get(task["id"]), **candidate_context))
         return tuple(result)
 
     def scheduling_request(self, decision_id: str):
@@ -1400,6 +2006,9 @@ class StateStore:
 
     def _start_locked_dispatch(self, db, owner, action_id, decision_id, resources):
         """Shared ledger checks, after the actual native executor acquired locks."""
+        from .call_cancellation import call_cancelled
+        if call_cancelled():
+            raise ControlError("call_cancelled")
         self._owner(db, owner)
         action = db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
         decision = db.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
@@ -1413,9 +2022,34 @@ class StateStore:
         if fingerprint != decision["fingerprint"]:
             raise ControlError("decision_stale")
         self._check_action(db, action)
-        for running in db.execute("SELECT resources FROM actions WHERE state='running'"):
-            if set(resources).intersection(json.loads(running[0])):
+        for running in db.execute("SELECT * FROM actions WHERE state='running'"):
+            if set(resources).intersection(self._running_resources(db, running)):
                 raise ControlError("resource_execution_unresolved")
+        context = db.execute("SELECT details FROM action_context WHERE action=?", (action_id,)).fetchone()
+        context = json.loads(context[0]) if context else {}
+        borrowers = [resource for resource in resources if resource.startswith("web-borrower:")]
+        if (context.get("channel") == "web" and context.get("operation") == "new_page"
+                and len(borrowers) == 1):
+            # Record the actual checked resource revisions before dispatch.
+            # The baseline cannot be reconstructed from later screenshots or
+            # from a previous action's uncertain receipt.
+            for resource in resources:
+                revision = db.execute("SELECT revision FROM resources WHERE id=?", (resource,)).fetchone()
+                if revision is None:
+                    raise ControlError("resource_not_found")
+                db.execute("INSERT INTO web_create_resource_baselines VALUES (?,?,?)",
+                           (action_id, resource, revision[0]))
+                db.execute("INSERT OR IGNORE INTO web_recovery_resource_counts(resource) VALUES (?)", (resource,))
+                db.execute("INSERT INTO web_recovery_count_baselines "
+                           "SELECT ?,resource,dispatches,quarantines,reissues FROM web_recovery_resource_counts WHERE resource=?",
+                           (action_id, resource))
+        if (context.get("channel") == "computer" and context.get("operation") == "key"
+                and len(resources) == 2 and FOREGROUND_INPUT_RESOURCE in resources):
+            for resource in resources:
+                db.execute("INSERT OR IGNORE INTO web_recovery_resource_counts(resource) VALUES (?)", (resource,))
+                db.execute("INSERT INTO computer_stop_count_baselines "
+                           "SELECT ?,r.id,r.revision,c.dispatches,c.quarantines,c.reissues FROM resources r "
+                           "JOIN web_recovery_resource_counts c ON c.resource=r.id WHERE r.id=?", (action_id, resource))
         db.execute("UPDATE decisions SET state='consumed' WHERE id=?", (decision_id,))
         db.execute("UPDATE actions SET state='running',dispatched=1,updated=? WHERE id=?", (self.clock(), action_id))
         db.execute("INSERT INTO occupancy VALUES (?,?,?,?,NULL)",
@@ -1452,6 +2086,10 @@ class StateStore:
             raise ControlError("abandoned_execution_requires_recovery") from None
         except ResourceBusy:
             raise ControlError("resource_busy") from None
+        except ControlError as error:
+            if error.code == "call_cancelled":
+                self.cancel(owner, action_id)
+            raise
         finally:
             try:
                 if began:
@@ -1472,7 +2110,7 @@ class StateStore:
                     with self.transaction() as db:
                         now = self.clock()
                         db.execute("UPDATE foreground_stages SET ended=COALESCE(ended,?),"
-                                   "lease_released=? WHERE action=?", (now, now, action_id))
+                                   "lease_released=COALESCE(lease_released,?) WHERE action=?", (now, now, action_id))
 
     @contextmanager
     def dispatch_external(self, owner: str, action_id: str, decision_id: str, lease):
@@ -1501,15 +2139,23 @@ class StateStore:
             with self.transaction() as db:
                 lease.verify()
                 action = self._start_locked_dispatch(db, owner, action_id, decision_id, resources)
+                metadata_binding = self._metadata_binding(db, action_id)
                 self._dispatch_threads[action_id] = threading.get_ident()
                 self._external_dispatches[action_id] = lease
                 self._external_native_dispatches[(id(self), action_id)] = lease
                 self._bind_external_ledger(db, action_id, lease)
                 self._external_pending(owner, action_id, lease, _db=db)
                 began = True
+            # Publish the exception only after the running action committed.
+            if metadata_binding and self._external_dispatches.get(action_id) is lease:
+                self._external_metadata_bindings[action_id] = (owner, lease)
             # Durable pre-go uncertainty; only this exact helper's terminal
             # native receipt may confirm its ledger. Exit is not a receipt.
             yield action
+        except ControlError as error:
+            if error.code == "call_cancelled":
+                self.cancel(owner, action_id)
+            raise
         finally:
             if began:
                 # A bounded sequence replaces the native lease between steps,
@@ -1527,16 +2173,18 @@ class StateStore:
                         now = self.clock()
                         db.execute("UPDATE occupancy SET ended=? WHERE action=? AND ended IS NULL", (now, action_id))
                         db.execute("UPDATE foreground_stages SET ended=COALESCE(ended,?),"
-                                   "lease_released=CASE WHEN ? THEN ? ELSE lease_released END WHERE action=?",
+                                   "lease_released=CASE WHEN ? THEN COALESCE(lease_released,?) ELSE lease_released END WHERE action=?",
                                    (now, bool(lease.result and lease.result["MutexReleased"]), now, action_id))
                 finally:
                     self._dispatch_threads.pop(action_id, None)
                     self._external_dispatches.pop(action_id, None)
+                    self._external_metadata_bindings.pop(action_id, None)
                     if not lease.wait_requires_yield(FOREGROUND_INPUT_RESOURCE):
                         self._external_native_dispatches.pop((id(self), action_id), None)
             elif self._external_dispatches.get(action_id) is lease:
                 self._dispatch_threads.pop(action_id, None)
                 self._external_dispatches.pop(action_id, None)
+                self._external_metadata_bindings.pop(action_id, None)
                 self._external_native_dispatches.pop((id(self), action_id), None)
 
     def _external_effects(self, owner, action_id, activation, business, release, *, _db=None):
@@ -1584,8 +2232,13 @@ class StateStore:
                     result["SemanticBusinessDispatched"] if result["SemanticExecutor"] is not None else
                     True if result["BusinessEvents"] else
                     False if not result["BusinessAttempted"] or result["NativeCountKnown"] else None)
-        self._external_effects(owner, action_id, result["ActivationRequested"], business, result["InputRelease"])
+        self._external_effects(owner, action_id,
+            result["ActivationRequested"] or bool(result.get("KeyboardReleaseEvents", 0)), business, result["InputRelease"])
         with self.transaction() as db:
+            db.execute("INSERT OR IGNORE INTO action_pointer_receipts VALUES (?,?,?)",
+                       (lease.ledger_identity, action_id, result.get("PointerEvents", 0)))
+            pointer_events = db.execute("SELECT COALESCE(SUM(events),0) FROM action_pointer_receipts WHERE action=?", (action_id,)).fetchone()[0]
+            db.execute("INSERT OR REPLACE INTO action_pointer_effects VALUES (?,?)", (action_id, pointer_events))
             if result["RequiresNewObservation"]:
                 db.execute("UPDATE observations SET expires=0 WHERE task=?", (lease.chat_id,))
             if result["MutexReleased"]:
@@ -1596,9 +2249,9 @@ class StateStore:
                            "AND executor_process=? AND ledger_identity=?",
                            (self.clock(), action_id, lease.executor_process, lease.ledger_identity))
         if not result["MutexReleased"] or layout is None and result["SemanticExecutorExited"] is False:
-            self.quarantine(lease.resources)
+            self.quarantine(lease.resources, action_id=action_id)
         if layout is not None and layout["DispatchAttempted"] and (layout["CallReturned"] is not True or result["SemanticExecutorExited"] is not True):
-            self.quarantine(tuple(r for r in lease.resources if r != FOREGROUND_INPUT_RESOURCE))
+            self.quarantine(tuple(r for r in lease.resources if r != FOREGROUND_INPUT_RESOURCE), action_id=action_id)
 
     def external_sequence(self, owner, action_id, decision_id, *, total_steps):
         """Keep one action alive across 2..3 separately checked native requests.
@@ -1607,6 +2260,18 @@ class StateStore:
         start/begin/finish sequence progress, fresh captures, expect and Stop.
         """
         return _ExternalSequence(self, owner, action_id, decision_id, total_steps)
+
+    def begin_sequence_final_readback(self, owner, action_id, *, binding=None, verify=None):
+        from .sequence_readback import begin
+        return begin(self, owner, action_id, binding=binding, verify=verify)
+
+    @staticmethod
+    def _running_resources(db, action):
+        from .sequence_readback import foreground_released
+        resources = json.loads(action["resources"])
+        if foreground_released(db, action):
+            return [resource for resource in resources if resource != FOREGROUND_INPUT_RESOURCE]
+        return resources
 
     def external_release_pending(self, owner, action_id):
         """The fresh owner can recover only a persisted exact task/action ledger."""
@@ -1617,10 +2282,13 @@ class StateStore:
             if not action or not binding:
                 raise ControlError("external_release_binding_missing")
             old = db.execute("SELECT process FROM owners WHERE id=?", (action["owner"],)).fetchone()
-            if action["owner"] != owner and old and process_is_alive(old[0]):
+            if (action["state"] in {"queued", "running"} and action["owner"] != owner
+                    and old and process_is_alive(old[0])):
                 raise ControlError("external_dispatcher_still_alive")
-            if action["owner"] == owner and action_id in self._dispatch_threads:
+            if action_id in self._dispatch_threads:
                 raise ControlError("external_dispatcher_still_alive")
+            # Querying a terminal ledger is not transferring execution authority.
+            # An authenticated exact completion is still required for adoption.
             return dict(task_id=connection["task"], action_id=action_id,
                         executor_process=binding["executor_process"], ledger_identity=binding["ledger_identity"])
 
@@ -1638,26 +2306,48 @@ class StateStore:
                 or recovery.ledger_identity != expected["ledger_identity"]):
             raise ControlError("input_release_binding_mismatch")
         with self.transaction() as db:
-            connection = self._owner(db, owner)
-            action = db.execute("SELECT * FROM actions WHERE id=? AND task=?", (action_id, connection["task"])).fetchone()
-            old = db.execute("SELECT process FROM owners WHERE id=?", (action["owner"],)).fetchone()
-            if action["owner"] != owner and old and process_is_alive(old[0]):
-                raise ControlError("external_dispatcher_still_alive")
-            recovery.verify()
-            updated = db.execute("UPDATE input_release_bindings SET confirmed=COALESCE(confirmed,?) "
-                "WHERE action=? AND executor_process=? AND ledger_identity=?",
-                (self.clock(), action_id, recovery.executor_process, recovery.ledger_identity)).rowcount
-            if updated != 1:
-                raise ControlError("input_release_binding_mismatch")
-            # Known cleanup does not turn interrupted business into success.
-            db.execute("UPDATE action_effects SET input_release='released' WHERE action=?", (action_id,))
-            db.execute("UPDATE computer_sequence_progress SET input_release='released' WHERE action=?", (action_id,))
-            db.execute("UPDATE foreground_stages SET lease_released=COALESCE(lease_released,?) WHERE action=?",
-                       (self.clock(), action_id))
-            if action["state"] == "running":
-                self._interrupt_action(db, action, "dispatcher_dead")
-            self._record_event(db, "external_input_release_recovered", task=connection["task"], action=action_id,
-                               details={"new_observation_required": True, "replay_old_action": False})
+            action = db.execute("SELECT resources FROM actions WHERE id=? AND task=?",
+                                (action_id, expected["task_id"])).fetchone()
+            if action is None:
+                raise ControlError("external_release_binding_missing")
+            resources = tuple(json.loads(action["resources"]))
+        try:
+            with ExecutionLocks(resources):
+                with self.transaction() as db:
+                    connection = self._owner(db, owner)
+                    action = db.execute("SELECT * FROM actions WHERE id=? AND task=?", (action_id, connection["task"])).fetchone()
+                    binding = db.execute("SELECT * FROM input_release_bindings WHERE action=?", (action_id,)).fetchone()
+                    if (action is None or binding is None or tuple(json.loads(action["resources"])) != resources
+                            or binding["executor_process"] != recovery.executor_process
+                            or binding["ledger_identity"] != recovery.ledger_identity):
+                        raise ControlError("input_release_binding_mismatch")
+                    old = db.execute("SELECT process FROM owners WHERE id=?", (action["owner"],)).fetchone()
+                    old_alive = old is not None and process_is_alive(old[0])
+                    if (action_id in self._dispatch_threads
+                            or action["state"] in {"queued", "running"} and old_alive):
+                        raise ControlError("external_dispatcher_still_alive")
+                    if old_alive and recovery.semantic_executor_exited is False and not recovery.physical_input_free:
+                        raise ControlError("external_dispatcher_still_alive")
+                    for running in db.execute("SELECT * FROM actions WHERE state='running'"):
+                        if running["id"] != action_id and set(resources).intersection(self._running_resources(db, running)):
+                            raise ControlError("release_execution_not_quiescent")
+                    recovery.verify()
+                    updated = db.execute("UPDATE input_release_bindings SET confirmed=COALESCE(confirmed,?) "
+                        "WHERE action=? AND executor_process=? AND ledger_identity=?",
+                        (self.clock(), action_id, recovery.executor_process, recovery.ledger_identity)).rowcount
+                    if updated != 1:
+                        raise ControlError("input_release_binding_mismatch")
+                    # Known cleanup does not turn interrupted business into success.
+                    db.execute("UPDATE action_effects SET input_release='released' WHERE action=?", (action_id,))
+                    db.execute("UPDATE computer_sequence_progress SET input_release='released' WHERE action=?", (action_id,))
+                    db.execute("UPDATE foreground_stages SET lease_released=COALESCE(lease_released,?) WHERE action=?",
+                               (self.clock(), action_id))
+                    if action["state"] == "running":
+                        self._interrupt_action(db, action, "dispatcher_dead")
+                    self._record_event(db, "external_input_release_recovered", task=connection["task"], action=action_id,
+                                       details={"new_observation_required": True, "replay_old_action": False})
+        except (ResourceBusy, AbandonedResource):
+            raise ControlError("release_execution_not_quiescent") from None
         self._external_native_dispatches.pop((id(self), action_id), None)
         return {"input_release": "released", "new_observation_required": True, "replay_old_action": False}
 
@@ -1677,6 +2367,7 @@ class StateStore:
         binding = lease.binding
         if binding is None or binding.sequence_step != index or binding.observation_id == previous.binding.observation_id:
             raise ControlError("external_continuation_fresh_observation_required")
+        metadata_binding = self._external_metadata_bindings.get(action_id)
         with self.transaction() as db:
             action = db.execute("SELECT * FROM actions WHERE id=? AND owner=?", (action_id, owner)).fetchone()
             self._check_running_action(db, action)
@@ -1702,9 +2393,13 @@ class StateStore:
             self._external_native_dispatches[(id(self), action_id)] = lease
             self._bind_external_ledger(db, action_id, lease)
             self._external_pending(owner, action_id, lease, _db=db)
+        if (metadata_binding == (owner, previous)
+                and self._external_metadata_bindings.get(action_id) is metadata_binding
+                and self._external_dispatches.get(action_id) is lease):
+            self._external_metadata_bindings[action_id] = (owner, lease)
 
     def start_computer_sequence(self, owner: str, action_id: str, total_steps: int) -> None:
-        if type(total_steps) is not int or not 2 <= total_steps <= 3:
+        if type(total_steps) is not int or not 2 <= total_steps <= 8:
             raise ControlError("invalid_sequence_progress")
         if self._dispatch_threads.get(action_id) != threading.get_ident():
             raise ControlError("sequence_requires_dispatch_thread")
@@ -1779,10 +2474,21 @@ class StateStore:
                     self.clock(), action["id"]))
         if state == "outcome_uncertain":
             for resource in self._uncertain_resources(db, action):
-                db.execute("UPDATE resources SET quarantined=1,revision=revision+1 WHERE id=?", (resource,))
+                self._quarantine_for_action(db, resource, action["id"])
+
+    @staticmethod
+    def _quarantine_for_action(db, resource, action_id):
+        db.execute("UPDATE resources SET quarantined=1,revision=revision+1 WHERE id=?", (resource,))
+        db.execute("UPDATE web_worker_quarantine_incidents SET action=? WHERE resource=? AND revision="
+                   "(SELECT revision FROM resources WHERE id=?) AND action IS NULL", (action_id, resource, resource))
+        # The trigger captures old clients and unidentified isolation too. Only
+        # this transaction can bind a new incident to its actual action.
+        db.execute("UPDATE web_quarantine_incidents SET action=? WHERE resource=? AND revision="
+                   "(SELECT revision FROM resources WHERE id=?) AND action IS NULL",
+                   (action_id, resource, resource))
 
     def _uncertain_resources(self, db, action):
-        resources = json.loads(action["resources"])
+        resources = self._running_resources(db, action)
         external = self._external_dispatches.get(action["id"])
         # Only the sealed fixed layout role qualifies. A missing terminal is
         # no mutex release proof: the actual lock and release binding remain
@@ -1817,7 +2523,7 @@ class StateStore:
     def record_action_effects(self, owner: str, action_id: str, *,
                               activation_dispatched: bool | None = None,
                               business_dispatched: bool | None = None,
-                              input_release: str | None = None):
+                              input_release: str | None = None, pointer_events: int | None = None):
         """Driver evidence only, after actual effects; missing evidence stays unknown.
 
         Do not record False before calling an API that may write. True is
@@ -1825,7 +2531,8 @@ class StateStore:
         """
         if (activation_dispatched is not None and type(activation_dispatched) is not bool
                 or business_dispatched is not None and type(business_dispatched) is not bool
-                or input_release not in (None, "released", "unknown", "release_pending")):
+                or input_release not in (None, "released", "unknown", "release_pending")
+                or pointer_events is not None and (type(pointer_events) is not int or pointer_events < 0)):
             raise ControlError("invalid_action_effects")
         if self._dispatch_threads.get(action_id) != threading.get_ident():
             raise ControlError("effects_require_dispatch_thread")
@@ -1840,6 +2547,13 @@ class StateStore:
             db.execute("INSERT OR IGNORE INTO action_effects(action,activation_dispatched) VALUES (?,?)",
                        (action_id, None if FOREGROUND_INPUT_RESOURCE in json.loads(action["resources"]) else 0))
             row = db.execute("SELECT * FROM action_effects WHERE action=?", (action_id,)).fetchone()
+            if pointer_events is not None:
+                if pointer_events and (row["read_only"] or FOREGROUND_INPUT_RESOURCE not in json.loads(action["resources"])):
+                    raise ControlError("read_only_effect_conflict")
+                old_pointer = db.execute("SELECT events FROM action_pointer_effects WHERE action=?", (action_id,)).fetchone()
+                if old_pointer and pointer_events < old_pointer[0]:
+                    raise ControlError("action_effect_regression")
+                db.execute("INSERT OR REPLACE INTO action_pointer_effects VALUES (?,?)", (action_id, pointer_events))
             if row["read_only"] and (activation_dispatched is True or business_dispatched is True
                                      or input_release in ("unknown", "release_pending")):
                 raise ControlError("read_only_effect_conflict")
@@ -1860,7 +2574,7 @@ class StateStore:
         current = db.execute("SELECT * FROM actions WHERE id=?", (action["id"],)).fetchone()
         task = db.execute("SELECT paused,revoked FROM tasks WHERE id=?", (current["task"],)).fetchone()
         resources = json.loads(current["resources"])
-        targets = db.execute("SELECT paused,quarantined FROM resources WHERE id IN ("
+        targets = db.execute("SELECT id,paused,quarantined FROM resources WHERE id IN ("
                              + ",".join("?" for _ in resources) + ")", resources).fetchall()
         stage = stage_summary(self, db, action)
         effects = db.execute("SELECT * FROM action_effects WHERE action=?", (action["id"],)).fetchone()
@@ -1872,7 +2586,7 @@ class StateStore:
             cancel_requested=bool(current["cancel_requested"]),
             persistent_stop=bool(task["paused"] or task["revoked"]
                          or any(row is not None and row["paused"] for row in targets)),
-            recovery_required=any(row is not None and row["quarantined"] for row in targets),
+            recovery_required=any(self._effective_quarantine(db, row["id"], row) for row in targets),
             input_release=release, result_code=current["result_code"],
             effects={"activation_dispatched": None if effects["activation_dispatched"] is None else bool(effects["activation_dispatched"]),
                      "business_dispatched": None if effects["business_dispatched"] is None else bool(effects["business_dispatched"]),
@@ -1882,11 +2596,14 @@ class StateStore:
             return stage
         activation = None if effects["activation_dispatched"] is None else bool(effects["activation_dispatched"])
         business = None if effects["business_dispatched"] is None else bool(effects["business_dispatched"])
-        dispatched = True if activation is True or business is True else (
+        pointer = db.execute("SELECT events FROM action_pointer_effects WHERE action=?", (action["id"],)).fetchone()
+        pointer_events = pointer[0] if pointer else 0
+        dispatched = True if activation is True or business is True or pointer_events else (
             False if activation is False and business is False else None)
         return {**stage, "read_only": bool(effects["read_only"]), "execution_started": bool(action["dispatched"]),
                 "activation_dispatched": activation, "business_dispatched": business,
-                "dispatched": dispatched, "input_release": effects["input_release"]}
+                "dispatched": dispatched, "pointer_events": pointer_events,
+                "input_release": effects["input_release"]}
 
     def finish(self, owner: str, action_id: str, state: str, *, result_code: str = "checked",
                sequence_final_state: str | None = None):
@@ -1935,7 +2652,7 @@ class StateStore:
                             self.clock(), action_id))
             if state == "outcome_uncertain":
                 for resource in self._uncertain_resources(db, row):
-                    db.execute("UPDATE resources SET quarantined=1,revision=revision+1 WHERE id=?", (resource,))
+                    self._quarantine_for_action(db, resource, action_id)
 
     def issue_worker_permit(self, owner: str, action_id: str, worker_process: str,
                             command_hash: str) -> str:
@@ -2001,6 +2718,23 @@ class StateStore:
             if consume:
                 db.execute("UPDATE worker_permits SET consumed=1 WHERE action=?", (action_id,))
 
+    def record_worker_completion(self, action_id: str, token: str, command_hash: str):
+        """Worker-only terminal fact, not a business receipt or new authority.
+
+        A successful command can finish after its parent loses the IPC reply.
+        Preserve that fact before publication; never change the old unknown or
+        clear Stop. Tokens, exact process identity and the consumed immutable
+        command permit still bind this late, non-executing observation.
+        """
+        with self.transaction() as db:
+            permit = db.execute("SELECT * FROM worker_permits WHERE action=?", (action_id,)).fetchone()
+            identity = process_identity()
+            if (not permit or not permit["consumed"] or permit["worker_process"] != identity
+                    or permit["command_hash"] != command_hash
+                    or permit["token_hash"] != hashlib.sha256(token.encode()).hexdigest()):
+                raise ControlError("worker_permit_mismatch")
+            db.execute("INSERT OR IGNORE INTO worker_completions VALUES (?,?,?)", (action_id, identity, command_hash))
+
     def check_dispatch(self, owner: str, action_id: str):
         if self._dispatch_threads.get(action_id) != threading.get_ident():
             raise ControlError("check_requires_dispatch_thread")
@@ -2011,17 +2745,18 @@ class StateStore:
 
     def external_dispatch_stopped(self, owner: str, action_id: str) -> bool:
         """Thread-safe existing scope/Stop checks for the helper pipe watcher."""
-        if self.write_stopped():
-            try:
-                with self.read_transaction() as db:
-                    if not self._metadata_binding(db, action_id):
-                        return True
-            except (ControlError, sqlite3.Error):
+        stopped = self.write_stopped()
+        if stopped:
+            binding = self._external_metadata_bindings.get(action_id)
+            if (binding is None or binding[0] != owner
+                    or self._external_dispatches.get(action_id) is not binding[1]):
                 return True
         if action_id not in self._external_dispatches:
             return True
         try:
             with self.read_transaction() as db:
+                if stopped and not self._metadata_binding(db, action_id):
+                    return True
                 self._owner(db, owner)
                 row = db.execute("SELECT * FROM actions WHERE id=? AND owner=?", (action_id, owner)).fetchone()
                 self._check_running_action(db, row)
@@ -2029,12 +2764,15 @@ class StateStore:
         except ControlError:
             return True
 
-    def quarantine(self, resources: tuple[str, ...]):
+    def quarantine(self, resources: tuple[str, ...], *, action_id: str | None = None):
         with self.transaction() as db:
             for resource in resources:
                 db.execute("INSERT OR IGNORE INTO resources(id) VALUES (?)", (resource,))
-                db.execute("UPDATE resources SET quarantined=1,revision=revision+1 WHERE id=?", (resource,))
-            self._record_event(db, "resource_quarantined", details={"resources": list(resources)})
+                if action_id is None:
+                    db.execute("UPDATE resources SET quarantined=1,revision=revision+1 WHERE id=?", (resource,))
+                else:
+                    self._quarantine_for_action(db, resource, action_id)
+            self._record_event(db, "resource_quarantined", action=action_id, details={"resources": list(resources)})
 
     def reap_dead_owners(self) -> int:
         """Death proves the worker stopped, never that its target stopped writing."""
@@ -2047,17 +2785,257 @@ class StateStore:
                 row = db.execute("SELECT process,retired FROM owners WHERE id=?", (owner,)).fetchone()
                 if not row or row["retired"] or row["process"] != identity:
                     continue
-                for action in db.execute("SELECT * FROM actions WHERE owner=? AND state='running'",
-                                         (owner,)).fetchall():
-                    self._interrupt_action(db, action, "owner_died")
-                db.execute("UPDATE owners SET retired=1 WHERE id=?", (owner,))
-                db.execute("UPDATE actions SET state='cancelled',updated=? "
-                           "WHERE owner=? AND state='queued'", (self.clock(), owner))
-                db.execute("UPDATE occupancy SET ended=? WHERE ended IS NULL AND action IN "
-                           "(SELECT id FROM actions WHERE owner=?)", (self.clock(), owner))
+                self._retire_owner(db, owner, release_orphan=True)
         return len(dead)
 
-    def recover_resources(self, resources: tuple[str, ...], probe: Callable[[], dict[str, str]]):
+    def _migrate_web_recovery_evidence(self, db):
+        """Retain old evidence only while its complete diagnostic interval exists."""
+        if db.execute("SELECT 1 FROM meta WHERE key='web_recovery_counts_v1'").fetchone():
+            return
+        db.execute("INSERT OR IGNORE INTO web_recovery_dispatch_order "
+                   "SELECT e.action,e.seq FROM control_events e JOIN actions a ON a.id=e.action "
+                   "WHERE e.event='action_dispatched' AND a.state IN ('running','outcome_uncertain')")
+        for action in db.execute("SELECT * FROM actions WHERE state='outcome_uncertain'").fetchall():
+            baselines = db.execute("SELECT * FROM web_create_resource_baselines WHERE action=?", (action["id"],)).fetchall()
+            event = db.execute("SELECT seq FROM control_events WHERE event='action_dispatched' AND action=?", (action["id"],)).fetchone()
+            resources = json.loads(action["resources"])
+            if not event or {r["resource"] for r in baselines} != set(resources):
+                continue
+            dispatches = [json.loads(r[0]) for r in db.execute(
+                "SELECT a.resources FROM control_events e JOIN actions a ON a.id=e.action "
+                "WHERE e.event='action_dispatched' AND e.seq>=?", (event[0],))]
+            prepared = []
+            for baseline in baselines:
+                resource = baseline["resource"]
+                current = db.execute("SELECT revision,quarantined FROM resources WHERE id=?", (resource,)).fetchone()
+                incidents = db.execute("SELECT COUNT(*) FROM web_quarantine_incidents WHERE resource=? AND revision>? "
+                                       "AND (action IS NULL OR action<>?)", (resource, baseline["revision"], action["id"])).fetchone()[0]
+                event_type = 'web_foreground_refreshed' if resource == FOREGROUND_INPUT_RESOURCE else 'web_borrower_refreshed'
+                reissues = db.execute("SELECT COUNT(*) FROM control_events WHERE action=? AND seq>=? "
+                                      "AND event IN ('web_creation_recovered',?)", (action["id"], event[0], event_type)).fetchone()[0]
+                count = sum(resource in values for values in dispatches)
+                if not current or not current["quarantined"] or current["revision"] != baseline["revision"] + count + 1 + incidents + reissues:
+                    break
+                prepared.append((resource, count, 1 + incidents, reissues))
+            else:
+                for resource, count, quarantines, reissues in prepared:
+                    db.execute("INSERT OR IGNORE INTO web_recovery_resource_counts(resource) VALUES (?)", (resource,))
+                    db.execute("INSERT OR IGNORE INTO web_recovery_count_baselines "
+                               "SELECT ?,resource,dispatches-?,quarantines-?,reissues-? FROM web_recovery_resource_counts WHERE resource=?",
+                               (action["id"], count, quarantines, reissues, resource))
+                    if reissues:
+                        db.execute("INSERT OR REPLACE INTO web_recovery_reissues VALUES (?,?,?)", (action["id"], resource, reissues))
+        for row in db.execute("SELECT p.id,p.action,p.browser_process,p.target,r.action AS close_action,MIN(e.seq) AS seq "
+                              "FROM web_created_targets p JOIN web_target_close_receipts r ON r.pending=p.id "
+                              "JOIN actions c ON c.id=r.action AND c.state='verified' "
+                              "JOIN control_events e ON e.action=p.action AND e.event='web_creation_recovered' "
+                              "WHERE p.state='closed' AND p.target=r.target AND p.browser_process=r.browser_process "
+                              "AND p.resource=r.resource GROUP BY p.id").fetchall():
+            db.execute("INSERT OR IGNORE INTO web_creation_recovery_proofs VALUES (?,?,?,?,?)",
+                       (row["id"], row["action"], row["close_action"], row["browser_process"], row["target"]))
+            db.execute("INSERT OR IGNORE INTO web_recovery_proof_order VALUES (?,?)", (row["id"], row["seq"]))
+        db.execute("INSERT INTO meta VALUES ('web_recovery_counts_v1','1')")
+
+    def recover_closed_web_creation(self, owner: str, pending_id: str):
+        """Recover only an exactly closed shared-Web creation, never its result.
+
+        This internal adapter requires a worker-issued exact close receipt and
+        revisions captured before the original dispatch. Older unknown actions
+        without these facts deliberately keep their existing quarantine.
+        """
+        if type(pending_id) is not str or not pending_id or len(pending_id) > 128:
+            raise ControlError("web_recovery_evidence_missing")
+        with self.read_transaction() as db:
+            row = db.execute("SELECT a.resources FROM web_created_targets p "
+                             "JOIN actions a ON a.id=p.action WHERE p.id=?", (pending_id,)).fetchone()
+            if row is None:
+                raise ControlError("web_recovery_evidence_missing")
+            resources = tuple(json.loads(row[0]))
+        if not resources or len(resources) > 2:
+            raise ControlError("web_recovery_evidence_missing")
+        try:
+            with ExecutionLocks(resources), self.transaction() as db:
+                connection = self._owner(db, owner)
+                pending = db.execute("SELECT * FROM web_created_targets WHERE id=?", (pending_id,)).fetchone()
+                original = db.execute("SELECT * FROM actions WHERE id=?", (pending["action"],)).fetchone() if pending else None
+                receipt = db.execute("SELECT * FROM web_target_close_receipts WHERE pending=?", (pending_id,)).fetchone()
+                close = db.execute("SELECT * FROM actions WHERE id=?", (receipt["action"],)).fetchone() if receipt else None
+                if (not pending or not original or not receipt or not close or pending["task"] != connection["task"]
+                        or original["task"] != connection["task"] or close["task"] != connection["task"]
+                        or close["owner"] != owner or close["state"] != "verified"
+                        or original["state"] != "outcome_uncertain" or not original["dispatched"]
+                        or tuple(json.loads(original["resources"])) != resources
+                        or pending["resource"] not in resources or not pending["resource"].startswith("web-borrower:")
+                        or pending["state"] != "closed" or not pending["target"]
+                        or receipt["resource"] != pending["resource"]
+                        or receipt["browser_process"] != pending["browser_process"]
+                        or receipt["target"] != pending["target"]
+                        or not self._is_web_instance_close(db, close, pending["resource"])):
+                    raise ControlError("web_recovery_evidence_missing")
+                context = db.execute("SELECT details FROM action_context WHERE action=?", (original["id"],)).fetchone()
+                context = json.loads(context[0]) if context else {}
+                if context.get("channel") != "web" or context.get("operation") != "new_page":
+                    raise ControlError("web_recovery_evidence_missing")
+                for action in (original, close):
+                    permit = db.execute("SELECT * FROM worker_permits WHERE action=?", (action["id"],)).fetchone()
+                    if (not permit or not permit["consumed"] or permit["command_hash"] != action["fingerprint"]
+                            or process_is_alive(permit["worker_process"])):
+                        raise ControlError("web_recovery_executor_unverified")
+                if not process_is_verified_alive(pending["browser_process"]):
+                    raise ControlError("web_recovery_browser_unverified")
+                task = self._task(db, connection["task"])
+                gate = self.write_gate.snapshot()
+                original_epoch = db.execute("SELECT epoch FROM action_write_epochs WHERE action=?", (original["id"],)).fetchone()
+                task_epoch = db.execute("SELECT epoch FROM task_write_epochs WHERE task=?", (connection["task"],)).fetchone()
+                policy = db.execute("SELECT revision FROM action_policy_revisions WHERE action=?", (original["id"],)).fetchone()
+                if (task["paused"] or gate.stopped or not original_epoch or original_epoch[0] != gate.epoch
+                        or max(task_epoch[0] if task_epoch else 0, gate.resume_all_epoch) < gate.epoch
+                        or not policy or policy[0] != _permission_revision()):
+                    raise ControlError("web_recovery_state_changed")
+                self._require_scope(db, connection["task"], original["scope"])
+                effects = db.execute("SELECT * FROM action_effects WHERE action=?", (original["id"],)).fetchone()
+                if (not effects or effects["read_only"] or effects["activation_dispatched"] != 0
+                        or effects["input_release"] not in (("released",) if FOREGROUND_INPUT_RESOURCE in resources else (None, "released"))):
+                    raise ControlError("web_recovery_input_unverified")
+                if FOREGROUND_INPUT_RESOURCE in resources:
+                    self._require_input_release_confirmed(db)
+                event = db.execute("SELECT seq FROM web_recovery_dispatch_order WHERE action=?", (original["id"],)).fetchone()
+                if event is None:
+                    event = db.execute("SELECT seq FROM control_events WHERE event='action_dispatched' AND action=?", (original["id"],)).fetchone()
+                baselines = {row["resource"]: row["revision"] for row in db.execute(
+                    "SELECT resource,revision FROM web_create_resource_baselines WHERE action=?", (original["id"],))}
+                if not event or set(baselines) != set(resources):
+                    raise ControlError("web_recovery_evidence_missing")
+                durable = {row["resource"]: row for row in db.execute(
+                    "SELECT * FROM web_recovery_count_baselines WHERE action=?", (original["id"],))}
+                if durable and set(durable) != set(resources):
+                    raise ControlError("web_recovery_evidence_missing")
+                for quarantine in db.execute("SELECT details FROM control_events WHERE event='resource_quarantined' AND seq>=?", (event[0],)):
+                    if set(resources).intersection(json.loads(quarantine[0])["resources"]):
+                        raise ControlError("web_recovery_other_quarantine")
+                for other in db.execute("SELECT rowid AS record_order,* FROM actions WHERE state IN ('running','outcome_uncertain')"):
+                    if other["id"] == original["id"] or not set(resources).intersection(json.loads(other["resources"])):
+                        continue
+                    order = db.execute("SELECT seq FROM web_recovery_dispatch_order WHERE action=?", (other["id"],)).fetchone()
+                    later = (order[0] >= event[0]) if order else db.execute("SELECT 1 FROM control_events WHERE action=? AND event IN ('action_dispatched','action_finished') AND seq>=? LIMIT 1",
+                                       (other["id"], event[0])).fetchone()
+                    if durable and not order and not later:
+                        raise ControlError("web_recovery_other_quarantine")
+                    if other["state"] == "running" or later:
+                        raise ControlError("web_recovery_other_quarantine")
+                dispatches = [json.loads(row[0]) for row in db.execute(
+                    "SELECT a.resources FROM control_events e JOIN actions a ON a.id=e.action "
+                    "WHERE e.event='action_dispatched' AND e.seq>=?", (event[0],))]
+                for resource in resources:
+                    row = db.execute("SELECT * FROM resources WHERE id=?", (resource,)).fetchone()
+                    count = sum(resource in values for values in dispatches)
+                    if durable:
+                        totals = db.execute("SELECT * FROM web_recovery_resource_counts WHERE resource=?", (resource,)).fetchone()
+                        base = durable[resource]
+                        if (not totals or totals["quarantines"] - base["quarantines"] != 1
+                                or totals["reissues"] != base["reissues"]):
+                            raise ControlError("web_recovery_other_quarantine")
+                        count = totals["dispatches"] - base["dispatches"]
+                    if (not row or row["paused"] or not row["quarantined"]
+                            or row["revision"] != baselines[resource] + count + 1):
+                        raise ControlError("web_recovery_state_changed")
+                    self._require_owned_resource(db, connection["task"], resource)
+                    self._require_scope(db, connection["task"], row["required_scope"])
+                    prior_debt = db.execute("SELECT pending FROM web_quarantine_recovery_debts WHERE resource=?", (resource,)).fetchone()
+                    if prior_debt and prior_debt[0] != pending_id:
+                        # The later action was admitted only while the earlier
+                        # debt had a valid permit. Prove that recovery predates
+                        # this dispatch, and that its sole new isolation is this
+                        # exact creation. Preserve both unknown receipts.
+                        prior = db.execute("SELECT 1 FROM web_recovery_proof_order WHERE pending=? AND seq<?", (prior_debt[0], event[0])).fetchone()
+                        prior = prior or db.execute("SELECT 1 FROM web_created_targets p JOIN control_events e ON e.action=p.action "
+                                           "WHERE p.id=? AND e.event='web_creation_recovered' AND e.seq<?",
+                                           (prior_debt[0], event[0])).fetchone()
+                        incidents = db.execute("SELECT action,revision FROM web_quarantine_incidents "
+                                               "WHERE resource=? AND revision>? ORDER BY revision",
+                                               (resource, baselines[resource])).fetchall()
+                        if (not prior or len(incidents) != 1 or incidents[0]["action"] != original["id"]
+                                or incidents[0]["revision"] != baselines[resource] + 2):
+                            raise ControlError("web_recovery_other_quarantine")
+                owned = db.execute("SELECT task FROM owned_resources WHERE resource=?", (pending["resource"],)).fetchone()
+                if not owned or owned[0] != connection["task"]:
+                    raise ControlError("web_recovery_evidence_missing")
+                # Queued work is never silently revived after an unknown action.
+                for queued in db.execute("SELECT id,resources FROM actions WHERE state='queued'").fetchall():
+                    if set(resources).intersection(json.loads(queued["resources"])):
+                        db.execute("UPDATE actions SET state='cancelled',updated=? WHERE id=?", (self.clock(), queued["id"]))
+                for resource in resources:
+                    db.execute("UPDATE resources SET generation=?,revision=revision+1 WHERE id=?",
+                               ("closed-web:" + pending_id, resource))
+                    db.execute("INSERT OR REPLACE INTO web_quarantine_recovery_debts(resource,pending) VALUES (?,?)",
+                               (resource, pending_id))
+                    db.execute("INSERT OR REPLACE INTO web_quarantine_recovery_permits(resource,pending,epoch,boot,keeper) VALUES (?,?,?,?,?)",
+                               (resource, pending_id, gate.epoch, self.boot, connection["process"]))
+                db.execute("INSERT OR IGNORE INTO web_creation_recovery_proofs VALUES (?,?,?,?,?)",
+                           (pending_id, original["id"], close["id"], pending["browser_process"], pending["target"]))
+                proof = db.execute("SELECT * FROM web_creation_recovery_proofs WHERE pending=?", (pending_id,)).fetchone()
+                if (not proof or proof["action"] != original["id"] or proof["close_action"] != close["id"]
+                        or proof["browser_process"] != pending["browser_process"] or proof["target"] != pending["target"]):
+                    raise ControlError("web_recovery_evidence_missing")
+                db.execute("UPDATE observations SET expires=0 WHERE task=?", (connection["task"],))
+                self._record_event(db, "web_creation_recovered", task=connection["task"], action=original["id"],
+                                   details={"original_state_preserved": True, "new_observation_required": True})
+                db.execute("INSERT OR IGNORE INTO web_recovery_proof_order VALUES (?,(SELECT MAX(seq) FROM control_events))", (pending_id,))
+            with self.read_transaction() as db:
+                still_active = all(self._quarantine_permit_active(db, resource) for resource in resources)
+            if not still_active:
+                return {"recovered": False, "reason": "web_recovery_stop_epoch_changed",
+                        "original_action_outcome": "outcome_uncertain", "old_clients_remain_quarantined": True}
+            return {"recovered": True, "original_action_outcome": "outcome_uncertain",
+                    "new_observation_required": True, "old_clients_remain_quarantined": True}
+        except (ResourceBusy, AbandonedResource):
+            raise ControlError("recovery_execution_not_quiescent") from None
+
+    def refresh_closed_web_borrower(self, owner: str, resource: str):
+        """Revalidate the same chat's exact closed page after resume/EOF."""
+        if type(resource) is not str or not resource.startswith("web-borrower:"):
+            raise ControlError("web_recovery_evidence_missing")
+        from .foreground_recovery import _closed_web_resource_evidence
+        try:
+            with ExecutionLocks((resource,)), self.transaction() as db:
+                connection = self._owner(db, owner)
+                task = self._task(db, connection["task"])
+                row = db.execute("SELECT * FROM resources WHERE id=?", (resource,)).fetchone()
+                owned = db.execute("SELECT task FROM owned_resources WHERE resource=?", (resource,)).fetchone()
+                if not row or not owned or owned[0] != connection["task"] or task["paused"]:
+                    raise ControlError("web_recovery_state_changed")
+                if self._quarantine_permit_active(db, resource):
+                    return {"recovered": True, "new_observation_required": True}
+                gate = self.write_gate.snapshot()
+                task_epoch = db.execute("SELECT epoch FROM task_write_epochs WHERE task=?", (connection["task"],)).fetchone()
+                if (gate.stopped or max(task_epoch[0] if task_epoch else 0, gate.resume_all_epoch) < gate.epoch):
+                    raise ControlError("global_write_stopped")
+                self._require_scope(db, connection["task"], row["required_scope"])
+                pending_id, action_id, _ = _closed_web_resource_evidence(self, db, resource)
+                pending = db.execute("SELECT task FROM web_created_targets WHERE id=?", (pending_id,)).fetchone()
+                original = db.execute("SELECT scope FROM actions WHERE id=?", (action_id,)).fetchone()
+                policy = db.execute("SELECT revision FROM action_policy_revisions WHERE action=?", (action_id,)).fetchone()
+                if (not pending or pending[0] != connection["task"] or not original
+                        or not policy or policy[0] != _permission_revision()):
+                    raise ControlError("web_recovery_state_changed")
+                self._require_scope(db, connection["task"], original["scope"])
+                for queued in db.execute("SELECT id,resources FROM actions WHERE state='queued'").fetchall():
+                    if resource in json.loads(queued["resources"]):
+                        db.execute("UPDATE actions SET state='cancelled',updated=? WHERE id=?", (self.clock(), queued["id"]))
+                db.execute("UPDATE resources SET revision=revision+1 WHERE id=?", (resource,))
+                db.execute("INSERT OR REPLACE INTO web_quarantine_recovery_permits(resource,pending,epoch,boot,keeper) VALUES (?,?,?,?,?)",
+                           (resource, pending_id, gate.epoch, self.boot, connection["process"]))
+                db.execute("UPDATE observations SET expires=0 WHERE task=? AND resource=?", (connection["task"], resource))
+                self._record_event(db, "web_borrower_refreshed", task=connection["task"], action=action_id,
+                                   details={"original_state_preserved": True, "new_observation_required": True})
+            with self.read_transaction() as db:
+                active = self._quarantine_permit_active(db, resource)
+            return {"recovered": active, "new_observation_required": True,
+                    **({} if active else {"reason": "web_recovery_stop_epoch_changed"})}
+        except (ResourceBusy, AbandonedResource):
+            raise ControlError("recovery_execution_not_quiescent") from None
+
+    def recover_resources(self, resources: tuple[str, ...], probe: Callable[[], dict[str, str]], *, validate_commit=None):
         """Internal driver recovery under execution locks.
 
         probe must independently establish target quiescence (e.g. a new target
@@ -2078,6 +3056,8 @@ class StateStore:
                             raise ControlError("resource_execution_unresolved")
                     versions = {}
                     for resource in resources:
+                        if db.execute("SELECT 1 FROM web_quarantine_recovery_debts WHERE resource=?", (resource,)).fetchone():
+                            raise ControlError("web_recovery_epoch_bound")
                         row = db.execute("SELECT revision FROM resources WHERE id=?", (resource,)).fetchone()
                         if not row:
                             raise ControlError("resource_not_found")
@@ -2093,6 +3073,8 @@ class StateStore:
                         row = db.execute("SELECT revision FROM resources WHERE id=?", (resource,)).fetchone()
                         if row[0] != revision:
                             raise ControlError("recovery_state_changed")
+                    if validate_commit is not None:
+                        validate_commit(db)
                     for row in db.execute("SELECT id,resources FROM actions WHERE state='queued'").fetchall():
                         if set(resources).intersection(json.loads(row["resources"])):
                             db.execute("UPDATE actions SET state='cancelled',updated=? WHERE id=?",
@@ -2107,19 +3089,27 @@ class StateStore:
             self.quarantine(resources)
             raise ControlError("recovery_execution_not_quiescent") from None
 
-    def _require_input_release_confirmed(self, db):
+    def _require_input_release_confirmed(self, db, *, task=None, action_prefix=None):
         """Block live-context debt; an observed new Windows boot is distinct
         from claiming that the old executor ever released its input.
         """
-        pending = db.execute(
-            "SELECT a.id,a.resources FROM actions a JOIN action_effects e ON e.action=a.id "
+        if self._pending_input_release_rows(db, task=task, action_prefix=action_prefix):
+            raise ControlError("input_release_unconfirmed")
+
+    def _pending_input_release_rows(self, db, *, task=None, action_prefix=None):
+        pending = db.execute("SELECT * FROM (" +
+            "SELECT a.id,a.task,a.resources FROM actions a JOIN action_effects e ON e.action=a.id "
             "WHERE e.input_release IN ('unknown','release_pending') UNION ALL "
-            "SELECT a.id,a.resources FROM actions a JOIN computer_sequence_progress p ON p.action=a.id "
-            "WHERE p.input_release IN ('unknown','release_pending')").fetchall()
+            "SELECT a.id,a.task,a.resources FROM actions a JOIN computer_sequence_progress p ON p.action=a.id "
+            "WHERE p.input_release IN ('unknown','release_pending') UNION ALL "
+            "SELECT a.id,a.task,a.resources FROM actions a JOIN input_release_bindings b ON b.action=a.id "
+            "WHERE b.confirmed IS NULL) WHERE (? IS NULL OR task=?) "
+            "AND (? IS NULL OR substr(id,1,length(?))=?)", (task, task, action_prefix, action_prefix, action_prefix)).fetchall()
         from .input_boot import context_was_reset
         active_boot = boot_identity() if self._native_boot else None
         stored_boot = db.execute("SELECT value FROM meta WHERE key='boot'").fetchone()
         native_current = active_boot == self.boot and stored_boot is not None and stored_boot[0] == self.boot
+        unresolved = {}
         for row in pending:
             if FOREGROUND_INPUT_RESOURCE not in json.loads(row["resources"]):
                 continue
@@ -2127,9 +3117,10 @@ class StateStore:
                                "JOIN foreground_stages f ON f.action=r.action WHERE r.action=?",
                                (row["id"],)).fetchone()
             if not native_current or reset is None or not context_was_reset(reset, active_boot):
-                raise ControlError("input_release_unconfirmed")
+                unresolved[row["id"]] = row
+        return list(unresolved.values())
 
-    def diagnostic_action_for_task(self, task: str, action_id: str, *, cancel: bool = False):
+    def diagnostic_action_for_task(self, task: str, action_id: str, *, cancel: bool = False, reason="explicit_stop"):
         """A trusted chat may inspect/stop its receipt after its window exits."""
         with self.transaction() as db:
             self._task(db, task)
@@ -2140,12 +3131,312 @@ class StateStore:
                 state = "cancelled" if row["state"] == "queued" else row["state"]
                 db.execute("UPDATE actions SET cancel_requested=1,state=?,updated=? WHERE id=?",
                            (state, self.clock(), action_id))
-                self._mark_stage_stop(db, action_id)
-                return {"state": state, "stop_received": True, "in_flight": state == "running",
+                self._mark_stage_interruption(db, action_id, reason)
+                return {"state": state, "stop_received": reason == "explicit_stop", "interruption": reason, "in_flight": state == "running",
                         **self._action_effect_summary(db, row), **self._computer_sequence_summary(db, row)}
             result = {key: row[key] for key in
                       ("id", "state", "cancel_requested", "dispatched", "result_code")}
             return {**result, **self._action_effect_summary(db, row), **self._computer_sequence_summary(db, row)}
+
+    def begin_human_handoff(self, task: str, *, timeout_seconds=300, kind: HumanHandoffKind | None = None):
+        kind = human_handoff_kind(kind)
+        if type(timeout_seconds) is not int or not 10 <= timeout_seconds <= 3600:
+            raise ControlError("invalid_handoff_timeout")
+        with self.transaction() as db:
+            current = self._task(db, task)
+            if not current["paused"]:
+                raise ControlError("handoff_requires_paused_task")
+            now = self.clock()
+            db.execute("UPDATE human_handoffs SET state='expired',updated=? WHERE task=? AND state='pending' AND (boot<>? OR expires<=?)",
+                (now, task, self.boot, now))
+            existing = db.execute("SELECT * FROM human_handoffs WHERE task=? AND state='pending' ORDER BY created DESC LIMIT 1", (task,)).fetchone()
+            if existing:
+                return {"request_id": existing["id"], "state": "pending", "kind": existing["kind"],
+                        "remaining_seconds": max(0, round(existing["expires"]-now)),
+                        "resume_requires_explicit_chat_request": True, "grants_authorization": False, "reused": True}
+            request = "handoff-" + secrets.token_hex(16)
+            db.execute("INSERT INTO human_handoffs(id,task,boot,created,expires,state,updated,kind) VALUES (?,?,?,?,?,'pending',?,?)",
+                (request, task, self.boot, now, now+timeout_seconds, now, kind))
+            return {"request_id": request, "state": "pending", "kind": kind, "remaining_seconds": timeout_seconds,
+                    "resume_requires_explicit_chat_request": True, "grants_authorization": False}
+
+    def human_handoff_status(self, task, request, *, resolution=None, extend_seconds=300):
+        if resolution not in {None, "completed", "cancelled", "expired", "stopped", "extend"}:
+            raise ControlError("invalid_handoff_resolution")
+        if type(extend_seconds) is not int or not 10 <= extend_seconds <= 3600:
+            raise ControlError("invalid_handoff_timeout")
+        context = self.read_transaction if resolution is None else self.transaction
+        with context() as db:
+            task_row = self._task(db, task)
+            row = db.execute("SELECT * FROM human_handoffs WHERE id=? AND task=?", (request, task)).fetchone()
+            if row is None:
+                raise ControlError("handoff_not_found")
+            now, state = self.clock(), row["state"]
+            if state == "pending" and (row["boot"] != self.boot or row["expires"] <= now):
+                state = "expired"
+            if state == "pending" and resolution == "extend":
+                db.execute("UPDATE human_handoffs SET expires=?,extensions=extensions+1,updated=? WHERE id=?",
+                    (min(max(row["expires"], now)+extend_seconds, row["created"]+3600), now, request))
+            elif state == "pending" and resolution is not None:
+                state = resolution
+            if resolution is not None:
+                db.execute("UPDATE human_handoffs SET state=?,updated=? WHERE id=?", (state, now, request))
+                row = db.execute("SELECT * FROM human_handoffs WHERE id=?", (request,)).fetchone()
+            return {"request_id": request, "state": state, "kind": row["kind"],
+                    "remaining_seconds": max(0, round(row["expires"]-now)),
+                    "extensions": row["extensions"], "task_still_paused": bool(task_row['paused']),
+                    "resume_requires_explicit_chat_request": True, "grants_authorization": False,
+                    "foreground_activated": False}
+
+    _BUSINESS_FINAL = frozenset({"completed", "partial", "cancelled", "failed", "outcome_uncertain"})
+    _BUSINESS_STEP_STATES = frozenset({"planned", "running", "verified", "not_verified",
+                                       "outcome_uncertain", "cancelled", "skipped"})
+    _BUSINESS_CHANNELS = frozenset({"web", "app", "computer"})
+
+    @staticmethod
+    def _business_text(value, field, maximum=240):
+        if (type(value) is not str or not 1 <= len(value.strip()) <= maximum
+                or any(ord(char) < 32 for char in value)):
+            raise ControlError("invalid_business_" + field)
+        return value.strip()
+
+    @staticmethod
+    def _business_id(value, field):
+        import re
+        if type(value) is not str or re.fullmatch("[a-f0-9]{32}", value) is None:
+            raise ControlError("invalid_business_" + field)
+        return value
+
+    def create_business_run(self, task: str, goal: str) -> dict:
+        """Start one business chain; the id only associates evidence."""
+        goal = self._business_text(goal, "goal")
+        run_id = secrets.token_hex(16)
+        now = self.clock()
+        with self.transaction() as db:
+            self._task(db, task)
+            db.execute("INSERT INTO business_runs(id,task,goal,state,created,updated,revision) "
+                       "VALUES (?,?,?,'open',?,?,0)", (run_id, task, goal, now, now))
+            self._record_event(db, "business_run_started", task=task, details={"run_id": run_id})
+        return {"run_id": run_id, "state": "open", "revision": 0,
+                "business_finished": False, "business_result_verified": False,
+                "grants_authorization": False}
+
+    def append_business_step(self, task: str, run_id: str, channel: str, state: str,
+                             summary: str, *, parent_step_id: str | None = None,
+                             step_id: str | None = None) -> dict:
+        """Append one immutable step fact; duplicate ids must match exactly."""
+        run_id = self._business_id(run_id, "run_id")
+        if channel not in self._BUSINESS_CHANNELS:
+            raise ControlError("invalid_business_channel")
+        if state not in self._BUSINESS_STEP_STATES:
+            raise ControlError("invalid_business_step_state")
+        summary = self._business_text(summary, "summary")
+        step_id = self._business_id(step_id, "step_id") if step_id is not None else secrets.token_hex(16)
+        parent = self._business_id(parent_step_id, "parent_step_id") if parent_step_id is not None else None
+        now = self.clock()
+        with self.transaction() as db:
+            run = db.execute("SELECT * FROM business_runs WHERE id=? AND task=?", (run_id, task)).fetchone()
+            if run is None:
+                raise ControlError("business_run_unavailable")
+            if run["state"] in self._BUSINESS_FINAL:
+                raise ControlError("business_run_finished")
+            if parent is not None:
+                parent_row = db.execute("SELECT run,task FROM business_steps WHERE id=?", (parent,)).fetchone()
+                if parent_row is None or parent_row["run"] != run_id or parent_row["task"] != task:
+                    raise ControlError("business_parent_unavailable")
+            existing = db.execute("SELECT * FROM business_steps WHERE id=?", (step_id,)).fetchone()
+            if existing is not None:
+                if (existing["run"] != run_id or existing["task"] != task
+                        or existing["channel"] != channel or existing["state"] != state
+                        or existing["summary"] != summary or existing["parent"] != parent):
+                    raise ControlError("business_step_conflict")
+                return {"step_id": step_id, "run_id": run_id, "state": state,
+                        "created": existing["created"], "idempotent": True,
+                        "grants_authorization": False}
+            db.execute("INSERT INTO business_steps(id,run,task,channel,parent,state,summary,created,updated) "
+                       "VALUES (?,?,?,?,?,?,?,?,?)",
+                       (step_id, run_id, task, channel, parent, state, summary, now, now))
+            db.execute("UPDATE business_runs SET revision=revision+1,updated=? WHERE id=?", (now, run_id))
+            self._record_event(db, "business_step_recorded", task=task, details={
+                "run_id": run_id, "step_id": step_id, "channel": channel, "state": state})
+        return {"step_id": step_id, "run_id": run_id, "state": state,
+                "created": now, "idempotent": False, "grants_authorization": False}
+
+    def finish_business_run(self, task: str, run_id: str, state: str, summary: str) -> dict:
+        run_id = self._business_id(run_id, "run_id")
+        if state not in self._BUSINESS_FINAL:
+            raise ControlError("invalid_business_final_state")
+        summary = self._business_text(summary, "summary")
+        now = self.clock()
+        with self.transaction() as db:
+            run = db.execute("SELECT * FROM business_runs WHERE id=? AND task=?", (run_id, task)).fetchone()
+            if run is None:
+                raise ControlError("business_run_unavailable")
+            if run["state"] in self._BUSINESS_FINAL:
+                if run["state"] != state:
+                    raise ControlError("business_run_finished")
+                return self._business_run_status(db, task, run_id)
+            from .business_plan import status as plan_status
+            plan = plan_status(db, task, run_id, include_all=True)
+            if plan is not None:
+                receipts = [step["receipt"] for step in plan["steps"]]
+                if any(receipt is not None and (receipt["active_members"] or receipt["call_in_flight"] or receipt["state"] == "running") for receipt in receipts):
+                    raise ControlError("business_plan_in_flight")
+                if state == "completed" and any(receipt is None or not receipt["execution_finished"] for receipt in receipts):
+                    raise ControlError("business_plan_not_verified")
+                if state not in {"partial", "outcome_uncertain"} and any(
+                        receipt is not None and receipt["state"] == "outcome_uncertain" for receipt in receipts):
+                    raise ControlError("business_run_has_uncertain_steps")
+            if state not in {"partial", "outcome_uncertain"} and db.execute(
+                    "SELECT 1 FROM business_steps WHERE run=? AND task=? AND state='outcome_uncertain' LIMIT 1",
+                    (run_id, task)).fetchone():
+                raise ControlError("business_run_has_uncertain_steps")
+            db.execute("INSERT INTO business_run_finishes(run,summary) VALUES (?,?)", (run_id, summary))
+            db.execute("UPDATE business_runs SET state=?,revision=revision+1,updated=? WHERE id=?",
+                       (state, now, run_id))
+            self._record_event(db, "business_run_finished", task=task,
+                               details={"run_id": run_id, "state": state})
+            return self._business_run_status(db, task, run_id)
+
+    def business_run_status(self, task: str, run_id: str) -> dict:
+        run_id = self._business_id(run_id, "run_id")
+        with self.read_transaction() as db:
+            return self._business_run_status(db, task, run_id)
+
+    def _business_run_status(self, db, task: str, run_id: str) -> dict:
+        run = db.execute("SELECT * FROM business_runs WHERE id=? AND task=?", (run_id, task)).fetchone()
+        if run is None:
+            raise ControlError("business_run_unavailable")
+        from .business_pages import page
+        step_page = page(db, task, run_id, 'steps')
+        steps = step_page['items']
+        counts = db.execute("SELECT COUNT(*),COALESCE(SUM(state='verified'),0),"
+            "COALESCE(SUM(state='outcome_uncertain'),0) FROM business_steps WHERE run=? AND task=?",
+            (run_id, task)).fetchone()
+        final = db.execute("SELECT summary FROM business_run_finishes WHERE run=?", (run_id,)).fetchone()
+        return {"run_id": run_id, "state": run["state"], "goal": run["goal"],
+                "summary": final[0] if final is not None else None,
+                "summary_recorded": final is not None,
+                "revision": run["revision"], "created": run["created"], "updated": run["updated"],
+                "business_finished": run["state"] in self._BUSINESS_FINAL,
+                "business_result_verified": False,
+                "verified_steps": counts[1], "uncertain_steps": counts[2],
+                "step_count": counts[0], "steps_truncated": step_page['truncated'],
+                "next_steps_after": step_page['next_after'],
+                "channels": [row[0] for row in db.execute("SELECT DISTINCT channel FROM business_steps WHERE run=? AND task=? ORDER BY channel", (run_id, task))],
+                "steps": steps, "grants_authorization": False,
+                "cleanup_only": False,
+                **self._business_plan_details(db, task, run_id)}
+
+    @staticmethod
+    def _business_plan_details(db, task, run_id):
+        from .business_plan import status
+        from .business_pages import page
+        artifacts = page(db, task, run_id, 'artifacts')
+        return {"plan": status(db, task, run_id), "artifacts": artifacts['items'],
+            "artifact_count": artifacts['total'], "artifacts_truncated": artifacts['truncated'],
+            "next_artifacts_after": artifacts['next_after'], "bounded_summary": True}
+
+    def business_run_page(self, task, run_id, section, *, after=None, limit=32, step_id=None):
+        from .business_pages import page
+        run_id = self._business_id(run_id, "run_id")
+        with self.read_transaction() as db:
+            return page(db, task, run_id, section, after=after, limit=limit, step_id=step_id)
+
+    def plan_business_run(self, task, run_id, steps):
+        from .business_plan import install
+        return install(self, task, run_id, steps)
+
+    def stop_business_run(self, task, run_id):
+        from .business_plan import stop
+        return stop(self, task, run_id)
+
+    def attach_business_artifact(self, task, run_id, step_id, artifact_id):
+        from .business_plan import attach_artifact
+        return attach_artifact(self, task, run_id, step_id, artifact_id)
+
+    def task_cleanup_status(self, task: str) -> dict:
+        """Whole-chat cleanup facts; history truncation never means pending."""
+        with self.read_transaction() as db:
+            self._task(db, task)
+            active = db.execute("SELECT COUNT(*) FROM actions WHERE task=? AND state IN ('queued','running')", (task,)).fetchone()[0]
+            unknown_history = db.execute("SELECT COUNT(*) FROM actions WHERE task=? AND state='outcome_uncertain'", (task,)).fetchone()[0]
+            claimed_unknown_query = ("SELECT DISTINCT a.id FROM actions a JOIN json_each(a.resources) j "
+                "JOIN owned_resources o ON o.resource=j.value WHERE a.task=? AND o.task=? AND a.state='outcome_uncertain'")
+            claimed_unknown = db.execute("SELECT COUNT(*) FROM ("+claimed_unknown_query+")", (task, task)).fetchone()[0]
+            claimed_quarantine = db.execute("SELECT COUNT(*) FROM owned_resources o JOIN resources r ON r.id=o.resource "
+                "WHERE o.task=? AND r.quarantined<>0", (task,)).fetchone()[0]
+            stale_claims = db.execute("SELECT COUNT(*) FROM owned_resource_claims c JOIN owners o ON c.owner=o.id "
+                "WHERE o.task=? AND o.retired<>0", (task,)).fetchone()[0]
+            inputs = self._pending_input_release_rows(db, task=task)
+            pending = {row[0] for row in db.execute("SELECT id FROM actions WHERE task=? AND state IN ('queued','running') LIMIT 65", (task,))}
+            pending.update(row[0] for row in db.execute(claimed_unknown_query+" LIMIT 65", (task, task)))
+            pending.update(row['id'] for row in inputs[:65])
+            return {"scope": "this_chat", "active_actions": active, "unknown_history": unknown_history,
+                    "unknown_with_retained_claim": claimed_unknown, "quarantined_claims": claimed_quarantine,
+                    "stale_owner_claims": stale_claims,
+                    "unconfirmed_input_actions": len(inputs), "input_release": "pending" if inputs else "released",
+                    "cleanup_ready": not (active or claimed_unknown or claimed_quarantine or inputs),
+                    "pending_action_ids": sorted(pending)[:64],
+                    "pending_ids_truncated": active > 64 or claimed_unknown > 64 or len(inputs) > 64 or len(pending) > 64,
+                    "history_preserved": True, "business_success_verified": False, "old_actions_replayed": False}
+
+    def task_control_status(self, task: str) -> dict:
+        """Finite own-chat control metadata; never another chat's content."""
+        from .feedback import resource_kind
+        with self.read_transaction() as db:
+            current = self._task(db, task)
+            actions = []
+            rows = db.execute("SELECT * FROM actions WHERE task=? ORDER BY updated DESC,id LIMIT 65", (task,)).fetchall()
+            for row in rows[:64]:
+                result = {key: row[key] for key in ("id", "state", "cancel_requested", "dispatched", "result_code", "updated")}
+                result["resource_kinds"] = sorted({resource_kind(item) for item in json.loads(row["resources"])})
+                result.update(self._action_effect_summary(db, row))
+                result.update(self._computer_sequence_summary(db, row))
+                actions.append(result)
+            owners = [dict(row) for row in db.execute("SELECT retired,COUNT(*) AS count FROM owners WHERE task=? GROUP BY retired", (task,))]
+            resources = [{"kind": resource_kind(row["resource"]), "paused": bool(row["paused"]),
+                          "recovery_required": self._effective_quarantine(db, row["resource"], row)} for row in db.execute(
+                "SELECT o.resource,r.paused,r.quarantined FROM owned_resources o JOIN resources r ON r.id=o.resource WHERE o.task=?", (task,))]
+            active = db.execute("SELECT COUNT(*) FROM actions WHERE task=? AND state IN ('queued','running')", (task,)).fetchone()[0]
+            handoffs = [{"request_id": row["id"], "state": row["state"] if row["boot"] == self.boot and row["expires"] > self.clock()
+                        or row["state"] != "pending" else "expired", "extensions": row["extensions"], "kind": row["kind"]}
+                        for row in db.execute("SELECT * FROM human_handoffs WHERE task=? ORDER BY created DESC LIMIT 8", (task,))]
+            runs = [{"run_id": row["id"], "state": row["state"], "goal": row["goal"],
+                     "revision": row["revision"], "updated": row["updated"],
+                     "step_count": db.execute("SELECT COUNT(*) FROM business_steps WHERE run=?",
+                                              (row["id"],)).fetchone()[0]}
+                    for row in db.execute("SELECT * FROM business_runs WHERE task=? "
+                                          "ORDER BY updated DESC,id LIMIT 8", (task,))]
+            app_lifecycle = db.execute(
+                "SELECT event FROM control_events WHERE task=? AND event IN "
+                "('app_control_attempted','app_channel_finished') ORDER BY seq DESC LIMIT 1", (task,)).fetchone()
+            app_phase = ("finished" if app_lifecycle and app_lifecycle[0] == "app_channel_finished"
+                         else "control_attempted" if app_lifecycle else "not_recorded")
+            computer_lifecycle = db.execute(
+                "SELECT event FROM control_events WHERE task=? AND event IN "
+                "('computer_control_attempted','computer_channel_finished') ORDER BY seq DESC LIMIT 1", (task,)).fetchone()
+            computer_phase = ("finished" if computer_lifecycle and computer_lifecycle[0] == "computer_channel_finished"
+                              else "control_attempted" if computer_lifecycle else "not_recorded")
+            return {"scope": "this_chat", "task": task, "paused": bool(current["paused"]), "revoked": bool(current["revoked"]),
+                    "revision": current["revision"], "actions": actions, "truncated": len(rows) > 64,
+                    "active_actions": active, "owners": owners, "target_claims": resources,
+                    "human_handoffs": handoffs, "business_runs": runs,
+                    "old_actions_replayed": False, "task_finished": None,
+                    "task_finished_scope": "chat_task_has_no_finish_state",
+                    "app_channel_last_lifecycle": app_phase, "computer_channel_last_lifecycle": computer_phase,
+                    "private_content_included": False}
+
+    def withdraw_queued_call(self, owner: str, action_id: str):
+        """Trusted cancelled call only; never retire running/terminal receipts."""
+        with self.transaction() as db:
+            row = db.execute("SELECT task FROM actions WHERE id=? AND owner=? AND state='queued'",
+                             (action_id, owner)).fetchone()
+            if row is not None:
+                db.execute("UPDATE actions SET cancel_requested=1,state='cancelled',updated=? WHERE id=? AND owner=? AND state='queued'",
+                           (self.clock(), action_id, owner))
+                self._mark_stage_stop(db, action_id)
+                self._record_event(db, "mcp_call_cancelled", task=row["task"], action=action_id)
 
     def cancel(self, owner: str, action_id: str):
         with self.transaction() as db:
@@ -2243,16 +3534,18 @@ class StateStore:
             resource_status = []
             for resource in sorted(resources):
                 row = db.execute("SELECT paused,quarantined FROM resources WHERE id=?", (resource,)).fetchone()
+                blocked = self._effective_quarantine(db, resource, row)
                 resource_status.append({"kind": resource_kind(resource), "paused": bool(row["paused"]),
-                                        "recovery_required": bool(row["quarantined"])})
+                                        "recovery_required": blocked})
                 if row["paused"]:
                     reasons.add("user_takeover")
-                if row["quarantined"]:
+                if blocked:
                     reasons.add("target_recovery_required")
             conflicts = []
             total_conflicts = 0
             for other in db.execute("SELECT id,owner,resources,state FROM actions WHERE state IN ('queued','running') ORDER BY id"):
-                overlap = resources.intersection(json.loads(other["resources"]))
+                overlap = resources.intersection(self._running_resources(db, other) if other["state"] == "running"
+                                                  else json.loads(other["resources"]))
                 if other["id"] != action_id and overlap:
                     reasons.add("another_action_running" if other["state"] == "running" else "competing_requests")
                     total_conflicts += 1

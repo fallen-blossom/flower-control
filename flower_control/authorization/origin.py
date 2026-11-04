@@ -15,6 +15,8 @@ import hmac
 import json
 import math
 import secrets
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -51,6 +53,20 @@ CREATE TABLE IF NOT EXISTS origin_task_boots(
  task TEXT PRIMARY KEY REFERENCES tasks(id),
  boot TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS origin_task_threads(
+ task TEXT PRIMARY KEY REFERENCES tasks(id),
+ session_hash TEXT NOT NULL,
+ host_kind TEXT NOT NULL,
+ thread_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS origin_thread_titles(
+ id INTEGER PRIMARY KEY,
+ session_hash TEXT NOT NULL,
+ title TEXT NOT NULL,
+ source TEXT NOT NULL,
+ observed REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS origin_thread_titles_session ON origin_thread_titles(session_hash,id);
 """
 
 
@@ -76,7 +92,8 @@ class HostToolCall:
     tool_input: Mapping[str, Any]
     hook_origin: Literal["trusted_hook", "trusted_connection", "unknown"] = "unknown"
     cwd: str | None = None  # Actual PreToolUse cwd; never read from MCP arguments.
-    host: Literal["codex", "claude-code", "antigravity", "local-connection"] = "codex"
+    host: Literal["codex", "claude-code", "antigravity", "local-connection", "dsh-desktop"] = "codex"
+    thread_title: str | None = None  # Optional native event metadata, never an authority field.
 
 
 @dataclass(frozen=True)
@@ -154,15 +171,46 @@ def _semantic(tool_name: str, tool_input: Mapping[str, Any]) -> str:
     defaults = {
         "flower_app_select_window": {"replacement": False},
         "flower_app_list_windows": {"launch": None},
-        "flower_app_observe": {"limits": None, "view": None},
-        "flower_app_pause": {"mode": None},
-        "flower_computer_observe": {"goal_hint": None, "next_step": None},
-        "flower_computer_activate": {"next_step": None},
-        "flower_computer_input": {"next_step": None},
-        "flower_computer_pause": {"mode": None},
-        "flower_web_request_luohua_access": {"decision": None},
-        "flower_web_start_temp": {"window_mode": None},
-        "flower_web_begin_ai_login": {"initial_url": None},
+        "flower_app_action_status": {"refresh_launch": None},
+        "flower_app_tasks": {"resources": None},
+        "flower_app_observe": {"limits": None, "view": None, "retain_artifact": None},
+        "flower_app_activate": {"next_step": None, "task_purpose": None},
+        "flower_app_pause": {"mode": None, "request_id": None, "timeout_seconds": None, "message": None, "kind": None},
+        "flower_app_artifact": {"operation": None, "baseline_id": None, "channel_tolerance": None, "max_changed_ratio": None, "masks": None},
+        "flower_app_jev_policy": {"enabled": None},
+        "flower_app_set_value": {"next_step": None, "task_purpose": None, "execution_mode": None},
+        "flower_app_invoke": {"next_step": None, "task_purpose": None, "execution_mode": None},
+        "flower_app_set_toggle": {"next_step": None, "task_purpose": None, "execution_mode": None},
+        "flower_app_select_item": {"desired": None, "next_step": None, "task_purpose": None, "execution_mode": None},
+        "flower_app_launch_admin": {"command": "list", "program_ref": None, "request_id": None, "program_path": None, "arguments": None, "work_id": None, "execution": None},
+        "flower_app_work_authority": {"command": "status", "work_id": None, "goal": "", "constraints": "", "expected_revision": 0},
+        "flower_computer_observe": {"goal_hint": None, "next_step": None, "task_purpose": None, "crop": None, "max_size": None, "crop_format": None},
+        "flower_computer_desktop_observe": {"max_size": None},
+        "flower_computer_desktop_input": {"task_purpose": None, "next_step": None},
+        "flower_computer_plan": {"task_purpose": None, "next_step": None},
+        "flower_computer_desktop_action_status": {"wait_seconds": None},
+        "flower_computer_plan_status": {"wait_seconds": 0, "include_samples": False},
+        "flower_computer_activate": {"next_step": None, "task_purpose": None},
+        "flower_computer_input": {"next_step": None, "task_purpose": None},
+        "flower_computer_pause": {"mode": None, "request_id": None, "timeout_seconds": None, "message": None, "kind": None},
+        "flower_computer_artifact": {"artifact_id": None, "observation_id": None},
+        "flower_computer_jev_policy": {"enabled": None},
+        "flower_computer_uac": {"command": "status", "prompt_ref": None},
+        "flower_computer_uac_permission": {"message_ref": None, "scope_kind": None, "program_paths": None},
+        "flower_computer_chain": {"run_id": None, "step_id": None, "parent_step_id": None,
+                                  "goal": None, "channel": None, "state": None, "summary": None,
+                                  "steps": None, "artifact_id": None,
+                                  "section": None, "after": None, "limit": None},
+        "flower_web_request_luohua_access": {"decision": None, "browser": None},
+        "flower_web_luohua_access_status": {"browser": None},
+        "flower_web_begin_luohua_login": {"browser": None},
+        "flower_web_start_temp": {"window_mode": None, "browser": None},
+        "flower_web_open_ai": {"window_mode": None, "browser": None},
+        "flower_web_open_luohua": {"window_mode": None, "browser": None},
+        "flower_web_begin_ai_login": {"initial_url": None, "browser": None},
+        "flower_web_screenshot": {"full_page": None},
+        "flower_web_jev_policy": {"enabled": None},
+        "flower_web_finish_run": {"outcome": "completed", "cleanup_pages": None},
     }
     payload = json.loads(canonical)
     # Namespace prefixes have an exact allowlist at issue/consume; aliases do
@@ -171,6 +219,14 @@ def _semantic(tool_name: str, tool_input: Mapping[str, Any]) -> str:
     for field, default in defaults.get(tool, {}).items():
         if field in payload and type(payload[field]) is type(default) and payload[field] == default:
             del payload[field]
+    # FastMCP coerces an integer into the annotated float before the handler
+    # rebuilds its signed payload. Normalize this closed field on both issue
+    # and consume so 0 and 0.0 are the same call, while booleans and unknown
+    # fields stay exact.
+    if tool == "flower_app_artifact" and "max_changed_ratio" in payload:
+        value = payload["max_changed_ratio"]
+        if type(value) is int or type(value) is float:
+            payload["max_changed_ratio"] = float(value)
     return _hash(b"flower-call-v1\0", json.dumps(
         {"tool": tool_name, "input": payload},
         sort_keys=True, separators=(",", ":"), ensure_ascii=False))
@@ -213,7 +269,7 @@ class OriginLedger:
                 db.execute("INSERT INTO origin_task_boots VALUES (?,?)", (row["id"], epoch))
 
     def _prepare(self, call: HostToolCall) -> tuple[str, str]:
-        if call.hook_origin != ("trusted_connection" if call.host in ("antigravity", "local-connection") else "trusted_hook"):
+        if call.hook_origin != ("trusted_connection" if call.host in ("antigravity", "local-connection", "dsh-desktop") else "trusted_hook"):
             raise OriginError("hook_origin_unverified")
         session = _identifier(call.session_id, "session_id")
         _identifier(call.turn_id, "turn_id")
@@ -221,7 +277,7 @@ class OriginLedger:
         name = _identifier(call.tool_name, "tool_name")
         if name not in self.allowed_tools:
             raise OriginError("tool_not_allowed")
-        if call.host not in ("codex", "claude-code", "antigravity", "local-connection"):
+        if call.host not in ("codex", "claude-code", "antigravity", "local-connection", "dsh-desktop"):
             raise OriginError("host_unrecognized")
         # Preserve existing Codex bindings; another host never inherits them.
         domain = (b"flower-session-v1\0" if call.host == "codex"
@@ -278,6 +334,21 @@ class OriginLedger:
             else:
                 task = binding[0]
                 self._live_task(db, task)
+            if call.host in {"codex", "claude-code", "dsh-desktop"}:
+                native = db.execute("SELECT * FROM origin_task_threads WHERE task=?", (task,)).fetchone()
+                identity = (session_hash, call.host, call.session_id)
+                if native is not None and tuple(native[key] for key in ("session_hash", "host_kind", "thread_id")) != identity:
+                    raise OriginError("task_thread_identity_drift")
+                if native is None:
+                    db.execute("INSERT INTO origin_task_threads VALUES (?,?,?,?)", (task, *identity))
+                title = call.thread_title
+                if (isinstance(title, str) and len(title) <= 512
+                        and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in title)):
+                    last = db.execute("SELECT title FROM origin_thread_titles WHERE session_hash=? ORDER BY id DESC LIMIT 1",
+                                      (session_hash,)).fetchone()
+                    if last is None or last[0] != title:
+                        db.execute("INSERT INTO origin_thread_titles(session_hash,title,source,observed) VALUES (?,?,?,?)",
+                                   (session_hash, title, "host_event", time.time()))
             prior = db.execute(
                 "SELECT * FROM origin_tickets WHERE session_hash=? AND turn_id=? AND tool_use_id=?",
                 (session_hash, call.turn_id, call.tool_use_id)).fetchone()
@@ -307,6 +378,26 @@ class OriginLedger:
                 db.execute("INSERT INTO origin_ticket_workspaces VALUES (?,?)",
                            (token_hash, workspace))
             return CallTicket(token, task, semantic, expires)
+
+    def audit_thread(self, task: str) -> dict | None:
+        """Read adapter-bound identity; absent legacy/connection metadata stays unknown.
+
+        This is not a grant. Titles are append-only observations and are never
+        used to match a task, mint a ticket, or infer a parent conversation.
+        """
+        with self.store.read_transaction() as db:
+            row = db.execute("SELECT * FROM origin_task_threads WHERE task=?", (task,)).fetchone()
+            if row is None:
+                return None
+            title = db.execute("SELECT title,source,observed FROM origin_thread_titles WHERE session_hash=? ORDER BY id DESC LIMIT 1",
+                               (row["session_hash"],)).fetchone()
+            result = {"HostKind": row["host_kind"], "ThreadId": row["thread_id"]}
+            if title is not None:
+                observed = datetime.fromtimestamp(title["observed"], timezone.utc)
+                result.update(Title=title["title"], TitleSource=title["source"],
+                              TitleObservedUtc=observed.strftime("%Y-%m-%dT%H:%M:%S.")
+                              + f"{observed.microsecond:06d}0+00:00")
+            return result
 
     def consume(self, call: HostToolCall, token: str) -> str:
         """Consume once after checking the real tool, original input and time.
@@ -360,12 +451,23 @@ class OriginLedger:
     def consume_token_context(self, tool_name: str, tool_input: Mapping[str, Any],
                               token: str) -> tuple[str, Path]:
         """Consume once and return the Hook-verified workspace for a launch."""
-        task, workspace = self._consume_token_context(
+        task, workspace, _, _ = self._consume_token_context(
             tool_name, tool_input, token, require_workspace=True)
         return task, Path(workspace)
 
+    def consume_token_authority_context(self, tool_name: str, tool_input: Mapping[str, Any],
+                                        token: str) -> tuple[str, str, str]:
+        """Internal source identity for UAC. These fields are never MCP inputs.
+
+        This consumes provenance only; a native user-message event and a
+        separate scoped semantic decision are still required for permission.
+        """
+        task, _, session_hash, turn_id = self._consume_token_context(
+            tool_name, tool_input, token, require_workspace=False)
+        return task, session_hash, turn_id
+
     def _consume_token_context(self, tool_name: str, tool_input: Mapping[str, Any],
-                               token: str, *, require_workspace: bool) -> tuple[str, str | None]:
+                               token: str, *, require_workspace: bool) -> tuple[str, str | None, str, str]:
         name = _identifier(tool_name, "tool_name")
         if name not in self.allowed_tools:
             raise OriginError("tool_not_allowed")
@@ -401,4 +503,4 @@ class OriginLedger:
                 (now, token_hash))
             if updated.rowcount != 1:
                 raise OriginError("ticket_replayed")
-            return row["task"], workspace
+            return row["task"], workspace, row["session_hash"], row["turn_id"]

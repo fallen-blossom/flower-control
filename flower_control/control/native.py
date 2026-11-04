@@ -13,6 +13,7 @@ import win32con
 import win32event
 import win32gui
 import win32process
+from .resource_names import FOREGROUND_INPUT_RESOURCE
 
 
 class ResourceBusy(RuntimeError):
@@ -25,7 +26,6 @@ class AbandonedResource(RuntimeError):
 
 # Shared, unowned scheduling resource. Window resources remain task-owned, but
 # all operations that may use or take the foreground must also queue on this.
-FOREGROUND_INPUT_RESOURCE = "desktop-foreground-input-v1"
 
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -113,6 +113,31 @@ def process_is_alive(identity: str) -> bool:
         return True
 
 
+def process_is_verified_alive(identity: str) -> bool:
+    """Positive evidence: exact PID, creation time and a live process handle.
+
+    Unlike process_is_alive, inaccessible or malformed identities never count
+    as proof that an epoch keeper or a browser remains alive.
+    """
+    try:
+        if type(identity) is not str:
+            return False
+        pid = int(identity.partition(":")[0])
+        if pid <= 0:
+            return False
+        process = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION |
+                                      win32con.SYNCHRONIZE, False, pid)
+        try:
+            if win32event.WaitForSingleObject(process, 0) != win32event.WAIT_TIMEOUT:
+                return False
+            created = win32process.GetProcessTimes(process)["CreationTime"]
+            return f"{pid}:{created.isoformat()}" == identity
+        finally:
+            process.Close()
+    except (ValueError, TypeError, OverflowError, win32api.error):
+        return False
+
+
 @lru_cache(maxsize=1)
 def boot_identity() -> str:
     """A documented Windows boot identity for persisted monotonic timestamps."""
@@ -181,6 +206,20 @@ class ExecutionLocks:
             self.handles.pop()
             with _guard:
                 _held.discard((self.thread_id, resource))
+
+    def release_resource(self, resource):
+        """Yield one owned mutex without relinquishing the remaining targets."""
+        if self.thread_id != threading.get_ident():
+            raise RuntimeError("execution locks must be released by their owning thread")
+        for index, (held_resource, handle) in enumerate(self.handles):
+            if held_resource == resource:
+                win32event.ReleaseMutex(handle)
+                handle.Close()
+                self.handles.pop(index)
+                with _guard:
+                    _held.discard((self.thread_id, resource))
+                return
+        raise ResourceBusy(resource)
 
     def __exit__(self, *_):
         self.release()

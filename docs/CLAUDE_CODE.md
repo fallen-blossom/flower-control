@@ -59,7 +59,7 @@ browser profile needs approval in this Claude chat; a Codex chat's approval does
 not transfer. Subagents use the session reported by the actual host Hook, never
 a relationship invented in a prompt. See [browser login](BROWSER_PROFILES.md).
 
-Ctrl+Alt+9 stops Flower writes across hosts. Pause, input release, unknown-action
+Ctrl+Alt+9 ends the current Computer input across hosts without changing the saved tier. Pause, input release, unknown-action
 queries, and optional Jev reuse the existing helper and controls. Flower adds no
 telemetry. Claude model requests and Claude's own privacy settings remain the
 host's responsibility; enabling Jev separately allows its documented data flow.

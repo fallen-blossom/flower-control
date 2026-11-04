@@ -14,6 +14,42 @@ def _entry(category: str, severity: str, summary: str, next_step: str) -> dict:
 
 
 _ERRORS = {
+    "hidden_popup_attention_required": _entry(
+        "target_changed", "warning", "后台页面关联的弹窗仍然打开，可能已经显示到桌面。",
+        "先用原 popup_dispatch_id 查看能否定位；若关联已过期，请本人处理可见弹窗。确认关闭后重新观察原页，不重复此前点击。"),
+    "hidden_window_visibility_changed": _entry(
+        "target_changed", "warning", "后台页面窗口已变为可见，后续后台操作已暂停。",
+        "先查询 window_visibility；核对实际窗口后使用 reconcile_window_visibility，不重放先前动作。"),
+    "editor_patch_not_found": _entry(
+        "target_changed", "warning", "当前文档中找不到指定原文片段。",
+        "先用 editor_read 读取同一文档的新版本，再指定完整且唯一的原文片段。"),
+    "editor_patch_ambiguous": _entry(
+        "target_changed", "warning", "指定原文片段在当前文档中出现多次。",
+        "给 old_text 加上相邻上下文，使它在文档中只出现一次；同时使用当前文档版本。"),
+    "editor_patch_result_too_large": _entry(
+        "invalid_request", "warning", "替换后的文档会超过1000000字符上限。",
+        "减少插入文本，核对文档大小和新版本后重新发起。"),
+    "recording_storage_full": _entry(
+        "storage_limit", "warning", "默认临时产物目录已达到本次录制的 200 MB 发布预算；目录中的 Web 产物也计入。",
+        "保留现有结果；可明确指定 output_path 导出，或先盘点后由用户决定清理。只机会回收本实现登记且已过七天的临时结果，不清理未过期或未登记成果，也不重放录制。"),
+    "recording_storage_inventory_unverified": _entry(
+        "storage_limit", "warning", "默认临时产物目录含无法安全计量的目录，录制未发布。",
+        "检查该精确目录，或明确指定 output_path；不会自动删除旧结果或重放录制。"),
+    "artifact_storage_busy": _entry(
+        "resource_busy", "warning", "默认临时产物目录正由另一写入占用，本次没有取得发布锁。",
+        "等该写入结束后决定下一步；不会自动重放捕获或编码，可明确指定 output_path。"),
+    "artifact_storage_unverified": _entry(
+        "runtime_failure", "warning", "默认临时产物目录的发布锁或容量未能可靠核实。",
+        "检查本地目录与先前产物状态，或明确指定 output_path；不自动删除或重放。"),
+    "video_output_size_limit": _entry(
+        "storage_limit", "warning", "MP4 达到单次 50 MB 大小限制，未发布成功视频。",
+        "缩短明确请求的录制范围，或选择 ZIP 帧成果；不自动重录或降低清晰度。"),
+    "video_timeline_unverified": _entry(
+        "runtime_failure", "warning", "无法确认编码器已输出全部录制帧，未发布视频。",
+        "检查固定本地编码器，或选择 ZIP；不把缺失时间线当完整成果。"),
+    "video_timeline_incomplete": _entry(
+        "runtime_failure", "warning", "编码器仅输出录制帧的前缀，未发布完整视频。",
+        "缩短明确请求的录制范围，或选择 ZIP；不自动重录。"),
     "invalid_app_request": _entry(
         "invalid_request", "warning", "App 工具请求格式无效。",
         "检查目标、操作参数和 action_id 后重新发起。"),
@@ -197,6 +233,16 @@ def _register(codes: str, category: str, stage: str, summary: str, next_step: st
 
 _register("dialog_pending chooser_pending", "pending_interaction", "交互等待",
           "页面有待处理的对话框或文件选择器。", "重新观察待处理交互，使用当前引用处理后再继续原任务。")
+_register("browser_executable_unavailable", "runtime_unavailable", "浏览器启动前检查",
+          "选中的浏览器可执行文件不存在或不可读取。", "核对浏览器安装路径和本地选择配置；修正后再启动，不要反复重试。")
+_register("unsupported_browser_executable", "invalid_request", "浏览器选择",
+          "浏览器选择不在当前支持范围内。", "选择 brave、edge、chrome 或 chrome-x86；工具参数不接受任意程序路径。")
+_register("browser_executable_change_requires_close", "pending_interaction", "浏览器实例身份",
+          "同一浏览器资料仍有活动实例，不能在其运行时更换可执行文件。", "先正常关闭原实例或完成人工登录，再选择另一安装位置。")
+_register("browser_profile_storage_collision", "authorization_context", "浏览器资料隔离",
+          "新浏览器资料目录与既有 AI 或落花资料重合。", "检查本地资料选择记录；保留原资料，不自动合并或覆盖。")
+_register("browser_login_only", "authorization_context", "人工登录窗口",
+          "该窗口当前专供人工登录，不能由 App 或 Computer 接管。", "等待用户登录并关闭窗口，再通过 finish_ai_login 接回 AI 控制。")
 _register("dialog_reference_stale chooser_reference_stale", "stale_observation", "交互引用复查",
           "对话框或文件选择器引用已失效。", "重新观察当前交互并取得新引用；不要沿用旧引用。")
 _register("invalid_dialog_argument prompt_dialog_required", "invalid_request", "对话框参数检查",
@@ -309,6 +355,9 @@ _register("text_response_invalid", "protocol_failure", "App 文本结果检查",
 _register("text_return_not_authorized text_embedded_privacy_unavailable content_scope_not_approved",
           "authorization_context", "App 内容返回边界", "文本内容未满足当前返回授权或隐私检查条件。",
           "核对当前内容范围与本地授权；检查通过前不要读取或返回该内容。")
+_register("privacy_sensitive_application", "privacy_boundary", "默认敏感程序保护",
+          "该程序属于默认敏感清单，Flower 不读取其画面或文字，也不向其发送输入。",
+          "使用该程序自身界面完成操作；不要通过其它 Flower 通道绕过同一保护。")
 _register("uia_initialization_failed uia_read_failed uia_preflight_failed uia_write_failed uia_readback_failed",
           "provider_failure", "App UI 自动化调用", "UI 自动化调用未能在报告阶段完成。",
           "根据回执阶段核对当前控件与应用状态；失败代码本身不能确定提供方故障原因。", "error")
@@ -506,4 +555,11 @@ def safe_app_diagnostic(value: object) -> dict:
     dispatched = value.get("dispatched")
     if type(dispatched) is bool or dispatched is None:
         result["dispatched"] = dispatched
+    properties = {"RuntimeId", "ProcessId", "AutomationId", "IsPassword", "IsEnabled", "IsOffscreen", "IsKeyboardFocusable", "HasKeyboardFocus", "HelpText", "ToggleState", "IsSelected", "Value", "ExpandCollapseState", "HorizontallyScrollable", "VerticallyScrollable", "HorizontalScrollPercent", "VerticalScrollPercent"}
+    patterns = {"Text", "Value", "Invoke", "Toggle", "SelectionItem", "ExpandCollapse", "Scroll", "ItemContainer", "VirtualizedItem"}
+    from flower_control.drivers.app_contracts import CURSOR_CAUSES
+    for name, allowed in (("failure_property", properties), ("failure_pattern", patterns), ("cursor_cause", CURSOR_CAUSES)):
+        candidate = value.get(name)
+        if type(candidate) is str and candidate in allowed:
+            result[name] = candidate
     return result

@@ -34,18 +34,26 @@ def prepared_configuration(package: Path, output: Path, source_root: Path, *, ho
         raise ValueError("fixed_program_files_helper_required")
     policy_path = package / "versions" / version / "broker.json"
     policy = json.loads(policy_path.read_bytes())
+    runtime_root = root
+    if prep.get("runtime_dependency_tree_fully_hash_pinned") is True:
+        runtime_root = production / "versions" / version / "python-source"
+        if Path(prep.get("runtime_source_root", "")).resolve() != runtime_root.resolve():
+            raise ValueError("fixed_frozen_runtime_required")
     hosts = prep.get("native_hosts")
     host_names = {"claude-code": {"claude.exe"}, "antigravity": {"antigravity.exe"},
+                  "dsh-desktop": {"deepseek harness.exe"},
                   "local-mcp": {"cursor.exe", "code.exe", "code - insiders.exe", "opencode.exe", "antigravity.exe", "claude.exe"}}
+    # Codex is admitted at runtime by its official Authenticode signer;
+    # versioned package families and image roots are optional legacy pins.
     if (host_kind not in {*host_names, "codex"} or not isinstance(hosts, list)
             or (host_kind != "codex" and not any(isinstance(h, dict) and h.get("Kind") == host_kind for h in hosts))
-            or (host_kind == "codex" and not (policy.get("CodexPackageFamilies") or policy.get("CodexImageRoots")))
             or policy.get("NativeHosts") != hosts
-            or policy.get("Version") != version or Path(policy.get("Repository", "")).resolve() != root
-            or any(type(h) is not dict or set(h) != {"Kind", "Path", "Sha256"}
+            or policy.get("Version") != version or Path(policy.get("Repository", "")).resolve() != runtime_root.resolve()
+            or any(type(h) is not dict or set(h) != ({"Kind", "Path", "Sha256", "RuntimeSha256"} if h.get("Kind") == "dsh-desktop" else {"Kind", "Path", "Sha256"})
                    or h["Kind"] not in host_names or not Path(h["Path"]).is_absolute()
                    or Path(h["Path"]).name.lower() not in host_names[h["Kind"]]
-                   or not re.fullmatch(r"[a-f0-9]{64}", h["Sha256"]) for h in hosts)):
+                   or not re.fullmatch(r"[a-f0-9]{64}", h["Sha256"])
+                   or h["Kind"] == "dsh-desktop" and not re.fullmatch(r"[a-f0-9]{64}", h["RuntimeSha256"]) for h in hosts)):
         raise ValueError("prepared_native_host_policy_required")
     if set(entries.get("mcpServers", {})) != set(CHANNELS):
         raise ValueError("three_channels_required")
@@ -55,7 +63,7 @@ def prepared_configuration(package: Path, output: Path, source_root: Path, *, ho
         if (set(entry) != {"command", "args", "cwd"}
                 or Path(entry["command"]).resolve() != helper.resolve()
                 or entry["args"] != ["--flower-client", channel]
-                or Path(entry["cwd"]).resolve() != root):
+                or Path(entry["cwd"]).resolve() != runtime_root.resolve()):
             raise ValueError("prepared_mcp_entry_mismatch")
         # Claude has no dependency on a Codex-specific cwd config field:
         # the fixed launcher already sets the broker's source directory.

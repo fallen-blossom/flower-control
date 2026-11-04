@@ -12,11 +12,13 @@ Control state is kept under `%LOCALAPPDATA%\FlowerControl\state-v1`. Managed per
 
 Closing a persistent profile does not erase its logins. Disabling or uninstalling the plugin does not automatically delete state or profiles. Remove only the exact data you intend to remove, after ending work and backing up anything needed. There is no advertised automatic retention or secure-erasure guarantee.
 
-## Optional Jev
+## Optional decision services
 
-Jev is disabled on a new installation. When enabled, Flower uses `https://api.typesafe.ai/v1/systemone` with model `jev-1.13.0`. Eligible requests send short task goals, candidate labels, and bounded task context. Passwords, API keys, cookies, tokens, password controls, raw screenshots, and full DOM/UIA trees are excluded from the selection payload.
+Built-in adapters use Jev (`https://api.typesafe.ai/v1/systemone`) and Perplexity Decisions (`https://api.perplexity.ai/v1/decisions`) with explicit supported models. Custom providers accept OpenAI Chat JSON or the supported Decisions structure, with endpoint, model and privacy URL. New providers and changed endpoints/protocols start disabled.
 
-The API key is sent to TypeSafe as authentication and stored locally in Windows Credential Manager, not in the repository or as a command-line argument. TypeSafe processes requests under its own terms and may collect service telemetry. Flower's no-telemetry statement does not apply to that provider. Disable Jev to stop new requests; base control remains available.
+Eligible requests contain bounded goals/candidates and necessary task context. Deterministic local rules redact recognized secrets without another model pass. Screenshots, full DOM/UIA trees, source code and chat history are not sent. Rules cannot recognize all private text; review the payload boundary and provider policy before enabling.
+
+Keys authenticate only to the matching provider and stay in Windows Credential Manager, not config JSON, command arguments or logs. Keys are not displayed; custom keys bind the exact endpoint and are not reused after an address change. Settings offer ordering, disabling, removal and privacy links. Each provider applies its own terms; Flower's no-telemetry promise does not cover it. Disabling prevents new requests and execution of stale results, but an in-flight request may already have reached the provider. Base control remains available.
 
 ## Installation and support
 

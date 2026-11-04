@@ -22,6 +22,32 @@ _context = ContextVar("flower_jev_diagnostic_context", default=None)
 _public_tool_context = ContextVar("flower_public_tool_context", default=None)
 
 
+class FlowMeasurements:
+    """Facts measured inside one runtime flow, never inferred host activity.
+
+    Driver calls count attempts to enter the existing channel API, not physical
+    dispatches or successful business operations. A replay returns the original
+    persisted snapshot; it is not another measured execution of that flow.
+    """
+    def __init__(self, *, clock=time.monotonic):
+        self.clock = clock
+        self.started = clock()
+        self.driver_calls = {}
+        self.recovery_attempts = 0
+
+    def driver_call(self, command):
+        self.driver_calls[command] = self.driver_calls.get(command, 0) + 1
+
+    def snapshot(self, *, usage=None):
+        return {"scope": "this_flow_invocation", "flow_invocations": 1,
+                "driver_calls": dict(self.driver_calls),
+                "recovery_attempts": self.recovery_attempts,
+                "elapsed_ms": max(0, round((self.clock() - self.started) * 1000)),
+                "host_round_trips": None, "human_interventions": None,
+                **(usage.snapshot() if isinstance(usage, JevUsage) else {
+                    "http_observation_complete": False, "http_invocations": None})}
+
+
 def public_tool_name_valid(channel, tool):
     """Use the existing tool registry; this check grants no authorization."""
     from flower_control.authorization.hook_bridge import WEB_TOOLS, APP_TOOLS, COMPUTER_TOOLS
@@ -29,7 +55,7 @@ def public_tool_name_valid(channel, tool):
         "web": WEB_TOOLS, "app": APP_TOOLS, "computer": COMPUTER_TOOLS}.get(channel, ())
 
 
-def _public_tool_event(store, event, *, task, details):
+def _public_tool_event(store, event, *, task, details, action=None):
     """Diagnostic persistence never replaces a business return or exception."""
     try:
         # Diagnostics alone use a short wait and cannot create a missing DB.
@@ -42,7 +68,7 @@ def _public_tool_event(store, event, *, task, details):
             db.execute("BEGIN IMMEDIATE")
             try:
                 # Keep StateStore's metadata bound, attribution and retention.
-                store._record_event(db, event, task=task, details=details)
+                store._record_event(db, event, task=task, action=action, details=details)
                 db.commit()
             except BaseException:
                 db.rollback()
@@ -134,7 +160,7 @@ _ATTEMPT_FIELDS = frozenset({
     "max_attempts", "kind", "question_count", "candidate_count", "slot_wait_ms",
     "gap_ms", "reason", "http_invoked", "request_ms", "http_phase_ms",
     "status_code", "connection", "tcp_started", "tls_started", "trace_observed",
-    "trace_phase_ms", "usage"})
+    "trace_phase_ms", "usage", "provider", "model"})
 _TRACE_PHASES = frozenset({"connection.connect_tcp", "connection.start_tls",
     "http11.send_request_headers", "http2.send_request_headers",
     "http11.receive_response_headers", "http2.receive_response_headers",
@@ -144,6 +170,11 @@ _TRACE_PHASES = frozenset({"connection.connect_tcp", "connection.start_tls",
 def attempt_metadata(details):
     """Only fixed producer fields; never admit an accidental body/trace-info."""
     result = {k: v for k, v in details.items() if k in _ATTEMPT_FIELDS}
+    if result.get("provider") not in {"jev", "perplexity"}:
+        result.pop("provider", None)
+    if not (type(result.get("model")) is str and re.fullmatch(
+            r"(?:jev-\d+\.\d+\.\d+|pplx-decider-(?:flash-)?v1\.2)", result["model"])):
+        result.pop("model", None)
     for field, allowed in (("trace_phase_ms", _TRACE_PHASES),
                            ("usage", {"input_tokens", "output_tokens"})):
         raw = result.get(field)
@@ -163,6 +194,8 @@ class JevUsage:
     started: int = 0
     finished: int = 0
     invocations: int = 0
+    decisions: dict = field(default_factory=dict, repr=False)
+    unobserved_client_call: bool = False
 
     def observe(self, event, details):
         with self._lock:
@@ -171,6 +204,22 @@ class JevUsage:
             elif event == "jev_http_finished":
                 self.finished += 1
                 self.invocations += int(details.get("http_invoked") is True)
+            elif event in {"scheduling_decision", "scheduling_skipped", "target_selection"}:
+                if (details.get("http_observation_complete") is False or
+                        details.get("client_invoked") is True and not details.get("http_attempts_started")):
+                    self.unobserved_client_call = True
+                purpose = "target_selection" if event == "target_selection" else "scheduling"
+                row = self.decisions.setdefault(purpose, {"decisions": 0, "client_calls": 0,
+                    "opportunities": 0, "skip_reasons": {}, "last_reason": None})
+                row["decisions"] += 1
+                row["client_calls"] += int(details.get("client_invoked") is True)
+                row["opportunities"] += int(details.get("opportunity") is True)
+                reason = details.get("skip_reason")
+                if type(reason) is str and re.fullmatch(r"[a-z][a-z0-9_:]{0,95}", reason):
+                    if reason in row["skip_reasons"] or len(row["skip_reasons"]) < 16:
+                        row["skip_reasons"][reason] = row["skip_reasons"].get(reason, 0) + 1
+                reason = details.get("reason")
+                row["last_reason"] = reason if type(reason) is str and re.fullmatch(r"[a-z][a-z0-9_:]{0,95}", reason) else None
         if self.parent is not None:
             self.parent.observe(event, details)
 
@@ -178,9 +227,21 @@ class JevUsage:
         with self._lock:
             return {"http_attempts_started": self.started, "http_attempts_finished": self.finished,
                     "http_attempts_pending": max(0, self.started-self.finished),
-                    "http_observation_complete": self.started == self.finished,
+                    "http_observation_complete": self.started == self.finished and not self.unobserved_client_call,
                     "http_invocations_confirmed": self.invocations,
-                    "http_invocations": self.invocations if self.started == self.finished else None}
+                    "http_invocations": self.invocations if self.started == self.finished and not self.unobserved_client_call else None}
+
+
+    def explanation(self, *, enabled=None, client_configured=None):
+        with self._lock:
+            purposes = {key: {**row, "skip_reasons": dict(row["skip_reasons"])} for key, row in self.decisions.items()}
+            complete = self.started == self.finished and not self.unobserved_client_call
+            state = "used" if self.invocations else "not_used" if purposes and complete else "unknown"
+            return {"state": state, "scope": "this_operation", "enabled": enabled if type(enabled) is bool else None,
+                "client_configured": client_configured if type(client_configured) is bool else None,
+                "http_invocations_confirmed": self.invocations,
+                "http_observation_complete": complete, "purposes": purposes,
+                "reason": "http_observation_incomplete" if not complete else "observed_operation" if purposes else "operation_record_missing"}
 
 
 @contextmanager

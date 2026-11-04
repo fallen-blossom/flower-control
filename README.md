@@ -2,68 +2,86 @@
 
 [简体中文](README.zh-CN.md)
 
-[Download the source preview](https://github.com/fallen-blossom/flower-control/releases/tag/v0.1.0-preview.1) · [Install](docs/INSTALL.md) · [Browser login](docs/BROWSER_PROFILES.md)
+**Windows 11 x64 source preview · 0.1.0-preview.3**
 
-Give Codex tools to operate websites and Windows apps: fill forms, read documents, use menus, upload files, click, type, and drag.
+Flower Control gives Codex three local MCP channels for operating Windows and the web:
 
-Install Flower as a Codex plugin, then tell Codex what you want done and which window or browser environment to use. It adds three tool channels: **Web for webpage elements, App for desktop controls, and Computer for actions based on screenshots**.
-
-![Flower icon](assets/branding/flower-petal/flower-petal-256.png)
-
-## What it does
-
-| Channel | How it operates | Useful for |
+| Channel | What it does | Good for |
 | --- | --- | --- |
-| **Web** | Reads page text, links, buttons, and form fields, then acts on those elements through Playwright | Research, web forms, online code editors, tabs, uploads, and downloads |
-| **App** | Reads the controls a Windows app exposes, including names, values, lists, and menus, then operates them through FlaUI / Windows UI Automation | Desktop forms, settings, long lists, menus, and dialogs belonging to the selected app |
-| **Computer** | Takes a screenshot of the selected window and sends mouse and keyboard input at the chosen position | Drawing, dragging, canvases, shortcuts, and interfaces with few readable controls |
+| **Web** | Reads page structure and acts on page elements | Forms, search, web editors, uploads/downloads, temporary browsers |
+| **App** | Reads controls exposed by Windows applications | Buttons, fields, lists, menus, settings pages, dialogs |
+| **Computer** | Captures one selected window and sends pointer/keyboard input | Canvas, drag and drop, shortcuts, interfaces with weak accessibility |
 
-For example, Web can read a page and fill its form without locating every field by screenshot. App can select an item in a desktop list or change a checkbox by its name. Computer can drag an object on a canvas or use an existing browser window you select. An app must expose its controls for App to read them; Computer provides a way to operate the visible interface when it does not.
+Codex plans the task. Flower handles local target binding, permission checks, input release, and result readback. You do not have to call every tool by hand; describe the task in normal language.
 
-Codex can combine the channels in one task, such as editing a webpage through Web and operating a related desktop dialog through App. The model plans the task; Flower supplies the local controls and checks the selected target and action state.
+## Read these first
 
-## Control and optional Jev
+1. [Install](docs/INSTALL.md): Windows 11, Codex desktop, CPython 3.14, .NET 10 SDK, and Visual Studio C++ Build Tools.
+2. [Permissions and settings](docs/PERMISSIONS.md): the four tiers are **01 fully stopped**, **02 ordinary control**, **03 administrator windows**, and **04 administrator execution**.
+3. [Usage](docs/USAGE.md): Web, App, Computer, target selection, pause, Stop, and common recovery paths.
 
-Known mechanical steps can run in a batch, reducing separate model/tool round trips. **Jev is an optional target selector**: it receives a short goal and a few candidate labels, chooses a target, and Flower can execute that choice within the same tool call. It is disabled on a new installation and is not required to use any of the three channels.
+This is a **source preview**. The repository contains source and a reproducible local build; it does not contain a signed executable and does not auto-update. A GitHub Release is a version page with source archives and checksums, not an installer and not a portable helper.
 
-Press **Ctrl+Alt+9** to stop writes. Computer control shows a moving border, an elapsed-time label, and a Stop button. Resuming requires a fresh look at the target; an interrupted action is not silently repeated.
+## What is included
 
-## Start here
+- Managed Brave, Edge, and Chrome profiles for Web, with temporary, AI, and personal login profiles.
+- App control through Windows UI Automation, including buttons, fields, lists, menus, screenshots, and short recordings.
+- Computer control through a selected-window screenshot, pointer/keyboard input, drag, scroll, keys, and bounded short sequences.
+- Tray settings, permission tiers, deny lists, privacy masks, Stop, and Computer pause/resume.
+- A local Codex plugin integration. Source adapters for DSH, Claude, and local clients are retained, but are not the primary acceptance path for this preview.
 
-Source adapters are included for [native Windows Claude Code](docs/CLAUDE_CODE.md) and [Antigravity](docs/ANTIGRAVITY.md), with a [shared local entry and configuration generator](docs/LOCAL_CLIENTS.md) for native Cursor, VS Code, and OpenCode. The shared entry has protocol checks and a helper build; individual clients have not completed real task acceptance or installation. Connection mode excludes private profiles and same-target cross-channel handoff. The Codex runtime evidence below does not validate these clients.
+## Permission tiers
 
-This is a **Windows source preview**. Start with [installation](docs/INSTALL.md), then read [browser profiles and login](docs/BROWSER_PROFILES.md). The setup uses a current Codex desktop installation, Windows 11 x64, CPython 3.14 x64, and .NET 10 SDK. The Web channel also needs a Chromium-family browser at its standard system installation path (Brave is verified; Chrome and Edge are pending verification). Windows 10 and other hosts have not received the same acceptance coverage.
+| Tier | Name | Ordinary windows | Administrator windows | Administrator launch | Notes |
+| --- | --- | --- | --- | --- | --- |
+| 01 | Fully stopped | No | No | No | Stops all three channels; tray and Stop remain available |
+| 02 | Ordinary control | Yes | No | No | Everyday windows without administrator permission |
+| 03 | Administrator windows | Yes | Yes | No | Read/control elevated windows, but do not start an elevated process |
+| 04 | Administrator execution | Yes | Yes | Yes, through the local list | Starts administrator programs through the local list; UAC secure desktop and the legacy system takeover are frozen |
 
-Installation prepares a package for **your Windows account and your source directory**. It is not a portable copy of the developer's administrator helper. Keep the source directory, Python runtime, and virtual environment in place after installation.
+Permissions are local settings. The chat agent cannot write the protected permission file. Deny lists win over allow lists. Every target, launch, and action is checked again against the current tier and Stop state.
 
-You can ask Codex in ordinary language; you do not need to name every tool call. For an initial trial, use a test window or a public page:
+## First trial
 
-> Use Flower App to fill the fields in the window I select. Save and verify the result.
+After installation and Hook trust, open a new Codex chat and start with a harmless target:
 
-> Open this public page in a temporary Flower browser, find the information I asked for, and close the session when finished.
+> Check the Web, App, and Computer status and origin probes. Confirm that the loaded source and helper match the files on disk.
 
-> Use Flower Computer to drag the orange object into the blue area in the window I select.
+> Use Flower App on the Notepad window I select, append one line, and read it back without saving to a new path.
 
-## Profiles and privacy
+> Open a public page in a temporary Flower browser, read its title, then close the temporary session.
 
-Temporary browsers start separately. The AI profile keeps its own logins and is available for normal agent work. The personal profile, named Luohua in the tool API, needs your permission once per chat. None of these profiles imports cookies from your everyday browser. To use a saved login through Web, log in once in the chosen Flower profile; the [login guide](docs/BROWSER_PROFILES.md) walks through the handoff.
+Use a test window or a public page first. Do not give the agent passwords, verification codes, payment information, or private browser profiles.
 
-Flower has **no usage telemetry, crash uploads, remote configuration, or automatic updates**. Its control state and browser data are stored locally. Codex still uses its configured model service, and browsing reaches the websites you request. Jev is an optional external AI service, disabled on a new installation; it receives approved short target labels and goals, not raw screenshots or a full page tree. See [privacy](PRIVACY.md) for the exact boundary.
+## Browser profiles and privacy
 
-## Browser compatibility
+Temporary browsers are disposable. The AI profile is an independent profile for ordinary agent work. The personal profile, Luohua, requires an explicit per-chat grant and a separate grant for each browser. Flower does not import your everyday browser cookies. See [browser profiles](docs/BROWSER_PROFILES.md).
 
-The **Web channel accepts the Chromium-family browsers Brave, Chrome, and Edge**. Brave is the verified configuration; Chrome and Edge share the same engine and request path, but their real-foreground use is **pending verification** in this preview. Other engines are not supported.
+## Stop, pause, and recovery
 
-**App and Computer are general Windows window tools.** You can select a window from another browser and operate its visible interface through Computer. App can use whatever accessible controls that browser exposes. This does not create a managed Web session or import that browser's cookies into Flower.
+- **Ctrl+Alt+9** ends the current Computer input and releases held keys. It does not change the saved tier or create a global all-writes Stop.
+- **HUD Stop** stops the current Computer cycle.
+- **Tray Stop Computer Use** ends the current computer operation; App/Web do not inherit a new permission from that Stop.
+- **Computer pause** stops Computer mouse/keyboard input while App/Web can continue.
+- **Resume** requires a fresh observation. Never replay an uncertain action automatically.
 
-## Current limits and testing
+## Privacy and security
 
-Login may expire normally. UAC secure-desktop prompts need a person. Custom input methods with English candidate windows need further adaptation. The helper's current tray menu is Chinese; the tool descriptions and this documentation are available in English.
+Flower does not add telemetry, crash uploads, remote configuration, or automatic updates. Browsing reaches the sites you request; Codex still uses its configured model service. Jev, Perplexity, and compatible decision providers are optional external services and only run after local enablement. Keys enter locally in Settings, never through chat or command-line arguments.
 
-Practical tests cover spreadsheets, documents, drawing, browser editing and file transfer, desktop lists and dialogs, stop/resume, and Jev in all three channels. One document-color task missed the required color precision. These results support the workflows tested; they are not a 95% success claim or a published OSWorld score. Read [validation](docs/VALIDATION.md).
+The administrator helper runs under the current Windows account. It does not disable Defender, the firewall, or UAC.
 
-## License and dependencies
+## Current limits
 
-Flower's own code is available under the [MIT license](LICENSE). MCP, Playwright, FlaUI, Pillow, and the other pinned dependencies keep their own licenses and are credited in [third-party notices](THIRD_PARTY_NOTICES.md).
+- Web is not arbitrary browser automation; it uses supported Chromium-family browsers and managed profiles.
+- Computer is not desktop-wide control; it operates the bound window.
+- UAC secure desktop, password entry, cross-user elevation, silent updates, and indefinite key holds are outside this preview's promise.
+- Permission and source changes are rechecked before later work; uncertain actions are not replayed automatically.
 
-For fixes, see [contributing](CONTRIBUTING.md). For a security issue, see [security](SECURITY.md).
+## Release status
+
+The B46-r6 line has an installation, a local Codex publication, and three-channel load evidence on the development machine. The source archive records a per-file SHA-256 manifest. A clean-PC one-click installation, every website, every third-party app, and every administrator scenario are not implied by that record. For an issue, include the version, status, error code, and a minimal reproduction; see [troubleshooting](docs/TROUBLESHOOTING.md).
+
+## License
+
+Flower's own code is under the [MIT License](LICENSE). MCP, Playwright, FlaUI, Pillow, and other dependencies retain their licenses; see [third-party notices](THIRD_PARTY_NOTICES.md) and [dependency inventory](dependency-inventory.json).

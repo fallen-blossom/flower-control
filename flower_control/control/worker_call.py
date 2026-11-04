@@ -31,7 +31,8 @@ class WorkerCallGuard:
         directory = Path(envelope["directory"])
         if not directory.is_absolute() or not (directory / "control.sqlite3").is_file():
             raise ControlError("worker_ledger_missing")
-        self.store = _open_store(str(directory.resolve()))
+        from flower_control.data_paths import physical_path
+        self.store = _open_store(str(physical_path(directory / "control.sqlite3").parent))
         self.action = envelope["action"]
         self.token = envelope["token"]
         self.fingerprint = command_hash(command, arguments)

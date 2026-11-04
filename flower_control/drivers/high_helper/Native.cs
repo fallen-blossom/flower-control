@@ -20,6 +20,7 @@ internal record Target(long Hwnd, int Pid, long Created, int Session, string Ima
                        int Integrity, long Nonce, int[] Bounds, int[]? ClientRect = null,
                        int[]? ClientOrigin = null, uint? WindowDpi = null);
 internal record Bound(long Hwnd, int Pid, long Created, long WindowNonce);
+internal record AppContinuationAnchor(Target Target, Bound Bound);
 
 internal static class Native
 {
@@ -161,8 +162,10 @@ internal static class Native
     internal static (Peer Identity, string Image) Process(int pid, bool digestImage = true)
     {
         using var process = OpenProcess(0x1000, false, pid);
-        Require(!process.IsInvalid, "process_unavailable");
-        Require(GetProcessTimes(process, out var created, out _, out _, out _), "process_unavailable");
+        if (process.IsInvalid)
+        { var error = new Boundary("process_unavailable", Marshal.GetLastWin32Error()); error.Data["Operation"] = "OpenProcessQueryLimited"; throw error; }
+        if (!GetProcessTimes(process, out var created, out _, out _, out _))
+        { var error = new Boundary("process_unavailable", Marshal.GetLastWin32Error()); error.Data["Operation"] = "GetProcessTimes"; throw error; }
         var image = new StringBuilder(2048); uint size = 2048;
         Require(QueryFullProcessImageNameW(process, 0, image, ref size), "image_unavailable");
         Require(ProcessIdToSessionId(pid, out var session), "session_unavailable");
@@ -206,12 +209,12 @@ internal static class Native
             throw new Boundary("peer_identity_changed");
     }
 
-    internal static Bound CheckTarget(Target target, bool bind)
+    internal static Bound CheckTarget(Target target, bool bind, UserPermissionSettings? permissions = null)
     {
         var hwnd = new IntPtr(target.Hwnd);
         if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || GetAncestor(hwnd, 2) != hwnd)
             throw new Boundary("target_not_ordinary_root");
-        if (Protected.Any(name => GetPropW(hwnd, name) != IntPtr.Zero)) throw new Boundary("protected_target");
+        if (ProtectedWindowOrOwner(hwnd)) throw new Boundary("protected_target");
         var thread = GetWindowThreadProcessId(hwnd, out var pid);
         if (pid != target.Pid || thread == 0) throw new Boundary("target_identity_changed");
         Desktop(thread);
@@ -224,6 +227,7 @@ internal static class Native
             throw new Boundary("target_identity_changed");
         if (Excluded.Contains(Path.GetFileName(process.Image), StringComparer.OrdinalIgnoreCase))
             throw new Boundary("protected_target");
+        UserPermissions.RequireWindow(hwnd, process.Identity, process.Image, permissions);
         var nonce = GetPropW(hwnd, WindowProperty).ToInt64();
         if (target.Nonce != 0 && nonce != target.Nonce) throw new Boundary("window_nonce_changed");
         if (bind && nonce == 0)
@@ -273,6 +277,61 @@ internal static class Native
         }
         return false;
     }
+    internal static string ForegroundChangeReason(Bound bound, long hwnd)
+        => !TargetOrOwnedPopup(bound, hwnd, false) && TargetOrOwnedPopup(bound, hwnd, true)
+            ? "new_window_detected" : "foreground_changed";
+    // Identity-only anchors captured before an Invoke can close its owned root.
+    // They permit draining this request, never dispatch or content access to an ancestor.
+    internal static AppContinuationAnchor[] BindAppContinuationAnchors(Target target, Bound bound)
+    {
+        var anchors = new List<AppContinuationAnchor>();
+        var seen = new HashSet<IntPtr> { new(bound.Hwnd) };
+        var owner = GetWindow(new IntPtr(bound.Hwnd), 4);
+        for (int depth = 0; owner != IntPtr.Zero; ++depth)
+        {
+            if (depth >= 16 || !seen.Add(owner)) return [];
+            GetWindowThreadProcessId(owner, out var pid);
+            if (pid != bound.Pid) return [];
+            try
+            {
+                var ancestor = target with { Hwnd = owner.ToInt64(), Nonce = 0 };
+                var identity = CheckTarget(ancestor, true);
+                anchors.Add(new(ancestor with { Nonce = identity.WindowNonce }, identity));
+            }
+            catch (Boundary) { return []; } // No relaxation without a complete admitted ancestry.
+            owner = GetWindow(owner, 4);
+        }
+        return anchors.ToArray();
+    }
+    internal static bool AppContinuationChainMatches(Bound bound, AppContinuationAnchor[] anchors)
+    {
+        var owner = GetWindow(new IntPtr(bound.Hwnd), 4);
+        foreach (var anchor in anchors)
+        {
+            if (owner.ToInt64() != anchor.Bound.Hwnd || CheckTarget(anchor.Target, false) != anchor.Bound) return false;
+            owner = GetWindow(owner, 4);
+        }
+        return owner == IntPtr.Zero;
+    }
+    internal static bool HiddenAppContinuationMatches(Bound bound, AppContinuationAnchor[] anchors)
+    {
+        var hwnd = new IntPtr(bound.Hwnd);
+        return AppCloseDrain.HiddenTargetCanDrain(true, IsWindow(hwnd), IsWindowVisible(hwnd),
+            GetWindowThreadProcessId(hwnd, out var pid) != 0 && pid == bound.Pid
+                && GetAncestor(hwnd, 2) == hwnd && GetPropW(hwnd, WindowProperty).ToInt64() == bound.WindowNonce,
+            anchors.Length != 0 && AppContinuationChainMatches(bound, anchors));
+    }
+    internal static AppContinuationAnchor? LiveAppContinuationAnchor(AppContinuationAnchor[] anchors)
+    {
+        foreach (var anchor in anchors)
+        {
+            if (!IsWindow(new IntPtr(anchor.Bound.Hwnd))) continue;
+            // An existing but reused/changed HWND is not normal destruction.
+            if (CheckTarget(anchor.Target, false) != anchor.Bound) throw new Boundary("target_identity_changed");
+            return anchor;
+        }
+        return null;
+    }
     internal static void CheckGeometry(Target target, bool clientRequired = false)
     {
         if (!Bounds(target.Hwnd).SequenceEqual(target.Bounds)) throw new Boundary("geometry_changed");
@@ -286,11 +345,20 @@ internal static class Native
             || !new[] { origin.X, origin.Y }.SequenceEqual(target.ClientOrigin)
             || GetDpiForWindow(hwnd) != target.WindowDpi) throw new Boundary("client_geometry_changed");
     }
+    internal static bool ProtectedOwnerChain(IntPtr hwnd, Func<IntPtr, bool> marked, Func<IntPtr, IntPtr> owner)
+    {
+        var seen = new HashSet<IntPtr>();
+        for (int depth = 0; depth < 16 && hwnd != IntPtr.Zero && seen.Add(hwnd); depth++, hwnd = owner(hwnd))
+            if (marked(hwnd)) return true;
+        return false;
+    }
+    internal static bool ProtectedWindowOrOwner(IntPtr hwnd)
+        => ProtectedOwnerChain(hwnd, item => Protected.Any(name => GetPropW(item, name) != IntPtr.Zero), item => GetWindow(item, 4));
     internal static bool ProtectedForeground()
     {
         var hwnd = GetAncestor(GetForegroundWindow(), 2);
         if (hwnd == IntPtr.Zero) return false;
-        if (Protected.Any(name => GetPropW(hwnd, name) != IntPtr.Zero)) return true;
+        if (ProtectedWindowOrOwner(hwnd)) return true;
         GetWindowThreadProcessId(hwnd, out var pid);
         var process = Process((int)pid);
         return process.Identity.Integrity >= 16384 || Excluded.Contains(Path.GetFileName(process.Image), StringComparer.OrdinalIgnoreCase);

@@ -38,8 +38,10 @@ from flower_control.control.state import ControlError
 from flower_control.control.native import process_identity, process_is_alive
 from flower_control.browsers import (CHROMIUM_BROWSER_PATHS, DEFAULT_BROWSER_NAME,
                                      is_supported_browser_image)
-from flower_control.drivers.worker_python import worker_python
+from flower_control.drivers.worker_python import worker_command
 from .web_effects import CLOSE_STOP_CODES, KNOWN_STAGES, WebClosePending, error_with_effect
+from .web_diagnostics import safe_failure_facts
+from .web_page_registry import page_registry as valid_page_registry
 
 
 # Chromium-family default; Chrome/Edge are accepted by the same contract.
@@ -51,6 +53,17 @@ _WORKER_RESPONSE_TIMEOUT = 30.0
 # Download can wait 10 s for its page event and 30 s for save_as. Give the
 # bounded artifact copy and IPC reply another 10 s before declaring uncertainty.
 _DOWNLOAD_RESPONSE_TIMEOUT = 50.0
+
+
+def _response_timeout(command, arguments):
+    if command == "download":
+        return _DOWNLOAD_RESPONSE_TIMEOUT
+    if command == "record":
+        duration = arguments.get("duration_seconds", 3)
+        if type(duration) in (int, float) and 0 < duration <= 120:
+            return max(_WORKER_RESPONSE_TIMEOUT, duration + 50)
+    return _WORKER_RESPONSE_TIMEOUT
+
 _DIAGNOSTIC_LINE_LIMIT = 1024
 _DIAGNOSTIC_RECORD_LIMIT = 32
 WEB_WORKER_PHASES = frozenset({"worker_ready", "stdin_eof", "invalid_frame",
@@ -81,7 +94,11 @@ def _worker_running(identity: str) -> bool | None:
 
 def _minimal_environment() -> dict[str, str]:
     """Do not inherit proxy, Playwright/Node overrides or debug hooks."""
-    allowed = ("SystemRoot", "WINDIR", "TEMP", "TMP", "ComSpec")
+    # Browser discovery also runs when the isolated worker imports this module.
+    # Keep Windows installation roots, without inheriting browser selection,
+    # Python/Node injection, proxies or credentials from the caller.
+    allowed = ("SystemRoot", "WINDIR", "TEMP", "TMP", "ComSpec", "SystemDrive",
+               "ProgramW6432", "ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA")
     result = {key: os.environ[key] for key in allowed if key in os.environ}
     result.setdefault("SystemRoot", os.environ.get("SystemRoot", r"C:\Windows"))
     result.setdefault("WINDIR", result["SystemRoot"])
@@ -104,6 +121,24 @@ def _visible_browser_windows(pid: int) -> list[int]:
 
     win32gui.EnumWindows(visit, None)
     return windows
+
+
+def browser_window_candidate_summary(hwnd: int) -> dict:
+    """Short local identity for choosing among several owned windows."""
+    try:
+        title = win32gui.GetWindowText(hwnd)[:160]
+    except Exception:
+        title = ""
+    try:
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        bounds = [left, top, right, bottom]
+    except Exception:
+        bounds = None
+    try:
+        foreground = win32gui.GetForegroundWindow() == hwnd
+    except Exception:
+        foreground = False
+    return {"title": title, "bounds": bounds, "foreground": foreground}
 
 
 def _taskbar_browser_windows(pid: int) -> list[int]:
@@ -148,7 +183,11 @@ class _WorkerClient:
     """One request at a time over a private JSONL pipe; no command replay."""
 
     def __init__(self, environment: dict[str, str], *, guarded: bool = False,
-                 profile_kind: str = "temporary", diagnostic=None) -> None:
+                 profile_kind: str = "temporary", diagnostic=None, page_registry=None,
+                 registry_callback=None, shared_browser: bool = False,
+                 download_directory: Path | None = None, shared_headless: bool = True) -> None:
+        if type(shared_headless) is not bool:
+            raise ValueError("invalid_shared_browser_mode")
         self.environment = dict(environment)
         self.guarded = guarded
         self.profile_kind = profile_kind
@@ -159,6 +198,11 @@ class _WorkerClient:
         self.worker_identity: str | None = None
         self._stop_event = None
         self._diagnostic = diagnostic
+        self.page_registry = valid_page_registry(page_registry or {})
+        self._registry_callback = registry_callback
+        self.shared_browser = shared_browser
+        self.shared_headless = shared_headless
+        self.download_directory = download_directory
         self._diagnostic_task: asyncio.Task | None = None
         self.diagnostics: list[dict] = []
         self.diagnostic_invalid = 0
@@ -241,17 +285,19 @@ class _WorkerClient:
         stop_name = "Local\\FlowerControl.WorkerStop." + uuid.uuid4().hex
         self._stop_event = win32event.CreateEvent(None, True, False, stop_name)
         self.process = await asyncio.create_subprocess_exec(
-            worker_python(), "-B", "-m", "flower_control.drivers.web_worker", endpoint,
+            *worker_command("flower_control.drivers.web_worker", endpoint),
             "--owner", process_identity(), "--stop-event", stop_name,
             *(["--guarded"] if self.guarded else []),
             "--profile-kind", self.profile_kind,
+            *(["--shared-browser", "--download-directory", str(self.download_directory)] if self.shared_browser else []),
+            ("--shared-headless" if self.shared_headless else "--shared-headed"),
             cwd=str(project_root), env=environment,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=_MAX_MESSAGE + 1, startupinfo=startup,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         self._diagnostic_task = asyncio.create_task(self._drain_diagnostics(self.process.stderr))
-        identity = await self.call("ping", {})
+        identity = await self.call("ping", {"page_registry": self.page_registry} if self.page_registry else {})
         # Windows venv python.exe may be a redirector with a distinct child.
         # The handshake arrives over this exact child's private stdout pipe.
         if (not isinstance(identity, dict) or type(identity.get("pid")) is not int
@@ -296,8 +342,7 @@ class _WorkerClient:
                 await process.stdin.drain()
                 line = await asyncio.wait_for(
                     process.stdout.readline(),
-                    timeout=(_DOWNLOAD_RESPONSE_TIMEOUT if command == "download"
-                             else _WORKER_RESPONSE_TIMEOUT))
+                    timeout=_response_timeout(command, arguments))
             except (OSError, ValueError, asyncio.IncompleteReadError, asyncio.TimeoutError) as exc:
                 self._poisoned = True
                 raise RuntimeError("web_worker_outcome_uncertain") from exc
@@ -315,6 +360,10 @@ class _WorkerClient:
             if not isinstance(response, dict) or response.get("id") != self._sequence:
                 self._poisoned = True
                 raise RuntimeError("web_worker_invalid_response")
+            if "page_registry" in response:
+                self.page_registry = valid_page_registry(response["page_registry"])
+                if self._registry_callback is not None:
+                    self._registry_callback(self.page_registry)
             dispatched = response.get("dispatched")
             dispatched = dispatched if type(dispatched) is bool else None
             if on_effects is not None:
@@ -325,10 +374,13 @@ class _WorkerClient:
             stage = response.get("stage")
             stage = stage if type(stage) is str and stage in KNOWN_STAGES else "unknown"
             if isinstance(code, str) and code.startswith("control:"):
-                raise error_with_effect(ControlError(code.removeprefix("control:")),
-                                        dispatched=dispatched, stage=stage)
-            raise error_with_effect(RuntimeError(code if isinstance(code, str) and len(code) <= 100 else "web_worker_command_failed"),
-                                    dispatched=dispatched, stage=stage)
+                error = error_with_effect(ControlError(code.removeprefix("control:")),
+                                         dispatched=dispatched, stage=stage)
+            else:
+                error = error_with_effect(RuntimeError(code if isinstance(code, str) and len(code) <= 100 else "web_worker_command_failed"),
+                                         dispatched=dispatched, stage=stage)
+            error.web_diagnostics = safe_failure_facts(response.get("diagnostics"))
+            raise error
         finally:
             self._lock.release()
 
@@ -340,6 +392,14 @@ class _WorkerClient:
                 self._stop_event.Close()
                 self._stop_event = None
             return
+        if process.returncode is not None and process.stdin is not None:
+            # Browser/worker exit can precede this cleanup. The parent's pipe
+            # still belongs to us and must not be left to event-loop teardown.
+            try:
+                process.stdin.close()
+            except BaseException:
+                self.process = process
+                raise
         if process.returncode is None:
             try:
                 await asyncio.wait_for(self._call_close(process), timeout=5)
@@ -361,6 +421,14 @@ class _WorkerClient:
                 pass
             await process.wait()
         self.observe_exit(process.returncode)
+        if process.stdin is not None:
+            try:
+                await asyncio.wait_for(process.stdin.wait_closed(), timeout=5)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # The exact peer is already gone.
+            except BaseException:
+                self.process = process  # Keep the exited instance for I/O cleanup only.
+                raise
         if self._diagnostic_task is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(self._diagnostic_task), timeout=5)
@@ -413,10 +481,18 @@ class RemotePageDriver:
         return result
 
     async def observe(self, *, check: Callable[[], Awaitable[None]], frame_index: int = 0,
-                      selector: str = "button,input,textarea,select,a,[role],[contenteditable]",
-                      offset: int = 0, limit: int = 100, ttl: float = 15) -> dict:
+                      selector: str = "button,input,textarea,select,a,video,audio,[role],[contenteditable]",
+                      offset: int = 0, limit: int = 100, ttl: float = 15,
+                      projection: list[str] | None = None, root_ref: str | None = None,
+                      max_chars: int | None = None, max_nodes: int | None = None,
+                      max_depth: int | None = None) -> dict:
+        options = {} if projection is None else {'projection':projection}
+        if root_ref is not None: options['root_ref'] = root_ref
+        if max_chars is not None: options['max_chars'] = max_chars
+        if max_nodes is not None: options['max_nodes'] = max_nodes
+        if max_depth is not None: options['max_depth'] = max_depth
         return await self._read("observe", dict(frame_index=frame_index, selector=selector,
-                                                offset=offset, limit=limit, ttl=ttl), check)
+                                                offset=offset, limit=limit, ttl=ttl, **options), check)
 
     async def read_text(self, reference: str, *, check: Callable[[], Awaitable[None]],
                         offset: int = 0, limit: int = 16000) -> dict:
@@ -457,7 +533,10 @@ class TemporaryWebSession:
                  owner_task: str | None = None, login_only: bool = False,
                  initial_url: str = "about:blank", profile_kind: str = "ai",
                  owner_task_matches: Callable[[object], bool] | None = None,
-                 diagnostic: Callable[[dict], None] | None = None) -> None:
+                 diagnostic: Callable[[dict], None] | None = None,
+                 owned_temp_profile: Path | None = None,
+                 previous_session_id: str | None = None,
+                 user_open: bool = False,start_minimized: bool = False) -> None:
         executable = Path(brave_executable)
         # The code keeps its historical name; Brave, Chrome and Edge are all
         # accepted because they share this worker's engine and CDP contract.
@@ -465,6 +544,9 @@ class TemporaryWebSession:
             raise ValueError("exact_brave_executable_required")
         self.brave_executable = executable
         self.headless = bool(headless)
+        if type(start_minimized) is not bool or start_minimized and self.headless:
+            raise ValueError('invalid_minimized_mode')
+        self.start_minimized=start_minimized
         self.guarded = bool(guarded)
         if persistent_profile is not None:
             candidate = Path(persistent_profile)
@@ -478,12 +560,19 @@ class TemporaryWebSession:
             self._profile_requested_path = None
             self.persistent_profile = None
         if self.persistent_profile is not None and (not self.persistent_profile.is_absolute()
-                                                   or not owner_task or not guarded):
+                                                   or (not owner_task and not user_open) or not guarded):
             raise ValueError("invalid_persistent_profile")
         if self.persistent_profile is not None and profile_kind not in ("ai", "luohua"):
             raise ValueError("invalid_profile_kind")
         self.profile_kind = profile_kind if self.persistent_profile is not None else "temporary"
         self.owner_task = owner_task
+        self.user_open = user_open
+        self.shared_browser = False
+        self.restored_shared_borrower = False
+        self.browser_session_id = None
+        self._borrower_path = None
+        self._shared_download_directory = None
+        self._shared_worker_identity = None
         self._owner_task_matches = owner_task_matches
         self.login_only = bool(login_only)
         if self.login_only and (self.persistent_profile is None or self.headless or not self.guarded):
@@ -502,6 +591,13 @@ class TemporaryWebSession:
         self.session_id = uuid.uuid4().hex
         self.profile_path: Path | None = None
         self._created_temp_profile: Path | None = None
+        self._reused_temp_profile = owned_temp_profile
+        self._previous_session_id = previous_session_id
+        self.retain_profile_on_close = False
+        self._last_page_registry_bytes = None
+        if owned_temp_profile is not None and (persistent_profile is not None or not guarded
+                or not owner_task or type(previous_session_id) is not str):
+            raise ValueError("invalid_temporary_mode_transition")
         self.profile_cleanup = "not_applicable"
         self.profile_cleanup_error: str | None = None
         self.process_id: int | None = None
@@ -617,6 +713,10 @@ class TemporaryWebSession:
 
     def _maximize_visible_window(self, deadline: float) -> None:
         hwnd = self._wait_for_taskbar_window(deadline)[0]
+        if self.start_minimized:
+            if not win32gui.IsIconic(hwnd):win32gui.ShowWindow(hwnd,win32con.SW_SHOWMINNOACTIVE)
+            if not win32gui.IsIconic(hwnd):raise RuntimeError('owned_brave_window_not_minimized')
+            return
         flags, _, minimum, maximum, normal = win32gui.GetWindowPlacement(hwnd)
         win32gui.SetWindowPlacement(
             hwnd, (flags, win32con.SW_SHOWMAXIMIZED, minimum, maximum, normal))
@@ -634,7 +734,7 @@ class TemporaryWebSession:
             raise ControlError("ai_browser_endpoint_unverified")
         stale_port_file = port_file.read_bytes() if port_file.is_file() else None
         self._job = win32job.CreateJobObject(None, "")
-        if self.persistent_profile is None:
+        if self.persistent_profile is None and not self.user_open:
             info = win32job.QueryInformationJobObject(self._job, win32job.JobObjectExtendedLimitInformation)
             info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             win32job.SetInformationJobObject(self._job, win32job.JobObjectExtendedLimitInformation, info)
@@ -650,6 +750,10 @@ class TemporaryWebSession:
             args.append("--headless=new")
             width, height = _headless_window_size()
             args.append(f"--window-size={width},{height}")
+        elif self.start_minimized:
+            args.append('--start-minimized')
+        if (self.persistent_profile is not None or self._reused_temp_profile is not None) and not self.login_only:
+            args.append("--restore-last-session")
         args.append(self.initial_url)
         startup = win32process.STARTUPINFO()
         startup.dwFlags |= win32con.STARTF_USESHOWWINDOW
@@ -660,7 +764,7 @@ class TemporaryWebSession:
             | (win32con.CREATE_NO_WINDOW if self.headless else 0)
             # A persistent profile must outlive the Codex-owned MCP Job.
             | (win32process.CREATE_BREAKAWAY_FROM_JOB
-               if self.persistent_profile is not None else 0),
+               if self.persistent_profile is not None or self.user_open else 0),
             self._environment, None, startup,
         )
         try:
@@ -672,16 +776,20 @@ class TemporaryWebSession:
                       "browser_pid": pid, "browser_created": created,
                       "executable": str(self.brave_executable), "headless": self.headless,
                       "created_utc": datetime.now(timezone.utc).isoformat()}
+            if self.start_minimized:marker['start_minimized']=True
             if self.persistent_profile is not None:
                 marker.update(profile_kind=self.profile_kind, owner_task=self.owner_task,
                               profile_hash=hashlib.sha256(str(self.profile_path).lower().encode()).hexdigest(),
                               state="running", brave_digest=self._brave_digest(),
                               owner_process=process_identity(), worker_process=None,
                               login_only=self.login_only, login_cancel_requested=False)
+                if self.user_open:
+                    marker.update(owner_kind="user", owner_task=None, owner_process=None)
             if self.persistent_profile is not None:
                 self._write_marker(marker)
             else:
-                with (self.profile_path / "flower-session.json").open("x", encoding="utf-8") as file:
+                with (self.profile_path / "flower-session.json").open(
+                        "w" if self._reused_temp_profile is not None else "x", encoding="utf-8") as file:
                     file.write(json.dumps(marker, ensure_ascii=False, indent=2) + "\n")
             if win32process.ResumeThread(thread) != 1:
                 raise RuntimeError("browser_thread_not_suspended")
@@ -753,10 +861,32 @@ class TemporaryWebSession:
                  self._owner_task_matches(marker.get("owner_task"))))
 
     async def start(self) -> TemporaryWebSession:
+        from flower_control.permissions import require_application, PermissionError
+        try:
+            require_application(self.brave_executable)
+        except PermissionError as error:
+            raise ControlError(error.code) from None
         if self._closed or self._started or self.profile_path is not None:
             raise RuntimeError("session_start_not_available")
+        if not self.brave_executable.is_file():
+            raise ControlError("browser_executable_unavailable")
         if self.persistent_profile is None:
-            self.profile_path = Path(tempfile.mkdtemp(prefix="flower-web-temp-"))
+            if self._reused_temp_profile is None:
+                self.profile_path = Path(tempfile.mkdtemp(prefix="flower-web-temp-"))
+            else:
+                from flower_control.profile_registry import direct_path
+                path = direct_path(self._reused_temp_profile)
+                if path.parent.resolve() != Path(tempfile.gettempdir()).resolve() or not path.name.startswith("flower-web-temp-"):
+                    raise ControlError("temporary_profile_identity_unverified")
+                marker_path = direct_path(path / "flower-session.json")
+                if marker_path.stat().st_size > 32768:
+                    raise ControlError("temporary_profile_identity_unverified")
+                marker = json.loads(marker_path.read_bytes())
+                if (marker.get("session_id") != self._previous_session_id or marker.get("owner_task") != self.owner_task
+                        or type(marker.get("browser_pid")) is not int or type(marker.get("browser_created")) is not str
+                        or process_is_alive(f"{marker['browser_pid']}:{marker['browser_created']}")):
+                    raise ControlError("temporary_profile_identity_unverified")
+                self.profile_path = path
             self._created_temp_profile = self.profile_path
             self.profile_cleanup = "pending_controlled_recycle"
         else:
@@ -773,9 +903,12 @@ class TemporaryWebSession:
                     self._recover_interrupted_marker()
                 if marker_path.exists():
                     marker = self._read_marker(ignore_mode=True, allow_closed_browser_update=True)
-                    if (marker.get("state") == "running" and
-                            marker.get("owner_task") != self.owner_task and
-                            self._marker_owner_matches(marker)):
+                    if (marker.get("state") == "running"
+                            and marker.get("owner_task") != self.owner_task):
+                        # A crashed or revoked previous instance is sealed to
+                        # closed once every recorded identity has exited. Live
+                        # identities are rejected by _read_marker and by the
+                        # unresolved-process check below.
                         identities = [f"{marker['browser_pid']}:{marker['browser_created']}",
                                       marker.get("owner_process"), marker.get("worker_process")]
                         if all(identity is None or not process_is_alive(identity)
@@ -788,7 +921,9 @@ class TemporaryWebSession:
                     if process_is_alive(f"{marker['browser_pid']}:{marker['browser_created']}"):
                         raise ControlError("ai_profile_existing_instance_unresolved")
                 elif any(item.name != "flower-profile.lock" for item in self.profile_path.iterdir()):
-                    raise ControlError("ai_profile_unrecognized_data")
+                    from flower_control.profile_registry import admit_import
+                    if not admit_import(self.profile_path, self.profile_kind):
+                        raise ControlError("ai_profile_unrecognized_data")
             except BaseException:
                 await self._release_profile_lock()
                 raise
@@ -803,9 +938,13 @@ class TemporaryWebSession:
                     raise RuntimeError("owned_login_browser_exited")
                 self._started = True
                 return self
+            if self.user_open:
+                self._started = True
+                return self
             self._worker = _WorkerClient(self._environment, guarded=self.guarded,
                                          profile_kind=self.profile_kind,
-                                         diagnostic=self._worker_diagnostic)
+                                         diagnostic=self._worker_diagnostic,
+                                         registry_callback=self._save_page_registry, shared_headless=self.headless)
             self._worker_start_task = asyncio.create_task(self._worker.start(self.cdp_endpoint))
             await asyncio.shield(self._worker_start_task)
             if self._closed:
@@ -819,9 +958,10 @@ class TemporaryWebSession:
             if not self.running:
                 raise RuntimeError("owned_browser_connection_invalid")
             self._started = True
+            self._save_page_registry(self._worker.page_registry)
             return self
         except BaseException:
-            if self.login_only and self.running:
+            if (self.login_only or self.user_open) and self.persistent_profile is not None and self.running:
                 # A visible login window may already be in use. Never kill it
                 # merely because startup verification or the host failed.
                 await self.disconnect()
@@ -871,9 +1011,11 @@ class TemporaryWebSession:
             if marker_path.stat().st_size > 4096:
                 raise ValueError("oversized marker")
             marker = json.loads(marker_path.read_text(encoding="utf-8"))
-            expected = hashlib.sha256(str(self.profile_path).lower().encode()).hexdigest()
+            from flower_control.profile_registry import profile_identity_hashes
+            expected_hashes = profile_identity_hashes(
+                self.profile_path, anchor="flower-session.json.new" if provisional else "flower-session.json")
             profile_hash = marker.get("profile_hash") if isinstance(marker, dict) else None
-            if profile_hash != expected:
+            if profile_hash not in expected_hashes:
                 original = self._profile_requested_path
                 legacy_hash = (hashlib.sha256(str(original).lower().encode()).hexdigest()
                                if original is not None else None)
@@ -883,6 +1025,8 @@ class TemporaryWebSession:
                     raise ValueError("profile path identity mismatch")
             if (not isinstance(marker, dict) or marker.get("profile_kind") != self.profile_kind
                     or marker.get("executable", "").lower() != str(self.brave_executable).lower()
+                    or type(marker.get('start_minimized',False)) is not bool
+                    or marker.get('start_minimized',False) and marker.get('headless') is True
                     or (not ignore_mode and marker.get("headless") != self.headless)
                     or (not ignore_mode and marker.get("login_only", False) != self.login_only)
                     or (not ignore_mode and self.login_only and
@@ -894,16 +1038,20 @@ class TemporaryWebSession:
                     or (marker.get("worker_process") is not None and
                         not isinstance(marker.get("worker_process"), str))
                     or (marker.get("state") == "running" and
-                        not isinstance(marker.get("owner_task"), str))
+                        not isinstance(marker.get("owner_task"), str)
+                        and not (marker.get("owner_kind") == "user" and marker.get("owner_task") is None))
                     or marker.get("state") not in {"running", "closed"}
                     or not re.fullmatch(r"[0-9a-f]{32}", marker.get("session_id", ""))):
                 raise ValueError("marker mismatch")
             if marker.get("brave_digest") != self._brave_digest():
-                # A closed profile survives normal updates of the same Brave
+                # A dead profile survives normal updates of the same Brave
                 # executable. This is a fresh launch, never a live reconnect.
+                # A crashed "running" marker whose recorded identities have all
+                # exited may be sealed by the caller after this read; a live
+                # identity still blocks with an actionable code.
                 pid, created = marker.get("browser_pid"), marker.get("browser_created")
                 if (not allow_closed_browser_update or provisional
-                        or marker.get("state") != "closed"
+                        or marker.get("state") not in {"running", "closed"}
                         or not re.fullmatch(r"[0-9a-f]{64}", marker.get("brave_digest", ""))
                         or type(pid) is not int or pid <= 0
                         or not isinstance(created, str) or not created):
@@ -912,10 +1060,91 @@ class TemporaryWebSession:
                               marker.get("worker_process")]
                 if any(identity is not None and process_is_alive(identity)
                        for identity in identities):
-                    raise ValueError("previous browser processes still running")
+                    raise ControlError("ai_profile_previous_instance_alive")
             return marker
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise ControlError("ai_profile_identity_unverified") from exc
+
+    def _load_page_registry(self, marker):
+        if not self.profile_path or not marker.get("page_registry_sha256"):
+            return {}
+        from flower_control.profile_registry import direct_path
+        try:
+            path = direct_path(self.profile_path / "flower-page-registry.json")
+            if path.stat().st_size > 100000:
+                return {}
+            raw = path.read_bytes()
+            data = json.loads(raw)
+            if (hashlib.sha256(raw).hexdigest() != marker["page_registry_sha256"]
+                    or data.get("session_id") != marker["session_id"]
+                    or data.get("browser_process") != f"{marker['browser_pid']}:{marker['browser_created']}"
+                    or data.get("owner_task") != marker.get("owner_task")):
+                return {}
+            return valid_page_registry(data.get("pages"))
+        except (OSError, ValueError, TypeError, KeyError, ControlError):
+            return {}
+
+    def _save_page_registry(self, pages):
+        if self.shared_browser:
+            if self._started:
+                self._save_shared_registry(pages)
+            return
+        if self.persistent_profile is None or not self._started or self._profile_lock is None:
+            return
+        from flower_control.profile_registry import direct_path
+        try:
+            pages = valid_page_registry(pages)
+            raw = json.dumps({"session_id": self.session_id,
+                "browser_process": f"{self.process_id}:{self.process_created}", "owner_task": self.owner_task,
+                "pages": pages}, separators=(",", ":"), sort_keys=True).encode("ascii")
+            if raw == self._last_page_registry_bytes:
+                return
+            marker = self._read_marker()
+            if marker["session_id"] != self.session_id or marker["browser_pid"] != self.process_id:
+                return
+            path = direct_path(self.profile_path / "flower-page-registry.json")
+            temporary = direct_path(self.profile_path / "flower-page-registry.json.new")
+            temporary.write_bytes(raw)
+            try:
+                os.replace(temporary, path)
+            except OSError as error:
+                if getattr(error, "winerror", None) != 17:
+                    raise
+                with path.open("wb") as output:
+                    output.write(raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+            marker["page_registry_sha256"] = hashlib.sha256(raw).hexdigest()
+            self._write_marker(marker)
+            self._last_page_registry_bytes = raw
+        except (OSError, ValueError, TypeError, KeyError, ControlError):
+            self.record_lifecycle("page_registry_save_failed")
+
+    def _save_shared_registry(self, pages=None, *, released=False):
+        from .web_shared_profile import read_borrower, write_borrower
+        from .web_page_registry import encode_shared_registry, decode_shared_registry
+        if self._borrower_path is None or not self._started:
+            return
+        marker = self._read_marker(ignore_mode=True)
+        if (marker.get("session_id") != self.browser_session_id or marker.get("owner_kind") != "user"
+                or marker.get("browser_pid") != self.process_id or marker.get("browser_created") != self.process_created):
+            raise ControlError("shared_browser_identity_changed")
+        previous = read_borrower(self._borrower_path, browser_process=f"{self.process_id}:{self.process_created}",
+                                browser_id=self.browser_session_id, task=self.owner_task)
+        if previous is not None and (previous["session_id"] != self.session_id
+                or previous["worker_process"] is not None and previous["worker_process"] != self._shared_worker_identity):
+            raise ControlError("shared_browser_borrower_changed")
+        if pages is None:
+            pages = decode_shared_registry(previous["pages"], previous.get("user_pages", [])) if previous else {}
+        encoded_pages, user_pages = encode_shared_registry(valid_page_registry(pages))
+        value = {"schema": 1, "browser_id": self.browser_session_id,
+            "browser_process": f"{self.process_id}:{self.process_created}",
+            "task_key": hashlib.sha256(self.owner_task.encode()).hexdigest(),
+            "session_id": self.session_id, "owner_process": None if released else process_identity(),
+            "worker_process": None if released else self._shared_worker_identity,
+            "last_owner_process": process_identity(), "last_worker_process": self._shared_worker_identity,
+            "pages": encoded_pages, "user_pages": user_pages}
+        write_borrower(self._borrower_path, value)
 
     def _brave_digest(self) -> str:
         try:
@@ -960,7 +1189,12 @@ class TemporaryWebSession:
             raise ControlError("ai_profile_reparse_point")
         if {entry.name for entry in self.profile_path.iterdir()} != {
                 "flower-profile.lock", "flower-session.json.new"}:
-            raise ControlError("ai_profile_incomplete_unverified")
+            # A copied profile already contains browser data before our first
+            # pre-resume marker. Its controlled import is separate from the
+            # marker identity below; arbitrary nonempty directories still fail.
+            from flower_control.profile_registry import admit_import
+            if not admit_import(self.profile_path, self.profile_kind):
+                raise ControlError("ai_profile_incomplete_unverified")
         marker = self._read_marker(ignore_mode=True, provisional=True)
         pid, created = marker.get("browser_pid"), marker.get("browser_created")
         if (marker.get("state") != "running" or type(pid) is not int or pid <= 0
@@ -1059,7 +1293,7 @@ class TemporaryWebSession:
         except (OSError, ValueError) as exc:
             raise ControlError("ai_browser_endpoint_unverified") from exc
 
-    async def reconnect(self, session_id: str) -> TemporaryWebSession:
+    async def reconnect(self, session_id: str, *, adopt_user: bool = False) -> TemporaryWebSession:
         if self.persistent_profile is None or self._started or self._closed:
             raise ControlError("ai_reconnect_unavailable")
         self.profile_path = self.persistent_profile
@@ -1071,9 +1305,13 @@ class TemporaryWebSession:
             # An existing profile may have been launched by an older headless
             # version. Reconnect to that exact process without claiming a window.
             self.headless = marker["headless"]
+            self.start_minimized=marker.get('start_minimized',False)
             if marker.get("state") != "running" or marker.get("session_id") != session_id:
                 raise ControlError("ai_session_not_running")
-            if not self._marker_owner_matches(marker):
+            manual = marker.get("owner_kind") == "user" and marker.get("owner_task") is None
+            if adopt_user and not manual:
+                raise ControlError("manual_browser_identity_unverified")
+            if not (adopt_user and manual) and not self._marker_owner_matches(marker):
                 raise ControlError("session_not_found_for_chat")
             owner_process = marker.get("owner_process")
             worker_process = marker.get("worker_process")
@@ -1095,13 +1333,17 @@ class TemporaryWebSession:
                 return self
             self.cdp_endpoint = self._verified_endpoint(marker)
             self._worker = _WorkerClient(self._environment, guarded=self.guarded,
-                                         profile_kind=self.profile_kind)
+                                         profile_kind=self.profile_kind, diagnostic=self._worker_diagnostic,
+                                         page_registry=self._load_page_registry(marker),
+                                         registry_callback=self._save_page_registry, shared_headless=self.headless)
             await self._worker.start(self.cdp_endpoint)
             marker["owner_task"] = self.owner_task
+            marker["owner_kind"] = "chat"
             marker["owner_process"] = process_identity()
             marker["worker_process"] = self._worker.worker_identity
             self._write_marker(marker)
             self._started = True
+            self._save_page_registry(self._worker.page_registry)
             assert self._worker.process is not None
             self._worker_watch = asyncio.create_task(self._watch_worker(self._worker.process))
             return self
@@ -1117,6 +1359,79 @@ class TemporaryWebSession:
                 await self._release_profile_lock()
             raise
 
+    async def borrow_shared(self, session_id: str | None = None) -> TemporaryWebSession:
+        """Connect this task's worker without adopting/closing the user browser.
+
+        The profile OS lock protects only this metadata/startup transaction.
+        The unchanged user marker remains the browser's sole instance record.
+        """
+        from .web_shared_profile import shared_paths, read_borrower, write_borrower
+        if self.persistent_profile is None or not self.owner_task or self._started or self._closed:
+            raise ControlError("shared_browser_connect_unavailable")
+        self.profile_path = self.persistent_profile
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                self._acquire_profile_lock()
+                break
+            except ControlError as error:
+                if error.code != "ai_profile_in_use" or time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(0.05)
+        try:
+            marker = self._read_marker(ignore_mode=True)
+            if (marker.get("state") != "running" or marker.get("owner_kind") != "user"
+                    or marker.get("owner_task") is not None or marker.get("login_only")
+                    or marker.get("owner_process") is not None or marker.get("worker_process") is not None):
+                raise ControlError("shared_browser_requires_user_instance")
+            self._process = self._open_verified_process(marker)
+            self.process_id, self.process_created = self._process.pid, self._process.created
+            self.cdp_endpoint = self._verified_endpoint(marker)
+            self.browser_session_id = marker["session_id"]
+            self.headless, self.start_minimized = marker["headless"], marker.get("start_minimized", False)
+            self._borrower_path, self._shared_download_directory = shared_paths(
+                self.profile_path, self.browser_session_id, self.owner_task)
+            previous = read_borrower(self._borrower_path, browser_process=f"{self.process_id}:{self.process_created}",
+                                     browser_id=self.browser_session_id, task=self.owner_task)
+            if previous is not None:
+                if any(value and process_is_alive(value) for value in
+                       (previous["owner_process"], previous["worker_process"])):
+                    raise ControlError("shared_browser_previous_executor_still_running")
+                if session_id is not None and session_id != previous["session_id"]:
+                    raise ControlError("session_not_found_for_chat")
+                self.session_id = previous["session_id"]
+                # Both exact old executors are dead. Only retire their lease,
+                # never their actions or unknown effects. The same borrower
+                # resource/id below still carries the original ledger fences.
+                previous = {**previous, "owner_process": None, "worker_process": None}
+                write_borrower(self._borrower_path, previous)
+            elif session_id is not None:
+                raise ControlError("session_not_found_for_chat")
+            self.shared_browser = True
+            from .web_page_registry import decode_shared_registry
+            self._worker = _WorkerClient(self._environment, guarded=self.guarded, profile_kind=self.profile_kind,
+                diagnostic=self._worker_diagnostic, page_registry=decode_shared_registry(previous["pages"], previous.get("user_pages", [])) if previous else {},
+                registry_callback=self._save_page_registry, shared_browser=True,
+                download_directory=self._shared_download_directory, shared_headless=self.headless)
+            await self._worker.start(self.cdp_endpoint)
+            self._shared_worker_identity = self._worker.worker_identity
+            self._started = True
+            self._save_page_registry(self._worker.page_registry)
+            assert self._worker.process is not None
+            self._worker_watch = asyncio.create_task(self._watch_worker(self._worker.process))
+            self.restored_shared_borrower = previous is not None
+            return self
+        except BaseException:
+            if self._worker is not None:
+                await self._worker.stop()
+                self._worker = None
+            if self._process is not None:
+                self._process.close()
+                self._process = None
+            raise
+        finally:
+            await self._release_profile_lock()
+
     async def disconnect(self) -> None:
         """Release this MCP's handles without closing a persistent browser."""
         if self.persistent_profile is None:
@@ -1124,7 +1439,7 @@ class TemporaryWebSession:
         self._closed = True
         # Reacquire on retry after a failed marker write; never edit a profile
         # owned by another live executor without the exclusive directory lock.
-        if self.profile_path is not None and self._profile_lock is None:
+        if self.profile_path is not None and self._profile_lock is None and not self.shared_browser:
             self._acquire_profile_lock()
         try:
             if self._worker is not None:
@@ -1139,7 +1454,9 @@ class TemporaryWebSession:
             if self._job is not None:
                 self._job.Close()
                 self._job = None
-            if self.profile_path is not None and self._profile_lock is not None:
+            if self.shared_browser:
+                self._save_shared_registry(getattr(self._worker, "page_registry", None), released=True)
+            elif self.profile_path is not None and self._profile_lock is not None:
                 marker = self._read_marker()
                 if marker.get("session_id") == self.session_id:
                     marker["owner_process"] = None
@@ -1153,6 +1470,11 @@ class TemporaryWebSession:
     def _require_worker(self) -> _WorkerClient:
         if not self._started or self._closed or not self.running or self._worker is None:
             raise RuntimeError("session_not_running")
+        from flower_control.permissions import require_browser, PermissionError
+        try:
+            require_browser(self.process_id, self.brave_executable)
+        except PermissionError as error:
+            raise ControlError(error.code) from None
         return self._worker
 
     async def new_page(self) -> SessionPage:
@@ -1182,9 +1504,11 @@ class TemporaryWebSession:
             self._observe_browser_exit()
             if self._process is not None and not self._process.running():
                 self._browser_exit_verified = True
+            if self.user_open and self._process is not None and self._process.running():
+                raise RuntimeError("user_browser_still_running")
             if self.persistent_profile is not None and self._process is not None:
                 if self._process.running():
-                    if self._started and not self.headless:
+                    if self._started:
                         # Browser.close is sent through the verified worker
                         # before it disconnects. A failed close leaves the
                         # instance intact for exact reconnection.
@@ -1250,6 +1574,14 @@ class TemporaryWebSession:
 
     async def _close_impl(self, *, execution=None, before_send=None, on_effects=None,
                           terminal_only: bool = False) -> None:
+        if self.shared_browser:
+            if self._worker is not None:
+                result = await self._worker.call("close_browser", {}, execution=execution,
+                    before_send=before_send, on_effects=on_effects)
+                if not isinstance(result, dict) or not result.get("requested"):
+                    raise WebClosePending(result if isinstance(result, dict) else {"state": "close_pending"})
+            await self.disconnect()
+            return
         self.record_lifecycle("cleanup_started")
         for task in (self._launch_task, self._worker_start_task):
             if task is not None:
@@ -1262,10 +1594,19 @@ class TemporaryWebSession:
                 self._process is not None and self._process.running() and
                 worker is not None):
             try:
-                result = await asyncio.wait_for(worker.call("close_browser", {}, execution=execution,
+                close_arguments = ({"preserve_tabs": True} if self.retain_profile_on_close and self.persistent_profile is None else {})
+                result = await asyncio.wait_for(worker.call("close_browser", close_arguments, execution=execution,
                     before_send=before_send, on_effects=on_effects), timeout=15)
                 if isinstance(result, dict) and result.get("requested") is False:
                     raise WebClosePending(result)
+                if self._process.running():
+                    try:
+                        await asyncio.to_thread(self._process.wait, 2)
+                    except Exception:
+                        raise WebClosePending({"requested": True, "state": "close_pending",
+                            "instance_close_requested": True, "recovery": "query_close_status",
+                            "closed_pages": result.get("closed_pages", []),
+                            "pending_pages": result.get("pending_pages", [])})
             except WebClosePending:
                 # Keep the exact worker, pending page references, process,
                 # profile lock and owner alive so this session can answer.
@@ -1306,7 +1647,10 @@ class TemporaryWebSession:
             await asyncio.gather(self._worker_watch, return_exceptions=True)
             self._worker_watch = None
         if self.persistent_profile is None:
-            await asyncio.to_thread(self._recycle_temp_profile)
+            if self.retain_profile_on_close:
+                self.profile_cleanup = "retained_for_mode_transition"
+            else:
+                await asyncio.to_thread(self._recycle_temp_profile)
         if self.persistent_profile is not None:
             try:
                 if self.profile_path is not None and (self.profile_path / "flower-session.json").exists():

@@ -22,8 +22,9 @@ class ConnectionAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.ledger = OriginLedger(self.store, allowed_tools=FLOWER_TOOLS)
         self.enterContext(patch.dict(os.environ, {"FLOWER_ORIGIN_MODE": "connection", "FLOWER_OPERATOR_HOST": "codex"}))
         self.enterContext(patch("flower_control.connection_adapter.live_ledger", return_value=self.ledger))
-        self.probe = self.enterContext(patch("flower_control.drivers.high_helper.HighHelperClient.probe_status", return_value={
-            "connected": True, "source_admitted": True, "high_token_verified": True, "host_source": "codex-flower"}))
+        self.probe = self.enterContext(patch("flower_control.drivers.high_helper.ActiveHelperClient.probe_status", return_value={
+            "connected": True, "source_admitted": True, "high_token_verified": True, "actual_integrity_rid": 12288,
+            "host_source": "codex-flower"}))
 
     def server(self, channel="flower-web", cleanup=None):
         server = FastMCP(channel)
@@ -94,6 +95,17 @@ class ConnectionAdapterTests(unittest.IsolatedAsyncioTestCase):
         call = HostToolCall("same", "turn", "use", "mcp__flower-web__flower_origin_probe", {}, "trusted_connection", host="codex")
         with self.assertRaises(OriginError):
             self.ledger.issue(call)
+
+    async def test_medium_source_is_admitted_only_with_matching_token_facts(self):
+        server, tool = self.server()
+        async with create_connected_server_and_client_session(server) as client:
+            self.probe.return_value = {"connected": True, "source_admitted": True, "high_token_verified": False,
+                "ordinary_token_verified": True, "actual_integrity_rid": 8192, "host_source": "codex-flower"}
+            self.assertFalse((await client.call_tool(tool, {})).isError)
+            for mismatch in ({"actual_integrity_rid": 12288}, {"ordinary_token_verified": False}, {"actual_integrity_rid": True}):
+                self.probe.return_value = {"connected": True, "source_admitted": True, "high_token_verified": False,
+                    "ordinary_token_verified": True, "actual_integrity_rid": 8192, "host_source": "codex-flower", **mismatch}
+                self.assertTrue((await client.call_tool(tool, {})).isError)
 
     async def test_real_app_and_computer_entrypoints_link_without_hook(self):
         from flower_control import app, computer

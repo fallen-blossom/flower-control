@@ -10,6 +10,14 @@ $taskXmlHash = @@TASKXMLHASH@@
 $versionSource = Join-Path $packageRoot ('versions\' + $version)
 $versionTarget = Join-Path $brokerRoot ('versions\' + $version)
 $command = Join-Path $versionTarget 'Flower.HighHelper.exe'
+if ($null -eq ('FlowerRecoveryProtection' -as [type])) {
+    Add-Type -TypeDefinition @'
+@@RECOVERY_PROTECTION_TYPE@@
+'@
+}
+function Initialize-FlowerRecovery {
+    [FlowerRecoveryProtection]::Ensure((Join-Path $brokerRoot 'recovery'))
+}
 
 function Get-FlowerTask {
     $lookupErrors = @()
@@ -20,7 +28,30 @@ function Get-FlowerTask {
     return $task
 }
 
-function Assert-FlowerNoLinks([string]$root) {
+function Get-FlowerTaskSecurityDescriptor {
+    $scheduler = New-Object -ComObject Schedule.Service
+    $folder = $null; $registered = $null
+    try {
+        $scheduler.Connect()
+        $folder = $scheduler.GetFolder('\')
+        $registered = $folder.GetTask($taskName)
+        return [string]$registered.GetSecurityDescriptor(7)
+    } finally {
+        if($null -ne $registered){[Runtime.InteropServices.Marshal]::ReleaseComObject($registered) | Out-Null}
+        if($null -ne $folder){[Runtime.InteropServices.Marshal]::ReleaseComObject($folder) | Out-Null}
+        [Runtime.InteropServices.Marshal]::ReleaseComObject($scheduler) | Out-Null
+    }
+}
+function Assert-FlowerTaskSecurity {
+    $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new((Get-FlowerTaskSecurityDescriptor))
+    if($descriptor.Owner.Value -notin @('S-1-5-18','S-1-5-32-544') -or $null -eq $descriptor.DiscretionaryAcl){throw 'task_security_unprotected'}
+    foreach($ace in $descriptor.DiscretionaryAcl){
+        if($ace -isnot [System.Security.AccessControl.CommonAce]){throw 'task_security_unsupported'}
+        if($ace.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessAllowed -and ($ace.AccessMask -band 0x500D0156) -ne 0 -and $ace.SecurityIdentifier.Value -notin @('S-1-5-18','S-1-5-32-544')){throw 'task_security_unprotected'}
+    }
+}
+
+function Assert-FlowerNoLinks([string]$root, [switch]$Shallow) {
     $cursor = [System.IO.DirectoryInfo]::new($root)
     while ($null -ne $cursor) {
         if ($cursor.Exists -and (($cursor.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'installation_link_rejected' }
@@ -32,7 +63,7 @@ function Assert-FlowerNoLinks([string]$root) {
     while ($pending.Count -gt 0) {
         $item = Get-Item -LiteralPath $pending.Pop() -Force
         if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'installation_link_rejected' }
-        if ($item.PSIsContainer) {
+        if ($item.PSIsContainer -and !$Shallow) {
             foreach ($child in Get-ChildItem -LiteralPath $item.FullName -Force) { $pending.Push($child.FullName) }
         }
     }
@@ -64,12 +95,110 @@ function Get-FlowerAclRules($acl) {
 }
 
 function Assert-FlowerAcl([string]$path) {
+    Assert-FlowerProtectionPath $path
+    Assert-FlowerNoLinks $path -Shallow
     $item = Get-Item -LiteralPath $path -Force
     $actual = Get-Acl -LiteralPath $path
     $expectedAcl = New-FlowerAcl $item.PSIsContainer
     if (!$actual.AreAccessRulesProtected -or
         $actual.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544' -or
         (Get-FlowerAclRules $actual) -ne (Get-FlowerAclRules $expectedAcl)) { throw 'installation_acl_changed' }
+    Assert-FlowerIntegrity $path
+}
+
+function Assert-FlowerProtectionPath([string]$path) {
+    # Protection is only for this exact published version and its fixed parents.
+    # Do not normalize an outside path into scope or relabel an old version.
+    $full = [IO.Path]::GetFullPath($path)
+    if ($path -cne $full -or ($full -ine $brokerRoot -and
+        $full -ine (Join-Path $brokerRoot 'versions') -and
+        $full -ine (Join-Path $brokerRoot 'active.json') -and
+        $full -ine $versionTarget -and !$full.StartsWith($versionTarget + '\', [StringComparison]::OrdinalIgnoreCase))) {
+        throw 'installation_protection_scope_rejected'
+    }
+}
+
+function Test-FlowerUnlabelledImage([string]$path) {
+    foreach ($name in @('Flower.HighHelper.exe', 'uac-witness-baseline.exe', 'uac-witness-moved.exe', 'uac-witness-decoy.exe')) {
+        if ($path -ieq (Join-Path $versionTarget $name)) { return $true }
+    }
+    return $false
+}
+
+function Get-FlowerIntegritySddl([string]$path) {
+    if ($null -eq ('FlowerInstallIntegrityLabel' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FlowerInstallIntegrityLabel {
+ [DllImport("advapi32.dll",CharSet=CharSet.Unicode)] static extern uint GetNamedSecurityInfo(string p,int type,uint info,out IntPtr o,out IntPtr g,out IntPtr d,out IntPtr s,out IntPtr sd);
+ [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor(IntPtr sd,uint revision,uint info,out IntPtr text,out uint len);
+ [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p);
+ public static string Read(string path) {
+  IntPtr o,g,d,s,sd;uint result=GetNamedSecurityInfo(path,1,0x10,out o,out g,out d,out s,out sd);
+  if(result!=0)throw new Exception("installation_label_unreadable:"+result);
+  try {IntPtr text;uint length;
+   if(!ConvertSecurityDescriptorToStringSecurityDescriptor(sd,1,0x10,out text,out length))throw new Exception("installation_label_unreadable:"+Marshal.GetLastWin32Error());
+   try{return Marshal.PtrToStringUni(text)??"";}finally{LocalFree(text);}
+  }finally{LocalFree(sd);}
+ }
+}
+'@
+    }
+    return [FlowerInstallIntegrityLabel]::Read($path)
+}
+
+function Test-FlowerIntegrityLabel([string]$label, [bool]$unlabelledImage) {
+    try {
+        $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($label)
+        $sacl = $descriptor.SystemAcl
+        if ($null -eq $sacl) { return $unlabelledImage }
+        $labels = @($sacl | Where-Object { [int]$_.AceType -eq 17 }) # SYSTEM_MANDATORY_LABEL_ACE_TYPE
+        if ($unlabelledImage) { return $labels.Count -eq 0 }
+        if ($sacl.Count -ne 1 -or $labels.Count -ne 1) { return $false }
+        $ace = $labels[0]
+        if ([int]$ace.AceFlags -ne 0) { return $false }
+        # .NET Framework exposes mandatory-label ACEs as CustomAce. Decode
+        # their fixed access-mask/SID structure instead of comparing SDDL text.
+        $binary = [byte[]]::new($ace.BinaryLength)
+        $ace.GetBinaryForm($binary, 0)
+        if ($binary.Length -lt 16 -or [BitConverter]::ToUInt32($binary, 4) -ne 1) { return $false }
+        $sid = [System.Security.Principal.SecurityIdentifier]::new($binary, 8)
+        return $sid.Value -ceq 'S-1-16-12288' -and $binary.Length -eq (8 + $sid.BinaryLength)
+    } catch {
+        return $false
+    }
+}
+
+function Assert-FlowerIntegrity([string]$path) {
+    Assert-FlowerProtectionPath $path
+    Assert-FlowerNoLinks $path -Shallow
+    $label = Get-FlowerIntegritySddl $path
+    $unlabelledImage = Test-FlowerUnlabelledImage $path
+    if (!(Test-FlowerIntegrityLabel $label $unlabelledImage)) {
+        if ($unlabelledImage) { throw 'installation_image_label_would_demote_system' }
+        # Explicit High, no inheritance flags: directories must not demote the
+        # dual-role SYSTEM/High image or the three exact qualification images.
+        throw 'installation_high_label_changed'
+    }
+}
+
+function Set-FlowerHighLabel([string]$path) {
+    & (Join-Path $env:SystemRoot 'System32\icacls.exe') $path /setintegritylevel H | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'installation_high_label_not_applied' }
+}
+
+function Set-FlowerProtection([string]$path) {
+    Assert-FlowerProtectionPath $path
+    Assert-FlowerNoLinks $path -Shallow
+    $item = Get-Item -LiteralPath $path -Force
+    Set-Acl -LiteralPath $path -AclObject (New-FlowerAcl $item.PSIsContainer)
+    if (!(Test-FlowerUnlabelledImage $path)) {
+        Set-FlowerHighLabel $path
+    }
+    # Fail closed on copied explicit image labels; do not remove labels or
+    # request SeRelabelPrivilege/SYSTEM to repair an unexpected source layout.
+    Assert-FlowerAcl $path
 }
 
 function Assert-FlowerVersion([string]$directory) {
@@ -78,6 +207,16 @@ function Assert-FlowerVersion([string]$directory) {
     if ($expected.schema -ne 1 -or $expected.version -ne $version) { throw 'package_version_changed' }
     $policy = Get-Content -LiteralPath (Join-Path $versionSource 'broker.json') -Raw | ConvertFrom-Json
     $known = @('installation.json') + @($expected.hashes.PSObject.Properties.Name) + @($policy.AppWorkerHashes.PSObject.Properties | ForEach-Object { 'app\' + $_.Name })
+    $wgcProperties = @()
+    if ($policy.PSObject.Properties.Name -contains 'WgcWorkerHashes') {
+        $wgcProperties = @($policy.WgcWorkerHashes.PSObject.Properties)
+        $known += @($wgcProperties.Name | ForEach-Object { 'wgc\' + $_ })
+    }
+    $runtimeProperties = @()
+    if ($expected.PSObject.Properties.Name -contains 'runtime_hashes') {
+        $runtimeProperties = @($expected.runtime_hashes.PSObject.Properties)
+        $known += @($runtimeProperties.Name | ForEach-Object { $_.Replace('/', '\') })
+    }
     $actual = @(Get-ChildItem -LiteralPath $directory -File -Recurse -Force | ForEach-Object { $_.FullName.Substring($directory.TrimEnd('\').Length + 1) })
     if (Compare-Object ($known | Sort-Object) ($actual | Sort-Object)) { throw 'version_file_inventory_changed' }
     foreach ($property in $expected.hashes.PSObject.Properties) {
@@ -88,15 +227,36 @@ function Assert-FlowerVersion([string]$directory) {
         if ($property.Name -ne [System.IO.Path]::GetFileName($property.Name) -or
             (Get-FileHash -LiteralPath (Join-Path (Join-Path $directory 'app') $property.Name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $property.Value) { throw 'app_version_hash_changed' }
     }
+    foreach ($property in $wgcProperties) {
+        if ($property.Name -notmatch '^[A-Za-z0-9_.-]{1,100}$' -or $property.Name.Contains('..') -or
+            [System.IO.Path]::GetExtension($property.Name) -notin @('.exe', '.dll', '.json') -or
+            $property.Value -notmatch '^[a-f0-9]{64}$' -or
+            (Get-FileHash -LiteralPath (Join-Path (Join-Path $directory 'wgc') $property.Name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $property.Value) {
+            throw 'wgc_version_hash_changed'
+        }
+    }
+    foreach ($property in $runtimeProperties) {
+        $relative = $property.Name.Replace('/', '\')
+        if ([System.IO.Path]::IsPathRooted($relative) -or @($relative.Split('\')) -contains '..' -or
+            !($relative.StartsWith('runtime\') -or $relative.StartsWith('python-source\')) -or
+            (Get-FileHash -LiteralPath (Join-Path $directory $relative) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $property.Value) {
+            throw 'runtime_snapshot_hash_changed'
+        }
+    }
     if ((Get-FileHash -LiteralPath (Join-Path $directory 'installation.json')).Hash -ne
         (Get-FileHash -LiteralPath (Join-Path $packageRoot 'active.json')).Hash) { throw 'version_manifest_changed' }
 }
 
-function Assert-FlowerSource {
+function Assert-FlowerSource([string]$directory = $versionSource) {
     $policy = Get-Content -LiteralPath (Join-Path $versionSource 'broker.json') -Raw | ConvertFrom-Json
+    $sourceRoot = $policy.Repository
+    if ($policy.PSObject.Properties.Name -contains 'RuntimeInventorySha256' -and $policy.RuntimeInventorySha256) {
+        if ((Get-FileHash -LiteralPath (Join-Path $directory 'runtime-inventory.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $policy.RuntimeInventorySha256) { throw 'runtime_snapshot_manifest_changed' }
+        $sourceRoot = Join-Path $directory 'python-source'
+    }
     foreach ($property in $policy.SourceHashes.PSObject.Properties) {
         if ($property.Name -eq '@bootstrap') { continue }
-        if ((Get-FileHash -LiteralPath (Join-Path $policy.Repository $property.Name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $property.Value) { throw 'matching_python_source_required' }
+        if ((Get-FileHash -LiteralPath (Join-Path $sourceRoot $property.Name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $property.Value) { throw 'matching_python_source_required' }
     }
 }
 

@@ -17,15 +17,34 @@ from flower_control.control.worker_call import command_hash
 from flower_control.drivers.app_control import AppAuthorization, AppBoundaryError, AppRuntime
 from flower_control.drivers.computer_capture import CaptureError, capture_window
 from flower_control.drivers.computer_native import (NativeInputError, WindowIdentity,
-                                                    assert_window, bind_window)
+                                                    assert_window, bind_window, window_geometry, Rect, WindowGeometry)
 from flower_control.drivers.computer_png import bmp_to_png
 from flower_control.window_registry import WindowSelectionError
 
 
+def masked_frame_png(capture, geometry: WindowGeometry | None = None):
+    """Transform only an already privacy-masked capture; grants stay with callers."""
+    png = bmp_to_png(capture.bmp)
+    bounds, width, height = capture.source_bounds, capture.width, capture.height
+    if geometry is not None:
+        x, y = geometry.client_origin
+        width, height = geometry.client_size
+        if not (bounds.left <= x < x + width <= bounds.right
+                and bounds.top <= y < y + height <= bounds.bottom):
+            raise CaptureError("client_area_outside_capture")
+        from .computer_image_view import image_view
+        png, _ = image_view(png, crop=[x - bounds.left, y - bounds.top,
+            x + width - bounds.left, y + height - bounds.top])
+        bounds = Rect(x, y, x + width, y + height)
+    return png, bounds, width, height
+
+
 def capture_app_screenshot(runtime: AppRuntime, target: dict, action_id: str,
                            resolve_identity: Callable[[], WindowIdentity], *,
-                           trusted_task: str) -> dict:
+                           trusted_task: str, client_area: bool = False) -> dict:
     """Capture one selected window frame under its live task/content grant."""
+    if type(client_area) is not bool:
+        raise AppBoundaryError("invalid_app_frame_options")
     if type(action_id) is not str or not 1 <= len(action_id) <= 128:
         raise AppBoundaryError("invalid_action_id")
     payload = {"target": target, "content": True, "action_id": action_id,
@@ -43,6 +62,8 @@ def capture_app_screenshot(runtime: AppRuntime, target: dict, action_id: str,
                              "process_start_filetime": grant.process_start_filetime},
                  "action_id": action_id, "frame_count": 1,
                  "capture_scope": "selected_window_frame"}
+    if client_area:
+        arguments["client_area"] = True
     fingerprint = command_hash("screenshot", arguments)
     resources = (resource,) + ((grant.shared_resource,) if grant.shared_resource else ())
     queued = runtime.store.enqueue(owner, action_id=key, fingerprint=fingerprint,
@@ -57,6 +78,8 @@ def capture_app_screenshot(runtime: AppRuntime, target: dict, action_id: str,
         return {"state": "queued", "dispatched": False,
                 "action_id": action_id,
                 "receipt": runtime.store.queue_status(owner, key)}
+
+    geometry = None
 
     def preflight() -> None:
         runtime.store.check_dispatch(owner, key)
@@ -84,21 +107,32 @@ def capture_app_screenshot(runtime: AppRuntime, target: dict, action_id: str,
             raise WindowSelectionError("selected_window_changed")
         _check_identity(current, selected)
         assert_window(selected)
+        if geometry is not None and window_geometry(selected) != geometry:
+            raise AppBoundaryError("client_geometry_changed")
 
     try:
         with runtime.store.dispatch(owner, key, decision.decision_id):
             try:
                 preflight()
+                if client_area:
+                    geometry = window_geometry(identity)
                 def stopped():
                     try:
                         runtime.store.check_dispatch(owner, key)
                         return False
                     except ControlError:
                         return True
-                capture = capture_window(identity, preflight=preflight,
-                                         stopped=stopped, timeout=3.0,
-                                         backend="auto")
-                png = bmp_to_png(capture.bmp)
+                from flower_control.privacy import capture_private
+                from flower_control.permissions import PermissionError
+                try:
+                    capture = capture_private(identity, lambda: capture_window(identity,
+                        preflight=preflight, stopped=stopped, timeout=3.0, backend="auto"),
+                        preflight=preflight, stopped=stopped, task=grant.task_id)
+                except PermissionError as error:
+                    raise AppBoundaryError(error.code) from None
+                if geometry is not None:
+                    preflight()
+                png, bounds, width, height = masked_frame_png(capture, geometry)
                 # Recheck the task, exact HWND/PID lifetime and content grant
                 # after encoding and immediately before the caller can publish.
                 preflight()
@@ -120,10 +154,10 @@ def capture_app_screenshot(runtime: AppRuntime, target: dict, action_id: str,
             "target": {"pid": grant.pid, "hwnd": grant.hwnd,
                        "process_start_filetime": grant.process_start_filetime},
             "capture": {
-                "scope": "selected_window_frame",
-                "source_bounds": asdict(capture.source_bounds),
+                "scope": "selected_window_client_frame" if client_area else "selected_window_frame",
+                "source_bounds": asdict(bounds),
                 "source_bounds_space": "physical_screen_pixels",
-                "width": capture.width, "height": capture.height,
+                "width": width, "height": height,
                 "occlusion": {"status": "not_measured",
                               "detail": "window capture does not include the desktop occlusion composite"},
                 "source": capture.source,
@@ -135,6 +169,8 @@ def capture_app_screenshot(runtime: AppRuntime, target: dict, action_id: str,
             "_image": png,
             "_return_context": {
                 "identity": identity,
+                "geometry": geometry,
+                "privacy_revision": capture.privacy_revision,
                 "content_scope": grant.content_scope,
                 "target_scope": grant.target_scope,
                 "shared_resource": grant.shared_resource}}
@@ -147,8 +183,16 @@ def authorize_app_screenshot_return(runtime: AppRuntime, target: dict,
                                     expected_identity: WindowIdentity,
                                     expected_content_scope: str,
                                     expected_target_scope: str | None,
-                                    expected_shared_resource: str | None = None) -> None:
+                                    expected_shared_resource: str | None = None,
+                                    expected_privacy_revision: str | None = None,
+                                    expected_geometry: WindowGeometry | None = None) -> None:
     """Recheck authority immediately before publishing already-captured pixels."""
+    from flower_control.permissions import revision, PermissionError
+    try:
+        if (expected_privacy_revision or "absent") != revision():
+            raise AppBoundaryError("user_policy_requires_new_observation")
+    except PermissionError as error:
+        raise AppBoundaryError(error.code) from None
     payload = {"target": target, "content": True, "action_id": action_id,
                "view": "frame"}
     current = runtime._authorized("flower_app_observe", payload, target,
@@ -175,6 +219,8 @@ def authorize_app_screenshot_return(runtime: AppRuntime, target: dict,
         raise WindowSelectionError("selected_window_changed")
     _check_identity(current, selected)
     assert_window(selected)
+    if expected_geometry is not None and window_geometry(selected) != expected_geometry:
+        raise AppBoundaryError("client_geometry_changed")
 
 
 def _check_identity(grant: AppAuthorization, identity: WindowIdentity) -> None:

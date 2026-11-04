@@ -18,6 +18,14 @@ internal static class BrokerPipe
     [StructLayout(LayoutKind.Sequential)] private struct SidAttributes { public IntPtr Sid; public uint Flags; }
     [StructLayout(LayoutKind.Sequential)] private struct TokenGroups { public uint Count; public SidAttributes First; }
     internal static string Name(Peer own) => "Flower.HighBroker.v1." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{own.User}|{own.Session}"))).ToLowerInvariant()[..32];
+    internal static string OrdinaryName(Peer own) => "Flower.UserBroker.v1." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{own.User}|{own.Session}"))).ToLowerInvariant()[..32];
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool WaitNamedPipeW(string name, uint timeout);
+    internal static bool Present(string name)
+    {
+        if (WaitNamedPipeW(@"\\.\pipe\" + name, 1)) return true;
+        int code = Marshal.GetLastWin32Error();
+        return code is not (2 or 3); // Busy/denied never authorizes another role.
+    }
     internal static string LogonSid()
     {
         using var identity = WindowsIdentity.GetCurrent();

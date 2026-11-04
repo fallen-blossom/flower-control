@@ -44,7 +44,7 @@ _CREDENTIAL_ASSIGNMENT = re.compile(
 _COOKIE_HEADER = re.compile(r"(?im)\b(?:cookies?|set-cookie|authorization)\s*[:=：]\s*[^\r\n]+")
 _KEY_MATERIAL = re.compile(
     r"-----BEGIN [^-]*(?:PRIVATE KEY|SECRET)[^-]*-----.*?(?:-----END [^-]+-----|$)"
-    r"|\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|"
+    r"|\b(?:(?:sk-|pplx-)[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|"
     r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b", re.DOTALL)
 
 

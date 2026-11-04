@@ -7,6 +7,7 @@ import colorsys
 import math
 import os
 from pathlib import Path
+from .indicator_language import hud_text, hud_takeover_checkpoint, hud_checkpoint_text
 
 
 CRUST = (17, 17, 27)
@@ -131,12 +132,14 @@ def border_pixels(length, thickness, phase, offset, perimeter, vertical, reverse
     return image.convert('RGBa').tobytes('raw', 'BGRa')
 
 
-def render_action_image(label: str, size: tuple[int, int], dpi: int, destructive: bool = False):
+def render_action_image(label: str, size: tuple[int, int], dpi: int, destructive: bool = False,
+                        *, backed=False):
     """Original three-times text rendering and alpha-1 independent hit area."""
     from PIL import Image, ImageDraw, ImageChops
     scale = 3
     width, height = size
-    image = Image.new('RGBA', (width * scale, height * scale), (0, 0, 0, 1))
+    image = Image.new('RGBA', (width * scale, height * scale),
+                      (17, 17, 27, 238) if backed else (0, 0, 0, 1))
     draw = ImageDraw.Draw(image)
     font = load_indicator_font(11, dpi, scale)
     bounds = draw.textbbox((0, 0), label, font=font)
@@ -153,13 +156,13 @@ def preferred_status_width(title: str, dpi: int) -> int:
     """Original font measurement with space for the fixed timer and Stop."""
     font = load_indicator_font(12, dpi, 3)
     title_width = math.ceil(font.getlength(title) / 3)
-    return max(px(560, dpi), title_width + px(24 + 128 + 100, dpi))
+    return max(px(560, dpi), title_width + px(24 + 128 + 124, dpi))
 
 
 def timer_slot(width: int, dpi: int) -> tuple[int, int, int, int]:
-    x = max(px(12, dpi), width - px(12 + 128 + 88, dpi))
+    x = max(px(12, dpi), width - px(12 + 128 + 112, dpi))
     y = px(8, dpi)
-    return x, y, x + px(88, dpi), y + px(20, dpi)
+    return x, y, x + px(112, dpi), y + px(20, dpi)
 
 
 def _fit_text(text, width, font):
@@ -170,8 +173,68 @@ def _fit_text(text, width, font):
     return text + '…' if font.getlength('…') <= width else ''
 
 
+def _fit_folded_content(prefix, body, width, font):
+    """Preserve actual content before a prefix in a narrow folded row."""
+    if font.getlength(prefix + body) > width:
+        prefix = ''
+    return _fit_text(prefix + body, width, font)
+
+
+def display_purpose(value):
+    if not value:
+        return None
+    value = value.strip()
+    generic = {"下一步", "继续", "继续执行", "执行下一步", "执行窗口操作", "当前任务", "操作窗口",
+               "执行当前操作", "读取目标窗口", "执行阶段", "input", "click", "wait", "text", "observe",
+               "activate", "drag", "scroll", "key", "batch", "sequence", "next", "next step",
+               "设置控件文本", "设置开关状态", "选择项目", "展开或折叠项目", "滚动控件", "显现虚拟项目",
+               "调用控件", "正常关闭窗口", "执行当前 app 操作", "向授权窗口输入文本",
+               "向授权窗口发送组合键", "执行授权窗口的有限输入步骤", "切换到授权窗口", "接管目标窗口"}
+    return None if value.strip(" .。:：;；!！").lower() in generic else value
+
+
+def status_content(stage_label, checkpoint, next_step, *, language="zh-CN"):
+    """Shared semantic content for pixels and read-only HUD inspection."""
+    attention = stage_label in {'停止请求已收到', '已阻止后续输入', '已停止，释放已确认', '释放未确认'}
+    # Old callers may supply an internal opcode. Keep compatibility, but never
+    # present that opcode as a model-authored business plan.
+    visible_stage = hud_text(stage_label, language)
+    fallback = visible_stage if not checkpoint or checkpoint in {stage_label, '动作结束后核对结果'} else visible_stage + ' · ' + hud_checkpoint_text(checkpoint, language)
+    return (hud_text('当前：', language), fallback, attention)
+
+
+def hud_status_rows(stage_label, checkpoint, purpose=None, next_step=None, *, language="zh-CN"):
+    """Return the visible, ordered HUD rows shared by pixels and inspection.
+
+    Normal operation keeps the measured stage visible, then adds only
+    host-authored business text. Stop/release warnings override business text
+    so a stale next-step can never be mistaken for an active plan.
+    """
+    attention = stage_label in {'停止请求已收到', '已阻止后续输入', '已停止，释放已确认', '释放未确认'}
+    if attention:
+        prefix, main, _ = status_content(stage_label, checkpoint, next_step, language=language)
+        return (('warning', prefix, main),)
+    rows = []
+    if stage_label == '等待首次接管':
+        rows.append(('takeover', hud_text('接管等待：', language),
+                     hud_takeover_checkpoint(checkpoint, language) if checkpoint and checkpoint != '动作结束后核对结果' else hud_text('准备开始', language)))
+    else:
+        main = checkpoint if checkpoint and checkpoint not in {stage_label, '动作结束后核对结果'} else ''
+        rows.append(('stage', hud_text('状态：', language), hud_text(stage_label, language) + (f' · {hud_checkpoint_text(main, language)}' if main else '')))
+    purpose_text = display_purpose(purpose)
+    # Idle follows a completed operation; its former next step is not an
+    # active plan. Keep it stored for an explicit later stage/rebind.
+    next_text = None if stage_label == '等待下一步' else display_purpose(next_step)
+    if purpose_text and purpose_text not in {checkpoint, stage_label}:
+        rows.append(('purpose', hud_text('目的：', language), purpose_text))
+    if next_text and next_text not in {purpose_text, checkpoint, stage_label}:
+        rows.append(('next', hud_text('下一步：', language), next_text))
+    return tuple(rows)
+
+
 def render_status_image(size, dpi, title, stage_label, checkpoint, elapsed, estimate=None,
-                        next_step=None):
+                        next_step=None, *, purpose=None, compact=False, operator='GPT', stop_only=False,
+                        elapsed_label='耗时', folded=False, language="zh-CN"):
     """Original transparent status drawing, with trusted stage and elapsed time.
 
     The timer keeps the original fixed slot and shared text baseline. The task
@@ -180,14 +243,83 @@ def render_status_image(size, dpi, title, stage_label, checkpoint, elapsed, esti
     only and never proves that any step happened.
     """
     from PIL import Image, ImageDraw
+    control_title = hud_text('{name} 正在由 {operator} 操作', language).format(
+        name='Flower Computer Use', operator=operator)
     width, height = size
     scale = 3
     image = Image.new('RGBA', (width * scale, height * scale), (0, 0, 0, 0))
+    if stop_only:
+        return image.resize(size, Image.Resampling.LANCZOS)
     draw = ImageDraw.Draw(image)
+    prefix, main, attention = status_content(stage_label, checkpoint, next_step, language=language)
+    rows = hud_status_rows(stage_label, checkpoint, purpose, next_step, language=language)
+    if folded:
+        font = load_indicator_font(11, dpi, scale)
+        minutes, seconds = divmod(max(0, int(elapsed)), 60)
+        available = max(1, width - px(104, dpi)) * scale
+        timer_text = f'{minutes:02d}:{seconds:02d}'
+        timer_font = load_timer_font(dpi, scale)
+        timer_width = math.ceil(timer_font.getlength(timer_text))
+        timer_x = px(8, dpi) * scale
+        draw.text((timer_x, px(7, dpi) * scale), timer_text, font=timer_font, anchor='lt', fill='#F38BA8',
+                  stroke_width=scale, stroke_fill='#11111B')
+        operator_x = timer_x + timer_width + px(6, dpi) * scale
+        identity_space = max(1, image.width - px(8, dpi) * scale - operator_x)
+        identity_text = title if title and title.startswith('Flower ') else control_title
+        identity_font = font
+        for font_size in (11, 10, 9, 8):
+            identity_font = load_indicator_font(font_size, dpi, scale)
+            if identity_font.getlength(identity_text) <= identity_space:
+                break
+        if identity_font.getlength(identity_text) > identity_space:
+            identity_text = operator
+        if identity_space > 0:
+            draw.text((operator_x, px(3, dpi) * scale),
+                      _fit_text(identity_text, identity_space, identity_font), font=identity_font, anchor='lt', fill='#B4BEFE',
+                      stroke_width=scale, stroke_fill='#11111B')
+        colors = {'warning': '#F38BA8', 'takeover': '#A6E3A1',
+                  'stage': '#74C7EC', 'purpose': '#A6E3A1', 'next': '#A6E3A1'}
+        for row_index, (kind, row_prefix, body) in enumerate(rows[:3]):
+            row = row_prefix + body
+            if (kind == 'warning' and font.getlength(row) > available or
+                    kind != 'warning' and font.getlength(
+                        row_prefix + body[:3] + ('…' if len(body) > 3 else '')) > available):
+                row = body
+            draw.text((px(8, dpi) * scale, px(29 + 18 * row_index, dpi) * scale),
+                      _fit_text(row, available, font),
+                      font=font, fill=colors[kind], stroke_width=scale, stroke_fill='#11111B')
+        return image.resize(size, Image.Resampling.LANCZOS)
+    if compact:
+        # Very small targets keep bounded transparent text and a separate Stop.
+        font = load_indicator_font(11, dpi, scale)
+        x, y = px(8, dpi) * scale, px(8, dpi) * scale
+        minutes, seconds = divmod(max(0, int(elapsed)), 60)
+        timer_text = f'{minutes:02d}:{seconds:02d}'
+        timer_font = load_timer_font(dpi, scale)
+        timer_x = image.width - px(8, dpi) * scale - math.ceil(timer_font.getlength(timer_text))
+        caption_width = max(1, timer_x - x - px(8, dpi) * scale)
+        caption = title if title and title.startswith('Flower ') else control_title
+        if font.getlength(caption) > caption_width:
+            caption = operator
+        caption = _fit_text(caption, caption_width, font)
+        draw.text((x, y), caption, font=font, anchor='lt', fill='#B4BEFE',
+                  stroke_width=scale, stroke_fill='#11111B')
+        draw.text((timer_x, y), timer_text,
+                  font=timer_font, anchor='lt', fill='#F38BA8', stroke_width=scale, stroke_fill='#11111B')
+        colors = {'warning': '#F38BA8', 'takeover': '#A6E3A1',
+                  'stage': '#74C7EC', 'purpose': '#A6E3A1', 'next': '#A6E3A1'}
+        for row_index, (kind, row_prefix, body) in enumerate(rows[:3]):
+            line = _fit_folded_content(row_prefix, body, max(1, width - px(96, dpi)) * scale, font)
+            draw.text((x, px(30 + 18 * row_index, dpi) * scale), line, font=font, anchor='lt',
+                      fill=colors[kind], stroke_width=scale, stroke_fill='#11111B')
+        return image.resize(size, Image.Resampling.LANCZOS)
     x, y = px(12, dpi) * scale, px(8, dpi) * scale
     title_font = load_indicator_font(12, dpi, scale)
     available = max(1, width - px(24 + 128, dpi))
-    title = _fit_text(title, max(1, available - px(100, dpi)) * scale, title_font)
+    title_space = max(1, available - px(124, dpi)) * scale
+    if title_font.getlength(title) > title_space:
+        title = 'Flower · ' + operator
+    title = _fit_text(title, title_space, title_font)
     # The original title had a fixed header. Use that fixed label's baseline
     # when adapting it to variable task names, so the timer cannot drift.
     header_baseline = y - title_font.getbbox(TITLE_CONTROL_TEMPLATE.format(operator='GPT'), anchor='ls')[1]
@@ -195,33 +327,48 @@ def render_status_image(size, dpi, title, stage_label, checkpoint, elapsed, esti
               stroke_width=scale, stroke_fill='#11111B')
     body_font = load_indicator_font(11, dpi, scale)
     y += px(20, dpi) * scale
-    prefix = '接下来：'
-    body = stage_label + ' · ' + checkpoint
+    first_prefix, first_body = rows[0][1], rows[0][2]
     if estimate is not None:
-        body += f' · 预计 {estimate:.1f} 秒'
-    line = _fit_text(prefix + body, available * scale, body_font)
-    visible_prefix = line[:min(len(prefix), len(line))]
-    attention = stage_label in {'停止请求已收到', '已停止，释放已确认', '释放未确认'}
+        first_body += hud_text(' · 预计 {seconds:.1f} 秒', language).format(seconds=estimate)
+    line = _fit_text(first_prefix + first_body, available * scale, body_font)
+    visible_prefix = line[:min(len(first_prefix), len(line))]
     draw.text((x, y), visible_prefix, font=body_font, anchor='lt', fill='#F38BA8' if attention else '#74C7EC',
               stroke_width=scale, stroke_fill='#11111B')
     draw.text((x + body_font.getlength(visible_prefix), y), line[len(visible_prefix):],
               font=body_font, anchor='lt', fill='#F38BA8' if attention else '#BAC2DE',
               stroke_width=scale, stroke_fill='#11111B')
-    if next_step:
-        y += px(20, dpi) * scale
-        note_prefix = '下一步：'
-        note_line = _fit_text(note_prefix + next_step, available * scale, body_font)
-        visible_note = note_line[:min(len(note_prefix), len(note_line))]
-        draw.text((x, y), visible_note, font=body_font, anchor='lt', fill='#A6E3A1',
+    for kind, row_prefix, row_body in rows[1:3]:
+        y += px(18, dpi) * scale
+        note_line = _fit_text(row_prefix + row_body, available * scale, body_font)
+        visible_note = note_line[:min(len(row_prefix), len(note_line))]
+        color = '#A6E3A1' if kind in {'purpose', 'next', 'takeover'} else '#74C7EC'
+        draw.text((x, y), visible_note, font=body_font, anchor='lt', fill=color,
                   stroke_width=scale, stroke_fill='#11111B')
         draw.text((x + body_font.getlength(visible_note), y), note_line[len(visible_note):],
                   font=body_font, anchor='lt', fill='#CDD6F4',
                   stroke_width=scale, stroke_fill='#11111B')
     tx, _, _, _ = timer_slot(width, dpi)
-    draw.text((tx * scale, header_baseline), '耗时', font=body_font, anchor='ls',
+    elapsed_label = hud_text(elapsed_label, language)
+    draw.text((tx * scale, header_baseline), elapsed_label, font=body_font, anchor='ls',
               fill='#A6ADC8', stroke_width=scale, stroke_fill='#11111B')
     minutes, seconds = divmod(max(0, int(elapsed)), 60)
-    draw.text(((tx + px(36, dpi)) * scale, header_baseline), f'{minutes:02d}:{seconds:02d}',
+    timer_offset = math.ceil(body_font.getlength(elapsed_label) / scale) + px(8, dpi)
+    draw.text(((tx + timer_offset) * scale, header_baseline), f'{minutes:02d}:{seconds:02d}',
               font=load_timer_font(dpi, scale), anchor='ls', fill='#F38BA8',
               stroke_width=scale, stroke_fill='#11111B')
     return image.resize(size, Image.Resampling.LANCZOS)
+def folded_panel_height(stage, checkpoint=None, purpose=None, *, next_step=None, stage_label=None):
+    """Match the actual folded rows without reserving unused vertical space."""
+    label = stage_label or {'takeover': '等待首次接管'}.get(stage, stage)
+    rows = hud_status_rows(label, checkpoint or '', purpose, next_step)
+    return 56 if len(rows) <= 1 else 74 if len(rows) == 2 else 92
+
+
+def computer_action_label(command):
+    """Closed operation labels, without user text, keys or window contents."""
+    return {"text": "输入文本", "key": "发送按键", "click": "点击目标", "double_click": "双击目标",
+            "click_candidate": "点击所选控件", "click_region": "点击所选区域", "choose_region": "选择并点击区域",
+            "drag": "拖动目标", "scroll": "滚动内容", "move_relative": "移动指针",
+            "key_mouse": "组合键鼠操作", "mouse_hold": "按住鼠标", "window_move": "移动窗口",
+            "window_resize": "调整窗口大小", "activate": "切换到目标窗口", "sequence": "执行连续操作"
+            }.get(command, "执行窗口操作")

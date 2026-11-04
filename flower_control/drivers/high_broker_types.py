@@ -27,7 +27,7 @@ class InputBinding:
         if self.observation_id is not None:
             _text(self.observation_id, 256)
             _text(self.generation, 4096)
-        if self.sequence_step is not None and (type(self.sequence_step) is not int or not 0 <= self.sequence_step <= 2):
+        if self.sequence_step is not None and (type(self.sequence_step) is not int or not 0 <= self.sequence_step <= 7):
             raise ValueError("input_binding_rejected")
         if self.observation_id is None and self.sequence_step is not None:
             raise ValueError("input_binding_rejected")
@@ -53,9 +53,14 @@ class ComputerInputPlan:
 
     @classmethod
     def from_wire(cls, value):
-        if type(value) is not dict or set(value) != {"kind", "schema_version", "command", "binding", "desktop", "plans"}:
+        required={"kind", "schema_version", "command", "binding", "desktop", "plans"}
+        if (type(value) is not dict or not required<=set(value)<=required|{'suppress_pointer_approach', 'motion_spec', 'settle_final_focus'}
+                or any(name in value and type(value[name]) is not bool for name in ('suppress_pointer_approach', 'settle_final_focus'))):
             raise ValueError("input_plan_rejected")
-        if value["kind"] != "computer_input_plan" or type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        if (value["kind"] != "computer_input_plan" or type(value["schema_version"]) is not int
+                or value["schema_version"] not in (1,2)
+                or value["schema_version"]==2 and value.get("motion_spec")!="bezier-distance-v1"
+                or value["schema_version"]==1 and "motion_spec" in value):
             raise ValueError("input_plan_rejected")
         if value["command"] not in {"text", "key", "click", "double_click", "scroll", "drag", "move_relative", "key_mouse", "mouse_hold", "move", "hover", "batch"}:
             raise ValueError("input_plan_rejected")
@@ -64,7 +69,9 @@ class ComputerInputPlan:
             raise ValueError("input_binding_rejected")
         bound = InputBinding(**binding)
         bound.require_observation()
-        if type(value["plans"]) is not list or not 1 <= len(value["plans"]) <= 131:
+        if value.get('settle_final_focus') and (bound.sequence_step is None or bound.sequence_step >= 7):
+            raise ValueError('input_plan_rejected')
+        if type(value["plans"]) is not list or not 1 <= len(value["plans"]) <= 8192:
             raise ValueError("input_plan_rejected")
         encoded = json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode("ascii")
         if len(encoded) > 2 * 1024 * 1024 - 8192:
@@ -170,7 +177,7 @@ class AppRequest:
         from .app_worker import validate_request, MAX_MESSAGE
         if type(binding) is not InputBinding:
             raise ValueError("input_binding_rejected")
-        if command not in {"observe", "close_window"}:
+        if command not in {"observe", "close_window"} or command == "observe" and "diagnostic" in arguments:
             binding.require_observation()
         if command == "close_window":
             if type(arguments) is not dict or set(arguments) != {"target"} or type(arguments["target"]) is not dict:

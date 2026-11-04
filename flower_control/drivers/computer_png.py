@@ -20,8 +20,8 @@ def _chunk(kind: bytes, data: bytes) -> bytes:
             + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
 
 
-def bmp_to_png(bmp: bytes) -> bytes:
-    """Losslessly convert one bounded 32-bit top-down BGRA BMP to RGBA PNG."""
+def validated_bgra(bmp: bytes) -> tuple[int, int, memoryview]:
+    """Validate the narrow capture format and expose only its bounded pixels."""
     if type(bmp) is not bytes or len(bmp) < 54 or bmp[:2] != b"BM":
         raise ValueError("invalid_capture_bitmap")
     file_size, pixel_offset = struct.unpack_from("<IxxxxI", bmp, 2)
@@ -35,8 +35,13 @@ def bmp_to_png(bmp: bytes) -> bytes:
             or len(bmp) != 54 + width * height * 4):
         raise ValueError("invalid_capture_bitmap")
 
+    return width, height, memoryview(bmp)[54:]
+
+
+def bmp_to_png(bmp: bytes) -> bytes:
+    """Losslessly convert one bounded 32-bit top-down BGRA BMP to RGBA PNG."""
+    width, height, pixels = validated_bgra(bmp)
     stride = width * 4
-    pixels = memoryview(bmp)[54:]
     rows = bytearray((stride + 1) * height)
     for y in range(height):
         source = pixels[y * stride:(y + 1) * stride]

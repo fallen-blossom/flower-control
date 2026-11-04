@@ -1,25 +1,41 @@
-# Flower Control 0.1.0 preview
+# Flower Control 0.1.0-preview.3
 
 [简体中文](RELEASE_NOTES.zh-CN.md)
 
-Flower Control gives Codex tools to operate websites and Windows apps. Ask it to fill a form, use a menu, edit a page, upload a file, or drag an object on a canvas.
+**Windows 11 x64 source preview. Not a signed one-click installer.**
 
-- **Web** reads and operates webpage elements through Playwright. The Chromium-family Brave, Chrome, and Edge are accepted; Brave is verified, and Chrome and Edge are pending verification.
-- **App** reads and operates accessible Windows controls through FlaUI, including fields, lists, menus, and dialogs.
-- **Computer** takes screenshots of a selected window and sends mouse and keyboard input for canvases, dragging, shortcuts, and interfaces without useful accessible controls.
+This release makes the B46-r6 source line available as a complete public repository and source archive. It includes the local Codex plugin generator, administrator-helper build/install tools, three MCP channels, documentation, tests, licenses, and a per-file source manifest.
 
-Control state stays on your machine. Flower adds no usage telemetry, crash uploads, remote configuration, or automatic updates. Your agent's model service and normal website traffic still apply. Optional Jev receives short goals and candidate labels to select a target; Flower can execute that choice in the same tool call. Jev is off on a new installation.
+## Highlights
 
-Press **Ctrl+Alt+9** to stop writes. Computer shows a moving border, elapsed time, and a Stop button. After stopping, the agent observes the target again before continuing. Mechanical steps can run in batches.
+- **Four selectable permission tiers:** 01 fully stopped, 02 ordinary control, 03 administrator windows, 04 administrator execution.
+- **A clear 03/04 boundary:** 03 can operate an already-open elevated window; 04 can additionally start an exact program through local policy. UAC secure desktop automation and the legacy system-takeover path are frozen.
+- **Three channels:** Web for managed Chromium-family pages, App for Windows accessibility controls, Computer for selected-window capture and input.
+- **Local settings:** deny lists, administrator-window rules, administrator launch records, privacy masks, Stop, and Computer pause.
+- **Recovery-safe input:** Ctrl+Alt+9, HUD Stop, tray Stop, re-observation before resume, and no automatic replay of uncertain input.
+- **Rewritten documentation:** separate installation, permission, usage, troubleshooting, and browser-profile guides in English and Simplified Chinese.
 
-Temporary browsers start separately. The AI profile retains its own logins; the personal profile needs permission once per chat. Log in inside the chosen Flower profile to use a saved account through Web. Logins are not copied from your everyday browser.
+## Install from source
 
-This is an **MIT-licensed Windows source preview**. It includes English and Chinese installation, login, privacy, and validation guides. You build and prepare the administrator helper for your own Windows account and source directory. No ready-to-run binary installer is included; Codex itself can run without administrator privileges. The helper tray menu is currently Chinese.
+Start with [installation](INSTALL.md), then [permissions](PERMISSIONS.md) and [usage](USAGE.md).
 
-Source adapters for native Windows Claude Code and the Antigravity IDE are included but have **not been built or tested**. Antigravity uses connection scope, has no per-chat isolation, and omits personal-profile tools. Standalone Antigravity CLI, SDK, and cloud use are outside this preview.
+The release archive is source code plus checksums. You build the native helper and Python environment locally, approve the generated helper installation through UAC, add the local Codex marketplace, and trust the generated Hook before use.
 
-The recorded Codex tests include spreadsheets, documents, drawing, web editing, file transfer, desktop lists and dialogs, stop/resume, and Jev in all three channels. They apply to the earlier installed Codex baseline, before the host-adapter changes. A document-color task missed the required shades. Clean-PC first installation and the later shared-code changes still need verification. No general success-rate or leaderboard claim is made.
+## Validation boundary
 
-Download `flower-control-0.1.0-preview.1-source.zip` and check it against `SHA256SUMS.txt`. Start with [installation](INSTALL.md), then [browser profiles and login](BROWSER_PROFILES.md). See [validation](VALIDATION.md) for test details and [privacy](../PRIVACY.md) for data boundaries.
+The development machine has an installed helper, a local Codex plugin publication, and three-channel load evidence. This release records source/export consistency and the checked build/install tooling. It does not claim:
 
-Report reproducible problems in [GitHub issues](https://github.com/fallen-blossom/flower-control/issues). Keep credentials, browser profiles, and private screenshots out of attachments.
+- a completed clean-PC or second-account first install;
+- universal website or third-party application support;
+- UAC secure-desktop automation;
+- signed binaries or silent updates;
+- a general success rate.
+
+A successful status probe or one harmless target test is not proof that every later target and action is safe.
+
+## Files
+
+- `flower-control-0.1.0-preview.3-source.zip`: full public source tree.
+- `SHA256SUMS.txt`: checksum for the source archive.
+
+Use the checksum before extracting or building. Do not download an unverified helper binary from an issue or mirror.

@@ -1,5 +1,13 @@
 # What has been tested
 
+## Current source evidence boundary
+
+Historical tasks below apply to their original version. The three-browser checks use real Brave/Chrome/Edge processes, localhost test pages, synthetic cookies and an isolated ledger: connection, observation, fill/click/readback, temporary isolation and persistence after process exit. They are not a full native-chat task or access to personal accounts.
+
+The DSH model-step binding repair is checked with production JS and a fake helper, not a live privileged DSH task. Complete Stop entries, actual application drag results, original-speed motion, foreground occupancy, new settings and maintenance recovery still require combined acceptance. Clean-Windows first installation remains unverified.
+
+## Historical installed tasks
+
 [简体中文](VALIDATION.zh-CN.md)
 
 The real-task results below apply to the Codex baseline installed before the Claude Code and Antigravity source adapters were added. The additional adapters and their changes to shared code have not been built or tested. A complete first installation on a separate Windows machine is also pending.

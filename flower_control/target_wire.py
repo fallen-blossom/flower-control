@@ -37,6 +37,8 @@ def app_target_to_wire(target: dict[str, int]) -> dict[str, str]:
 
 
 def app_result_to_wire(value: Any) -> Any:
+    from flower_control.privacy import redact_sensitive_values
+    value = redact_sensitive_values(value)
     if type(value) is dict:
         if set(value) == {"pid", "hwnd", "process_start_filetime"}:
             return app_target_to_wire(value)
@@ -64,10 +66,24 @@ def computer_target_to_wire(value: dict[str, int | str]) -> dict[str, str]:
 
 def computer_result_to_wire(value: Any) -> Any:
     """Normalize exact identities, then explain supplied Computer failure facts."""
+    from flower_control.privacy import redact_sensitive_values
+    value = redact_sensitive_values(value)
     if type(value) is dict:
         if set(value) == {"pid", "hwnd", "process_created", "window_nonce"}:
             return computer_target_to_wire(value)
         result = {key: computer_result_to_wire(item) for key, item in value.items()}
+        progress = result.get("InputResult")
+        if type(progress) is dict:
+            result["input_summary"] = {
+                "planned": progress.get("PlannedPlans"), "completed": progress.get("CompletedPlans"),
+                "partial": progress.get("PartialSegment"), "business_events": progress.get("AcceptedEvents"),
+                "ime_events": result.get("ImeEvents"), "release_events": result.get("ReleaseEvents"),
+                "dispatch_complete": progress.get("BusinessComplete"),
+                "application_verified": result.get("BusinessVerified"),
+                "first_completed_ms": progress.get("FirstCompletedPlanMs"),
+                "last_completed_ms": progress.get("LastCompletedPlanMs"),
+                "max_inter_plan_gap_ms": progress.get("MaxInterPlanGapMs"),
+            }
         explanation = explain_error(result.get("reason"), state=result.get("state"),
                                     dispatched=result.get("dispatched"), stage=result.get("stage"),
                                     source="computer", effects=result)

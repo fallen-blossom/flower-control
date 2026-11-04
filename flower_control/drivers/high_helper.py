@@ -1,13 +1,15 @@
 """Client for the fixed global broker. No import or client call starts High."""
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from types import MappingProxyType
 import secrets
@@ -38,7 +40,7 @@ def _peer_evidence_shape(evidence):
              "LauncherPid", "LauncherCreated", "CodexPid"}
     if type(evidence) is not dict:
         return False
-    return set(evidence) == (names | {"HostPid"} if evidence.get("Source") in {"claude-code-flower", "antigravity-flower", "local-mcp-flower"} else names)
+    return set(evidence) == (names | {"HostPid"} if evidence.get("Source") in {"claude-code-flower", "antigravity-flower", "local-mcp-flower", "dsh-desktop-flower"} else names)
 
 
 def _production_host_evidence(evidence):
@@ -47,7 +49,7 @@ def _production_host_evidence(evidence):
     source = evidence.get("Source")
     if source == "codex-flower":
         pid = evidence.get("CodexPid")
-    elif source in {"claude-code-flower", "antigravity-flower", "local-mcp-flower"} and evidence.get("CodexPid") is None:
+    elif source in {"claude-code-flower", "antigravity-flower", "local-mcp-flower", "dsh-desktop-flower"} and evidence.get("CodexPid") is None:
         pid = evidence.get("HostPid")
     else:
         return False
@@ -103,6 +105,15 @@ class ReleaseRecovery:
                 or result["SemanticExecutorExited"] is not None and type(result["SemanticExecutorExited"]) is not bool
                 or result["SemanticExecutorExited"] is False and result.get("PhysicalInputFree") is not True):
             raise HighHelperError("release_recovery_unconfirmed")
+        self._terminal = MappingProxyType(dict(result))
+
+    @property
+    def semantic_executor_exited(self):
+        return self._terminal["SemanticExecutorExited"]
+
+    @property
+    def physical_input_free(self):
+        return self._terminal.get("PhysicalInputFree") is True
 
     def verify(self):
         session = self._session
@@ -123,7 +134,63 @@ def _digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def _process(pid, *, digest_cache=None, expected_image=None):
+class _TargetImageSnapshot:
+    """File bytes only; pinned against writes/replacement for one capture."""
+    def __init__(self):
+        self.images = {}
+
+    def digest(self, key):
+        if key not in self.images:
+            handle = win32file.CreateFile(key[2], win32con.GENERIC_READ, win32con.FILE_SHARE_READ,
+                None, win32con.OPEN_EXISTING, win32con.FILE_FLAG_SEQUENTIAL_SCAN, None)
+            try:
+                hashed = hashlib.sha256()
+                while True:
+                    _, data = win32file.ReadFile(handle, 1024 * 1024)
+                    if not data:
+                        break
+                    hashed.update(data)
+                self.images[key] = (handle, hashed.hexdigest())
+            except BaseException:
+                handle.Close()
+                raise
+        return self.images[key][1]
+
+    def close(self):
+        failure = None
+        try:
+            for handle, _digest_value in self.images.values():
+                try:
+                    handle.Close()
+                except Exception as error:
+                    failure = failure or error
+        finally:
+            self.images.clear()
+        if failure is not None:
+            raise failure
+
+
+_target_image_snapshot = ContextVar("flower_capture_target_image", default=None)
+
+
+@contextmanager
+def capture_target_image_snapshot():
+    """Never retain process facts, metadata scans or authority between calls."""
+    if _target_image_snapshot.get() is not None:
+        yield
+        return
+    snapshot = _TargetImageSnapshot()
+    token = _target_image_snapshot.set(snapshot)
+    try:
+        yield
+    finally:
+        try:
+            snapshot.close()
+        finally:
+            _target_image_snapshot.reset(token)
+
+
+def _process(pid, *, digest_cache=None, expected_image=None, target_image_snapshot=None):
     handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     try:
         iso = win32process.GetProcessTimes(handle)["CreationTime"].isoformat()
@@ -144,7 +211,9 @@ def _process(pid, *, digest_cache=None, expected_image=None):
             token.Close()
         created = process_creation_filetime(pid, expected_iso=iso)
         cache_key = (pid, created, image.value)
-        if digest_cache is None:
+        if target_image_snapshot is not None:
+            digest = target_image_snapshot.digest(cache_key)
+        elif digest_cache is None:
             digest = _digest(image.value)
         else:
             if cache_key not in digest_cache:
@@ -228,9 +297,15 @@ class HighTarget:
         import win32gui
         if type(hwnd) is not int or type(pid) is not int or hwnd <= 0 or pid <= 0:
             raise HighHelperError("target_rejected")
+        from flower_control.permissions import require_window, PermissionError
+        try:
+            require_window(hwnd)
+        except PermissionError as error:
+            raise HighHelperError(error.code) from None
         if win32process.GetWindowThreadProcessId(hwnd)[1] != pid:
             raise HighHelperError("target_identity_changed")
-        facts, iso = _process(pid)
+        snapshot = _target_image_snapshot.get()
+        facts, iso = (_process(pid) if snapshot is None else _process(pid, target_image_snapshot=snapshot))
         previous = _USER32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
         if not previous:
             raise HighHelperError("physical_dpi_required")
@@ -262,11 +337,57 @@ class HighTarget:
         return self.resources if _foreground_required(operation) else (self.resources[1],)
 
 
+_retired_pipe_io = set()
+_retired_pipe_io_lock = threading.Lock()
+
+
+class _DeferredPipeIO(HighHelperError):
+    """The caller must leave the event/buffer owned by the retirement worker."""
+    def __init__(self, code, interruption=None):
+        super().__init__(code)
+        self.interruption = interruption
+
+
+class _PendingPipeIO:
+    def __init__(self, handle, overlapped, event, buffer):
+        self.handle, self.overlapped = handle, overlapped
+        self.event, self.buffer = event, buffer
+
+    def retire(self):
+        # Keep the native OVERLAPPED, event and actual ReadFile/WriteFile buffer
+        # alive even after the connection closes. Cancellation only requests
+        # completion; releasing them before the event signals is unsafe.
+        with _retired_pipe_io_lock:
+            _retired_pipe_io.add(self)
+        try:
+            threading.Thread(target=self._drain, name="flower-pipe-drain", daemon=True).start()
+        except BaseException as error:
+            # A failed worker start must retain the references, not free a
+            # still-pending kernel buffer. This connection already fails shut.
+            return error
+        return None
+
+    def _drain(self):
+        try:
+            if win32event.WaitForSingleObject(self.event, win32event.INFINITE) != win32event.WAIT_OBJECT_0:
+                return
+        except BaseException:
+            return  # Unknown completion: retain the quarantined references.
+        try:
+            self.event.Close()
+        except Exception:
+            pass  # Completion is known; a close error cannot endanger buffer lifetime.
+        finally:
+            with _retired_pipe_io_lock:
+                _retired_pipe_io.discard(self)
+
+
 class _Pipe:
     def __init__(self, name):
         self.name, self.handle = name, None
         self.write_lock = threading.Lock()
         self._read_buffer = bytearray()
+        self._io_error = None
 
     def connect(self, timeout=1.5):
         until = time.monotonic() + timeout
@@ -287,17 +408,54 @@ class _Pipe:
             self.handle.Close()
             self.handle = None
 
-    def _finish(self, overlapped, timeout):
-        if win32event.WaitForSingleObject(overlapped.hEvent, max(1, int(timeout * 1000))) != win32event.WAIT_OBJECT_0:
-            win32file.CancelIoEx(self.handle, overlapped)
-            # Drain the cancelled OVERLAPPED before its buffer/event is released.
-            win32event.WaitForSingleObject(overlapped.hEvent, 1000)
-            raise HighHelperError("pipe_deadline")
-        return win32file.GetOverlappedResult(self.handle, overlapped, False)
+    def _finish(self, overlapped, timeout, *, event, buffer):
+        wait_error = None
+        interruption = None
+        try:
+            wait = win32event.WaitForSingleObject(event, max(1, int(timeout * 1000)))
+        except BaseException as error:
+            wait, wait_error = None, error
+            if not isinstance(error, Exception):
+                interruption = error
+        if wait == win32event.WAIT_OBJECT_0:
+            return win32file.GetOverlappedResult(self.handle, overlapped, False)
+        cancel_error = None
+        try:
+            # read()/write() issue this OVERLAPPED and call _finish on the
+            # same thread. CancelIo is supported by the bundled pywin32 and
+            # cancels only this thread's I/O, leaving other threads alone.
+            win32file.CancelIo(self.handle)
+        except BaseException as error:
+            cancel_error = error
+            if not isinstance(error, Exception) and interruption is None:
+                interruption = error
+        try:
+            completed = win32event.WaitForSingleObject(event, 1000) == win32event.WAIT_OBJECT_0
+        except BaseException as error:
+            completed = False
+            if not isinstance(error, Exception) and interruption is None:
+                interruption = error
+        if not completed:
+            self._io_error = "pipe_cancel_unconfirmed"
+            retiring_error = _PendingPipeIO(self.handle, overlapped, event, buffer).retire()
+            if retiring_error is not None and not isinstance(retiring_error, Exception) and interruption is None:
+                interruption = retiring_error
+            raise _DeferredPipeIO(self._io_error, interruption)
+        if interruption is not None:
+            raise interruption
+        if wait_error is not None:
+            raise wait_error
+        if cancel_error is not None:
+            raise HighHelperError("pipe_cancel_failed") from cancel_error
+        raise HighHelperError("pipe_deadline" if wait == win32event.WAIT_TIMEOUT else "pipe_wait_failed")
 
     def read(self, timeout):
+        if self._io_error:
+            raise HighHelperError(self._io_error)
         until = time.monotonic() + timeout
         while True:
+            if self._io_error:
+                raise HighHelperError(self._io_error)
             newline = self._read_buffer.find(b"\n")
             if newline >= 0:
                 if newline >= _LIMIT:
@@ -312,32 +470,51 @@ class _Pipe:
             overlapped = pywintypes.OVERLAPPED()
             event = win32event.CreateEvent(None, True, False, None)
             overlapped.hEvent = event
+            deferred = False
             try:
                 _, buffer = win32file.ReadFile(self.handle, min(1024, _LIMIT - len(self._read_buffer)), overlapped)
-                count = self._finish(overlapped, until - time.monotonic())
+                count = self._finish(overlapped, until - time.monotonic(), event=event, buffer=buffer)
                 if count <= 0:
                     raise HighHelperError("pipe_disconnected")
                 value = bytes(buffer[:count])
-            except pywintypes.error:
-                raise HighHelperError("pipe_disconnected") from None
+            except _DeferredPipeIO as error:
+                deferred = True
+                if error.interruption is not None:
+                    raise error.interruption from None
+                raise
+            except pywintypes.error as error:
+                raise HighHelperError("pipe_disconnected", details={"pipe_operation": "read",
+                    "winerror": error.winerror}) from None
             finally:
-                event.Close()
+                if not deferred:
+                    event.Close()
             self._read_buffer.extend(value)
 
     def write(self, message):
+        if self._io_error:
+            raise HighHelperError(self._io_error)
         data = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
         if len(data) > _LIMIT:
             raise HighHelperError("message_too_large")
         with self.write_lock:
+            if self._io_error:
+                raise HighHelperError(self._io_error)
             overlapped = pywintypes.OVERLAPPED()
             event = win32event.CreateEvent(None, True, False, None)
             overlapped.hEvent = event
+            deferred = False
             try:
                 win32file.WriteFile(self.handle, data, overlapped)
-                if self._finish(overlapped, 0.5) != len(data):
+                if self._finish(overlapped, 0.5, event=event, buffer=data) != len(data):
                     raise HighHelperError("pipe_disconnected")
+            except _DeferredPipeIO as error:
+                deferred = True
+                if error.interruption is not None:
+                    raise error.interruption from None
+                raise
             finally:
-                event.Close()
+                if not deferred:
+                    event.Close()
 
 
 def _unique_pairs(pairs):
@@ -364,6 +541,8 @@ class ExternalDispatchLease:
         self.physical_input_expected = operation is None or operation["Kind"] in {"activate", "click", "text", "computer_input_plan"} or operation.get("Activate", False)
         self.business_write_expected = operation is None or operation["Kind"] in {"click", "text", "computer_input_plan"} or operation["Kind"] == "app_request" and operation["Plan"]["command"] not in {"observe", "read_text"}
         self.business_write_expected = self.business_write_expected or operation is not None and operation["Kind"] == "window_layout"
+        self.app_command = (operation["Plan"]["command"] if operation is not None
+                            and operation["Kind"] == "app_request" else None)
         self.layout_plan = None
         if operation is not None and operation["Kind"] == "window_layout":
             from .high_broker_types import WindowLayoutPlan
@@ -454,6 +633,8 @@ class ExternalDispatchLease:
                 or result["InputResult"] is not None and result["InputResult"].get("Binding") != self.binding.result_wire()):
             raise HighHelperError("input_result_binding_mismatch")
         layout = result.get("LayoutResult")
+        if result.get("AppLifecycle") is not None and self.app_command != "invoke":
+            raise HighHelperError("app_lifecycle_binding_mismatch")
         if self.layout_plan is not None:
             expected = self.layout_plan.wire()
             if (type(layout) is not dict or layout["Command"] != expected["command"]
@@ -496,33 +677,71 @@ def _validate_result(result, target):
              "SemanticBusinessDispatched", "AppResult", "RequestedEvents", "ReleaseEvents",
              "InputRelease", "ActivationRequested", "ActivationDiagnostics", "Foreground", "MutexReleased",
              "HighVerified", "BusinessVerified", "TimingsMs"}
-    if (type(result) is not dict or set(result) not in (names, names | {"LayoutResult"}) or result["Phase"] != "done" or result["Target"] != target
+    if (type(result) is not dict or not names <= set(result)
+            or set(result) - names - {"LayoutResult", "PointerEvents", "AppLifecycle", "KeyboardReleaseEvents", "ForegroundRecoveries", "PrivacyDiagnostics", "PointerPlanningFailure"}
+            or result["Phase"] != "done" or result["Target"] != target
             or result["InputRelease"] not in {"released", "release_pending", "unknown"}
             or result["State"] not in {"rejected", "interrupted", "bound", "activated", "dispatched_unverified"}
             or result["BusinessVerified"] is not False):
         raise HighHelperError("result_rejected")
+    if result.get("PrivacyDiagnostics") is not None:
+        from .privacy_diagnostics import scan_diagnostics
+        if scan_diagnostics(result['PrivacyDiagnostics']) != result['PrivacyDiagnostics']:
+            raise HighHelperError('privacy_diagnostics_rejected')
     for name in ("SentEvents", "ActivationEvents", "BusinessEvents", "ImeEvents", "RequestedEvents", "ReleaseEvents"):
-        if type(result[name]) is not int or not 0 <= result[name] <= 16400:
+        if type(result[name]) is not int or not 0 <= result[name] <= 17000:
+            raise HighHelperError("result_rejected")
+    if type(result.get("PointerEvents", 0)) is not int or not 0 <= result.get("PointerEvents", 0) <= 16400:
+        raise HighHelperError("result_rejected")
+    for name, maximum in (("KeyboardReleaseEvents", 494), ("ForegroundRecoveries", 1)):
+        if type(result.get(name, 0)) is not int or not 0 <= result.get(name, 0) <= maximum:
             raise HighHelperError("result_rejected")
     for name in ("ActivationRequested", "Foreground", "MutexReleased", "HighVerified", "RequiresNewObservation", "BusinessAttempted", "NativeCountKnown"):
         if type(result[name]) is not bool:
             raise HighHelperError("result_rejected")
-    if (result["SentEvents"] != result["ActivationEvents"] + result["BusinessEvents"] + result["ImeEvents"]
+    if (result["SentEvents"] != result["ActivationEvents"] + result["BusinessEvents"] + result["ImeEvents"] + result.get("PointerEvents", 0) + result.get("KeyboardReleaseEvents", 0)
             or result["SentEvents"] > result["RequestedEvents"]
             or not result["NativeCountKnown"] and result["InputRelease"] == "released"):
         raise HighHelperError("result_rejected")
-    if type(result["ActivationDiagnostics"]) is not list or len(result["ActivationDiagnostics"]) > 4:
+    if type(result["ActivationDiagnostics"]) is not list or len(result["ActivationDiagnostics"]) > 4 * (1 + result.get("ForegroundRecoveries", 0)):
         raise HighHelperError("result_rejected")
     import math
     if (type(result["TimingsMs"]) is not dict
-            or set(result["TimingsMs"]) - {"queue_wait", "activation", "dispatch", "prepare_ready", "wait_go", "execute", "cleanup", "total"}
+            or set(result["TimingsMs"]) - {"queue_wait", "activation", "dispatch", "prepare_ready", "wait_go", "execute", "cleanup", "total",
+                                           "privacy_worker_validation", "privacy_scan", "privacy_query_wait", "pointer_approach", "pointer_planning",
+                                           "privacy_path", "write_gate", "final_preflight", "stop_check", "authority_check", "permission_read",
+                                           "target_check", "foreground_check", "geometry_check", "input_context_check", "desktop_check",
+                                           "receiver_check", "motion_wait"}
             or any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in result["TimingsMs"].values())):
         raise HighHelperError("result_rejected")
+    planning = result.get("PointerPlanningFailure")
+    if planning is not None:
+        if (type(planning) is not dict or set(planning) != {"Start", "End", "Stage", "Work", "ElapsedMs"}
+                or type(planning["Stage"]) is not str or planning["Stage"] not in {"geometry", "profile", "sampling", "unknown"}
+                or type(planning["Work"]) is not int or not 0 <= planning["Work"] <= 1000000
+                or type(planning["ElapsedMs"]) not in (int, float)
+                or not math.isfinite(planning["ElapsedMs"]) or planning["ElapsedMs"] < 0
+                or any(type(planning[k]) is not list or len(planning[k]) != 2
+                       or any(type(n) is not int or not -(2**31) <= n < 2**31 for n in planning[k])
+                       for k in ("Start", "End"))):
+            raise HighHelperError("result_rejected")
     for attempt in result["ActivationDiagnostics"]:
         if (type(attempt) is not dict or set(attempt) != {"Api", "Succeeded", "Winerror"}
                 or attempt["Api"] not in {"BringWindowToTop", "SetForegroundWindow"}
                 or type(attempt["Succeeded"]) is not bool or type(attempt["Winerror"]) is not int):
             raise HighHelperError("result_rejected")
+    lifecycle = result.get("AppLifecycle")
+    if lifecycle is not None:
+        ancestor = lifecycle.get("ContinuationTarget") if type(lifecycle) is dict else None
+        if (type(lifecycle) is not dict or set(lifecycle) != {"State", "ContinuationTarget"}
+                or lifecycle["State"] not in {"transient_target_closed", "transient_target_hidden"}
+                or type(ancestor) is not dict or set(ancestor) != {"Hwnd", "Pid", "Created", "WindowNonce"}
+                or any(type(ancestor[k]) is not int or ancestor[k] <= 0 for k in ancestor)
+                or ancestor["Hwnd"] == target["Hwnd"]
+                or any(ancestor[k] != target[k] for k in ("Pid", "Created"))
+                or not result["RequiresNewObservation"] or result["RequestBinding"] is None
+                or result["InputResult"] is not None or result.get("LayoutResult") is not None):
+            raise HighHelperError("app_lifecycle_rejected")
     progress = result["InputResult"]
     if result["SemanticBusinessDispatched"] is not None and type(result["SemanticBusinessDispatched"]) is not bool:
         raise HighHelperError("app_result_rejected")
@@ -537,16 +756,39 @@ def _validate_result(result, target):
                 or type(peer["ImageDigest"]) is not str or re.fullmatch(r"[a-f0-9]{64}", peer["ImageDigest"]) is None):
             raise HighHelperError("app_executor_rejected")
     if progress is not None:
-        if type(progress) is not dict or set(progress) != {"Binding", "BusinessStarted", "BusinessComplete", "AcceptedEvents",
-                "CompletedPlans", "CompletedSegments", "PartialSegment", "CleanupEvents", "NativeCountKnown"}:
+        required_progress = {"Binding", "BusinessStarted", "BusinessComplete", "AcceptedEvents",
+                "CompletedPlans", "CompletedSegments", "PartialSegment", "CleanupEvents", "NativeCountKnown"}
+        motion_progress = {"SkippedMotionSegments", "MotionClockRebases"}
+        timing_progress = {"PlannedPlans", "PlannedSegments", "FirstCompletedPlanMs", "LastCompletedPlanMs", "MaxInterPlanGapMs"}
+        if (type(progress) is not dict or not required_progress <= set(progress)
+                or set(progress) - required_progress - motion_progress - timing_progress):
             raise HighHelperError("input_result_rejected")
+        if set(progress) & motion_progress and not motion_progress <= set(progress):
+            raise HighHelperError("input_result_rejected")
+        if set(progress) & timing_progress:
+            if (not timing_progress <= set(progress)
+                    or any(type(progress[k]) is not int or not 0 <= progress[k] <= maximum
+                           for k, maximum in (("PlannedPlans", 8192), ("PlannedSegments", 3000 + 8192)))
+                    or progress["CompletedPlans"] > progress["PlannedPlans"]
+                    or progress["CompletedSegments"] > progress["PlannedSegments"]
+                    or any(progress[k] is not None and (type(progress[k]) not in (int, float)
+                           or not math.isfinite(progress[k]) or progress[k] < 0)
+                           for k in ("FirstCompletedPlanMs", "LastCompletedPlanMs", "MaxInterPlanGapMs"))
+                    or progress["MaxInterPlanGapMs"] is None
+                    or (progress["FirstCompletedPlanMs"] is None) != (progress["LastCompletedPlanMs"] is None)
+                    or progress["FirstCompletedPlanMs"] is not None and progress["FirstCompletedPlanMs"] > progress["LastCompletedPlanMs"]):
+                raise HighHelperError("input_result_rejected")
         if (progress["AcceptedEvents"] != (result["BusinessEvents"] if result["NativeCountKnown"] else None)
                 or progress["CleanupEvents"] != result["ReleaseEvents"] or progress["NativeCountKnown"] != result["NativeCountKnown"]):
             raise HighHelperError("input_result_rejected")
         if (progress["BusinessStarted"] is not None and type(progress["BusinessStarted"]) is not bool
                 or type(progress["BusinessComplete"]) is not bool
                 or any(type(progress[k]) is not int or not 0 <= progress[k] <= maximum
-                       for k, maximum in (("CompletedPlans", 131), ("CompletedSegments", 2096)))):
+                       # Each timed batch has at most duration_ms+1 segments;
+                       # native Parse caps summed duration at 3000ms and plans
+                       # at 8192. Zero-duration batches each have one segment.
+                       for k, maximum in (("CompletedPlans", 8192), ("CompletedSegments", 3000 + 8192),
+                           *((name, 3000 + 8192) for name in motion_progress if name in progress)))):
             raise HighHelperError("input_result_rejected")
 
     if "LayoutResult" in result:
@@ -654,7 +896,9 @@ def _validate_plan(target, operation, resources):
 def _foreground_required(operation):
     return operation.get("Kind") != "bind" and not (operation.get("Kind") == "app_request"
         and operation.get("Activate", False) is False and type(operation.get("Plan")) is dict
-        and operation["Plan"].get("command") in {"observe", "read_text"})
+        and (operation["Plan"].get("command") in {"observe", "read_text"} or
+            operation["Plan"].get("command") in {"set_value", "set_toggle", "select_item", "expand_collapse"}
+            and operation["Plan"].get("arguments", {}).get("execution_mode") == "must_background"))
 
 
 def assess_high_route(target: HighTarget, *, failure_code=None, foreground_integrity=None):
@@ -682,6 +926,14 @@ class BrokerStatus:
     facts: dict
 
     @property
+    def computer_run(self):
+        values = tuple(self.facts.get(name) for name in ("pid", "created", "version", "computer_stop_generation"))
+        if (any(type(values[i]) is not int or values[i] < (0 if i == 3 else 1) for i in (0, 1, 3))
+                or type(values[2]) is not str or not values[2]):
+            raise HighHelperError("computer_run_binding_required")
+        return values
+
+    @property
     def desktop_revision(self):
         value = self.facts.get("desktop_revision")
         if type(value) is not int or value <= 0:
@@ -693,7 +945,8 @@ def _installed_bundle():
     root = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "FlowerControl" / "HighHelper"
     try:
         active = json.loads((root / "active.json").read_bytes(), object_pairs_hook=_unique_pairs)
-        if type(active) is not dict or set(active) != {"schema", "version", "hashes"} or active["schema"] != 1:
+        if (type(active) is not dict or set(active) not in ({"schema", "version", "hashes"}, {"schema", "version", "hashes", "runtime_hashes"})
+                or active["schema"] != 1):
             raise HighHelperError("installation_rejected")
         import re
         if type(active["version"]) is not str or not re.fullmatch(r"[a-f0-9]{16,64}", active["version"]):
@@ -707,12 +960,45 @@ def _installed_bundle():
         for name, expected in active["hashes"].items():
             if Path(name).name != name or _digest(directory / name) != expected:
                 raise HighHelperError("installation_changed")
+        if "runtime_hashes" in active:
+            nested = active["runtime_hashes"]
+            if type(nested) is not dict or not 1 <= len(nested) <= 20000:
+                raise HighHelperError("installation_rejected")
+            folded = set()
+            for name, expected in nested.items():
+                if (type(name) is not str or not 1 <= len(name) <= 512 or "\\" in name or ":" in name
+                        or not name.startswith(("runtime/", "python-source/"))
+                        or any(part in {"", ".", ".."} or part.endswith((" ", ".")) for part in name.split("/"))
+                        or type(expected) is not str or not re.fullmatch(r"[a-f0-9]{64}", expected)
+                        or name.casefold() in folded):
+                    raise HighHelperError("installation_rejected")
+                folded.add(name.casefold())
+            manifest_path = directory / "runtime-inventory.json"
+            if ("runtime-inventory.json" not in active["hashes"] or manifest_path.stat().st_size > 4_000_000):
+                raise HighHelperError("installation_rejected")
+            manifest = json.loads(manifest_path.read_bytes(), object_pairs_hook=_unique_pairs)
+            if (type(manifest) is not dict or set(manifest) != {"schema", "files", "dependency_inventory_sha256", "downloads", "data_migrated"}
+                    or manifest["schema"] != 1 or manifest["files"] != nested
+                    or manifest["downloads"] is not False or manifest["data_migrated"] is not False
+                    or type(manifest["dependency_inventory_sha256"]) is not str
+                    or not re.fullmatch(r"[a-f0-9]{64}", manifest["dependency_inventory_sha256"])):
+                raise HighHelperError("installation_changed")
+            # Nested immutable bytes are checked once by the installer and its
+            # protected version ACL. Per-call verification pins this manifest,
+            # without repeatedly hashing the full Python dependency runtime.
         return bundle, active["version"]
     except (OSError, KeyError, ValueError, TypeError):
         raise HighHelperError("broker_not_installed") from None
 
 
 class HighHelperClient:
+    ordinary = False
+    require_resident = False
+    def dsh_message_context(self, chat):
+        """Read High's actual registered message identity; never register a source."""
+        with self.open_session("dsh-source-context") as session:
+            return session.dsh_message_context(chat)
+
     def __init__(self, bundle: HelperBundle | None = None, *, medium_fixture=False, fixture_descriptor=None,
                  channel="flower-computer"):
         if type(medium_fixture) is not bool or channel not in {"flower-web", "flower-app", "flower-computer"}:
@@ -725,7 +1011,7 @@ class HighHelperClient:
     def open_session(self, task_id: str):
         return HighHelperSession(self, task_id)
 
-    def probe_status(self):
+    def probe_status(self, *, route_error=None):
         """Read only the installed bundle and an existing admitted broker."""
         result = dict(state="unknown", installed=None, installation_present=None, installed_version=None,
                       running=None, connected=False, paused=None, high_token_verified=None,
@@ -741,14 +1027,47 @@ class HighHelperClient:
         except OSError:
             return {**result, "reason": "installation_status_unavailable"}
         session = None
+        stage = "bundle"
+        close_failure = None
+
+        def failure(error, failed_stage):
+            # Exception text can contain paths, JSON or private state. Return
+            # only bounded identifiers and native integer codes.
+            name = type(error).__name__
+            diagnostic = {"stage": failed_stage,
+                          "exception_type": name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) else "Exception"}
+            for key in ("winerror", "errno"):
+                value = getattr(error, key, None)
+                if type(value) is int:
+                    diagnostic[key] = value
+            return {**result, "reason": "broker_status_probe_failed", "probe_error": diagnostic}
+
+        def current_stage():
+            if stage == "start" and session is not None:
+                detail = getattr(session, "_start_stage", None)
+                if type(detail) is str and detail in {
+                    "start_process_identity", "start_bundle", "start_connect", "start_server_identity",
+                    "start_write_hello", "start_read_hello", "start_validate_hello", "start_validate_status",
+                }:
+                    return detail
+            return stage
+
         try:
             bundle, installed_version = _installed_bundle()
             result.update(installed=True, installed_version=installed_version, native_binary_hashes=dict(bundle.hashes))
+            if route_error is not None:
+                raise route_error
+            stage = "open_session"
             session = self.open_session("readonly-status-probe")  # Local connection label; never a StateStore task/grant.
-            session._start(connect_timeout=.15, hello_timeout=.35)
+            stage = "start"
+            session._start()
+            stage = "verify_peer"
             session._verify_peer()
+            stage = "write_status"
             session._pipe.write({"Phase": "status"})
-            reply = session._pipe.read(.35)
+            stage = "read_status"
+            reply = session._pipe.read(2)
+            stage = "validate_status"
             if type(reply) is not dict or set(reply) != {"Phase", "Status"} or reply["Phase"] != "status":
                 raise HighHelperError("broker_status_rejected")
             facts = reply["Status"]
@@ -757,27 +1076,33 @@ class HighHelperClient:
                     or any(type(facts.get(k)) is not int for k in ("pid", "created", "session_id"))
                     or facts.get("version") != installed_version or facts.get("pid") != session._helper["Pid"]
                     or facts.get("created") != session._helper["Created"] or facts.get("session_id") != session._helper["Session"]
-                    or facts["high_verified"] is not True or facts["ui_access"] is not False
-                    or session._helper["Integrity"] != 12288 or session._evidence.get("ProductionAdmitted") is not True
+                    or facts["high_verified"] is not (not self.ordinary) or facts["ui_access"] is not False
+                    or self.ordinary and facts.get("ordinary_verified") is not True
+                    or session._helper["Integrity"] != (8192 if self.ordinary else 12288) or session._evidence.get("ProductionAdmitted") is not True
                     or not _production_host_evidence(session._evidence)):
                 raise HighHelperError("broker_status_rejected")
             BrokerStatus(facts).desktop_revision
             available = not any(facts[k] for k in ("paused", "desktop_locked", "stopping", "release_fault"))
             reason = ("broker_stopping" if facts["stopping"] else "broker_release_fault" if facts["release_fault"] else
                       "desktop_locked" if facts["desktop_locked"] else "broker_paused" if facts["paused"] else None)
-            return {**result, "state": "available" if available else "paused" if facts["paused"] else "unavailable",
-                    "running": True, "connected": True, "paused": facts["paused"], "high_token_verified": True,
-                    "actual_integrity_rid": session._helper["Integrity"], "source_admitted": True,
-                    "high_control_available": available, "reason": reason, "status": dict(facts),
-                    "host_source": session._evidence["Source"]}
+            outcome = {**result, "state": "available" if available else "paused" if facts["paused"] else "unavailable",
+                       "running": True, "connected": True, "paused": facts["paused"], "high_token_verified": not self.ordinary,
+                       "ordinary_token_verified": self.ordinary, "executor_token_verified": True,
+                       "actual_integrity_rid": session._helper["Integrity"], "source_admitted": True,
+                       "high_control_available": available and not self.ordinary, "reason": reason, "status": dict(facts),
+                       "host_source": session._evidence["Source"]}
         except HighHelperError as error:
-            return {**result, "state": "not_connected" if result["installed"] is True else "installation_unverified",
-                    "reason": error.code}
-        except Exception:
-            return {**result, "reason": "broker_status_probe_failed"}
+            outcome = {**result, "state": "not_connected" if result["installed"] is True else "installation_unverified",
+                       "reason": error.code, "probe_stage": current_stage()}
+        except Exception as error:
+            outcome = failure(error, current_stage())
         finally:
             if session is not None:
-                session.close()
+                try:
+                    session.close()
+                except Exception as error:
+                    close_failure = failure(error, "close")
+        return close_failure if close_failure is not None else outcome
 
     def recover_release(self, store, owner, action_id):
         """Read actual terminal metadata, commit only release, then acknowledge.
@@ -791,7 +1116,18 @@ class HighHelperClient:
             message = dict(Phase="release_recovery", TaskId=expected[0], ActionId=expected[1],
                            ExecutorProcess=expected[2], LedgerIdentity=expected[3])
             session._pipe.write(message)
-            recovery = ReleaseRecovery(_SEAL, session, expected, session._pipe.read(1))
+            response = session._pipe.read(1)
+            absent = {**message, 'State': 'unknown', 'InputRelease': 'unknown',
+                'MutexReleased': False, 'SemanticExecutorExited': None, 'NativeCountKnown': False}
+            if (type(response) is dict and response.keys() == absent.keys()
+                    and all(type(response[key]) is type(value) and response[key] == value
+                            for key, value in absent.items())):
+                session._verify_peer()
+                # A retired/absent native record is not new release evidence.
+                # Only a caller that already has durable release proof may
+                # regard this as no remaining completion to acknowledge.
+                raise HighHelperError('release_recovery_record_missing')
+            recovery = ReleaseRecovery(_SEAL, session, expected, response)
             result = store.confirm_external_release(owner, action_id, recovery)
             session._pipe.write({**message, "Phase": "release_recovery_ack"})
             ack = session._pipe.read(1)
@@ -818,17 +1154,87 @@ class HighHelperClient:
                     and (result["SemanticExecutorExited"] is not False or result.get("PhysicalInputFree") is True))
 
     def execute(self, target, operation, *, before_go, stopped, task_id=None, chat_id=None,
-                resources=None, deadline_ms=3000):
+                resources=None, deadline_ms=3000, stop_signal=None):
         task_id = task_id if task_id is not None else chat_id
         with self.open_session(task_id) as session:
             result = session.execute(task_id, target, operation, before_go=before_go, stopped=stopped,
-                                     resources=resources, deadline_ms=deadline_ms)
+                                     resources=resources, deadline_ms=deadline_ms, stop_signal=stop_signal)
         result["helper_session_retained"] = False
         result.update(session.lifecycle)
         return result
 
 
+class OrdinaryHelperClient(HighHelperClient):
+    """Fixed installed Medium role. It never represents a High capability."""
+    ordinary = True
+
+
+class ActiveHelperClient(HighHelperClient):
+    """Select the existing role before dispatch, then pin that exact server.
+
+    Pipe availability is only a routing hint. Every returned session still
+    performs full production image, token, version and host-chain admission.
+    A failed hello/action never falls back or replays through the other role.
+    """
+    def _active_client(self):
+        parent, _ = _process(win32api.GetCurrentProcessId())
+        suffix = hashlib.sha256(f"{parent['User']}|{parent['Session']}".encode()).hexdigest()[:32]
+        def exists(prefix):
+            try:
+                win32pipe.WaitNamedPipe("\\\\.\\pipe\\" + prefix + suffix, 1)
+                return True
+            except (OSError, pywintypes.error) as error:
+                return getattr(error, 'winerror', error.args[0] if error.args else None) not in {2, 3}
+        present, ordinary_present = exists("Flower.HighBroker.v1."), exists("Flower.UserBroker.v1.")
+        if present and ordinary_present:
+            raise HighHelperError("executor_role_ambiguous")
+        if not present and not ordinary_present:
+            raise HighHelperError("executor_role_unavailable")
+        selected = (HighHelperClient if present else OrdinaryHelperClient)(channel=self.channel)
+        selected.require_resident = True
+        return selected
+
+    def open_session(self, task_id):
+        return self._active_client().open_session(task_id)
+
+    def probe_status(self):
+        try:
+            selected = self._active_client()
+        except HighHelperError as error:
+            # Keep the existing read-only installation diagnostics even when
+            # no role (or two roles) is present. This branch never opens a pipe.
+            return super().probe_status(route_error=error)
+        return selected.probe_status()
+
+    def dsh_message_context(self, chat):
+        # Administrator/UAC message binding remains a true High-only route.
+        return HighHelperClient(channel=self.channel).dsh_message_context(chat)
+
+
 class HighHelperSession:
+    def dsh_message_context(self, chat):
+        if type(chat) is not str or not 1 <= len(chat) <= 256 or chat.strip() != chat or any(ord(c) < 32 for c in chat):
+            raise HighHelperError("dsh_chat_identity_missing")
+        if not self._lock.acquire(blocking=False):
+            raise HighHelperError("helper_session_busy")
+        try:
+            self._start(); self._verify_peer()
+            self._pipe.write({"Phase": "dsh_context", "ConnectionId": self._connection_id, "SessionId": chat})
+            reply = self._pipe.read(15)
+            self._verify_peer()
+            if type(reply) is not dict or reply.get("Phase") != "dsh_context":
+                raise HighHelperError("dsh_source_context_unavailable")
+            session_hash, turn = reply.get("SessionHash"), reply.get("TurnId")
+            self._uac_source_context(session_hash, turn)
+            expected = hashlib.sha256(b"flower-session-v1\0dsh-desktop\0" + chat.encode("utf8")).hexdigest()
+            if session_hash != expected:
+                raise HighHelperError("dsh_source_context_rejected")
+            return {"session_hash": session_hash, "turn_id": turn}
+        except BaseException:
+            self._close_locked(); raise
+        finally:
+            self._lock.release()
+
     """One task's connection. Closing it never closes the shared executor."""
     def __init__(self, client, task_id):
         import re
@@ -841,6 +1247,7 @@ class HighHelperSession:
         self._parent = self._helper = None
         self._connection_id, self._version, self._evidence = None, None, None
         self._connect_timings = {}
+        self._start_stage = None
         self.lifecycle = {"helper_exited": None, "helper_exit_reason": None, "connection_closed": False}
 
     def __enter__(self):
@@ -856,6 +1263,7 @@ class HighHelperSession:
         if self._closed:
             raise HighHelperError("helper_session_closed")
         clock = time.monotonic()
+        self._start_stage = "start_process_identity"
         parent, _ = _process(win32api.GetCurrentProcessId(), digest_cache=self._identity_cache)
         if parent["Integrity"] not in {8192, 12288}:
             raise HighHelperError("integrity_route_rejected")
@@ -872,25 +1280,36 @@ class HighHelperSession:
             self.client.bundle.verify()
             self._version, pipe_name = descriptor["Version"], descriptor["FixturePipe"]
         else:
+            self._start_stage = "start_bundle"
             self.client.bundle, self._version = _installed_bundle()
-            pipe_name = "Flower.HighBroker.v1." + hashlib.sha256(f"{parent['User']}|{parent['Session']}".encode()).hexdigest()[:32]
+            pipe_name = ("Flower.UserBroker.v1." if self.client.ordinary else "Flower.HighBroker.v1.") + hashlib.sha256(f"{parent['User']}|{parent['Session']}".encode()).hexdigest()[:32]
         self._parent = parent
         self._pipe = _Pipe(pipe_name)
-        if connect_timeout == 1.5:
-            self._pipe.connect()
-        else:
-            self._pipe.connect(timeout=connect_timeout)
+        self._start_stage = "start_connect"
+        try:
+            if connect_timeout == 1.5:
+                self._pipe.connect()
+            else:
+                self._pipe.connect(timeout=connect_timeout)
+        except HighHelperError as error:
+            if self.client.require_resident and error.code == "broker_unavailable":
+                raise HighHelperError("executor_role_unavailable") from None
+            raise
         self._connect_timings["connect"] = (time.monotonic() - clock) * 1000
         clock = time.monotonic()
+        self._start_stage = "start_server_identity"
         pid = win32pipe.GetNamedPipeServerProcessId(self._pipe.handle)
         helper, _ = _process(pid, digest_cache=self._identity_cache,
                              expected_image=str(self.client.bundle.directory / _BUNDLE_NAMES[0]))
         if (helper["User"] != parent["User"] or helper["Session"] != parent["Session"]
-                or helper["Integrity"] != (8192 if self.client.medium_fixture else 12288)
+                or helper["Integrity"] != (8192 if self.client.medium_fixture or self.client.ordinary else 12288)
                 or helper["ImageDigest"] != dict(self.client.bundle.hashes)[_BUNDLE_NAMES[0]]):
             raise HighHelperError("helper_identity_mismatch")
+        self._start_stage = "start_write_hello"
         self._pipe.write({"Phase": "hello", "Parent": parent, "Channel": self.client.channel})
+        self._start_stage = "start_read_hello"
         hello = self._pipe.read(hello_timeout)
+        self._start_stage = "start_validate_hello"
         import re
         if (type(hello) is not dict or set(hello) != {"Phase", "Helper", "AssemblyDigest", "Version", "ConnectionId", "PeerEvidence", "Status"}
                 or hello["Phase"] != "hello" or hello["Helper"] != helper or hello["Version"] != self._version
@@ -906,7 +1325,11 @@ class HighHelperSession:
                 or evidence["ProductionAdmitted"] is not (not self.client.medium_fixture)):
             raise HighHelperError("peer_evidence_rejected")
         self._helper, self._connection_id, self._evidence = helper, hello["ConnectionId"], evidence
+        self._start_stage = "start_validate_status"
         BrokerStatus(hello["Status"]).desktop_revision
+        if self.client.ordinary and (hello["Status"].get("ordinary_verified") is not True
+                or hello["Status"].get("high_verified") is not False):
+            raise HighHelperError("ordinary_role_unverified")
         self._connect_timings["peer_auth"] = (time.monotonic() - clock) * 1000
         return True
 
@@ -915,6 +1338,19 @@ class HighHelperSession:
                 or _process(self._helper["Pid"], digest_cache=self._identity_cache,
                             expected_image=str(self.client.bundle.directory / _BUNDLE_NAMES[0]))[0] != self._helper):
             raise HighHelperError("helper_identity_changed")
+
+    def computer_run_status(self):
+        with self._lock:
+            try:
+                self._start()
+                self._pipe.write({"Phase": "computer_run_status"})
+                result = self._pipe.read(2)
+                if type(result) is not dict or set(result) != {"Phase", "Run"} or result["Phase"] != "computer_run_status":
+                    raise HighHelperError("broker_status_rejected")
+                return BrokerStatus(result["Run"]).computer_run
+            except BaseException:
+                self._close_locked()
+                raise
 
     def status(self):
         if not self._lock.acquire(blocking=False):
@@ -934,6 +1370,315 @@ class HighHelperSession:
         finally:
             self._lock.release()
 
+    def uac_permission(self, decision, *, session_hash, turn_id, message_ref=None,
+                       scope_kind=None, program_paths=None):
+        """Record an origin-bound semantic decision, never a global mode change."""
+        if decision not in {"status", "allow", "keep", "acknowledge", "deny", "revoke"}:
+            raise HighHelperError("uac_permission_decision_rejected")
+        self._uac_source_context(session_hash, turn_id)
+        if not self._lock.acquire(blocking=False): raise HighHelperError("helper_session_busy")
+        try:
+            self._start(); self._verify_peer()
+            self._pipe.write({"Phase": "uac_permission", "TaskId": self.chat_id, "ConnectionId": self._connection_id,
+                "SessionHash": session_hash, "TurnId": turn_id, "Decision": decision, "MessageRef": message_ref,
+                "ScopeKind": scope_kind, "ProgramPaths": program_paths})
+            reply = self._pipe.read(8)
+            self._verify_peer()
+            if type(reply) is dict and reply.get("Phase") == "error" and type(reply.get("Reason")) is str:
+                return {**reply, "state": "rejected" if reply.get("PermissionWriteAttempted") is False else "outcome_uncertain",
+                        "reason": reply["Reason"], "InputDispatched": False, "input_replay": False,
+                        "next_action": "Inspect the exact reason; read permission status before repeating an uncertain decision."}
+            if type(reply) is not dict or reply.get("Phase") != "uac_permission":
+                raise HighHelperError("uac_permission_response_rejected")
+            return reply
+        except BaseException:
+            self._close_locked(); raise
+        finally: self._lock.release()
+
+    @staticmethod
+    def _uac_source_context(session_hash, turn_id):
+        if (type(session_hash) is not str or re.fullmatch("[a-f0-9]{64}", session_hash) is None
+                or type(turn_id) is not str or not 1 <= len(turn_id) <= 256
+                or turn_id != turn_id.strip() or any(ord(c) < 32 for c in turn_id)):
+            raise HighHelperError("uac_source_context_rejected")
+
+    def uac(self, command, *, prompt_ref=None, stopped=None, preflight=None, session_hash=None, turn_id=None, audit_thread=None):
+        """Fixed UAC request; mode/grant/source/elevation are not caller fields.
+
+        The SYSTEM actor uses the same foreground resource namespace as normal
+        input. Retain the Medium-created object without holding it during IPC.
+        """
+        if command not in {"status", "reserve", "release", "observe", "auto", "cancel", "accept"}:
+            raise HighHelperError("uac_command_rejected")
+        if session_hash is not None or turn_id is not None: self._uac_source_context(session_hash, turn_id)
+        if prompt_ref is not None and (type(prompt_ref) is not str or re.fullmatch("[a-f0-9]{64}", prompt_ref) is None):
+            raise HighHelperError("uac_prompt_ref_rejected")
+        if not self._lock.acquire(blocking=False):
+            raise HighHelperError("helper_session_busy")
+        native_mutex = None
+        watcher, watcher_done = None, threading.Event()
+        try:
+            self._start()
+            import win32event
+            from flower_control.control.native import FOREGROUND_INPUT_RESOURCE
+            name = "Local\\FlowerControl.Resource.v1." + hashlib.sha256(
+                FOREGROUND_INPUT_RESOURCE.encode()).hexdigest()
+            native_mutex = win32event.CreateMutex(None, False, name)
+            self._verify_peer()
+            self._pipe.write({"Phase": "uac", "TaskId": self.chat_id,
+                              "Command": command, "ConnectionId": self._connection_id, "PromptRef": prompt_ref,
+                              "SessionHash": session_hash, "TurnId": turn_id, "Thread": audit_thread})
+            if callable(stopped) and command in {"observe", "auto", "cancel", "accept"}:
+                def watch():
+                    while not watcher_done.wait(.02):
+                        try:
+                            if not stopped():
+                                continue
+                            self._pipe.write({"Phase": "uac_cancel", "TaskId": self.chat_id,
+                                              "ConnectionId": self._connection_id})
+                        except BaseException:
+                            try: self._pipe.close()
+                            except BaseException: pass
+                        return
+                watcher = threading.Thread(target=watch, name="flower-uac-task-cancel", daemon=True)
+                watcher.start()
+            result = self._pipe.read(65 if command != "status" else 3)
+            if type(result) is dict and result.get("Phase") == "uac_preflight":
+                self._verify_peer()
+                if (result.get("TaskId") != self.chat_id or result.get("ConnectionId") != self._connection_id
+                        or type(result.get("Nonce")) is not str or re.fullmatch("[a-f0-9]{32}", result["Nonce"]) is None):
+                    raise HighHelperError("uac_preflight_binding_rejected")
+                if not callable(preflight) or (callable(stopped) and stopped()):
+                    raise HighHelperError("uac_caller_preflight_unavailable")
+                preflight()  # SYSTEM already holds the shared foreground mutex.
+                self._pipe.write({"Phase": "uac_preflight_ready", "TaskId": self.chat_id,
+                                  "ConnectionId": self._connection_id, "Nonce": result["Nonce"]})
+                result = self._pipe.read(65)
+            self._verify_peer()
+            if type(result) is not dict or result.get("Phase") != "uac":
+                raise HighHelperError("uac_response_rejected")
+            return result
+        except BaseException:
+            self._close_locked()
+            raise
+        finally:
+            watcher_done.set()
+            if watcher is not None:
+                watcher.join(1)
+            if native_mutex is not None:
+                native_mutex.Close()
+            self._lock.release()
+
+    def work_authority(self, command, *, work_id, goal="", constraints="", expected_revision=0,
+                       audit_thread=None, stopped=None):
+        source_status = command == "source_status"
+        if (command not in {"prepare", "status", "amend", "revoke", "close", "recover", "source_status"}
+                or (not source_status and (type(work_id) is not str or re.fullmatch("[a-f0-9]{32}", work_id) is None))
+                or (source_status and (work_id is not None or goal != "" or constraints != "" or expected_revision != 0))):
+            raise HighHelperError("work_authority_request_invalid")
+        if not isinstance(audit_thread, dict): raise HighHelperError("work_authority_native_thread_required")
+        if not self._lock.acquire(blocking=False): raise HighHelperError("helper_session_busy")
+        done = threading.Event()
+        watcher = None
+        try:
+            self._start(); self._verify_peer()
+            from flower_control.authorization.dsh_source import native_source_fields
+            self._pipe.write({"Phase": "work_authority", "Command": command, "TaskId": self.chat_id,
+                "ConnectionId": self._connection_id, "WorkId": "" if source_status else work_id, "Thread": audit_thread,
+                "Goal": goal, "Constraints": constraints, "ExpectedRevision": expected_revision,
+                **native_source_fields()})
+            if callable(stopped):
+                def watch():
+                    while not done.wait(.1):
+                        try:
+                            if not stopped(): continue
+                            self._pipe.close()
+                        except BaseException: pass
+                        return
+                watcher = threading.Thread(target=watch, name="flower-work-authority-cancel", daemon=True); watcher.start()
+            result = self._pipe.read(135 if command in {"prepare", "amend"} else 15)
+            self._verify_peer()
+            if type(result) is not dict or result.get("Phase") not in {"work_authority", "error"}:
+                raise HighHelperError("work_authority_response_invalid")
+            if result.get("Phase") == "work_authority" and source_status:
+                if (result.get("State") != "source_status" or result.get("ReadOnly") is not True
+                        or result.get("AuthorityCreated") is not False):
+                    raise HighHelperError("work_authority_response_mismatch")
+            elif result.get("Phase") == "work_authority":
+                record = result.get("Authority", result)
+                if type(record) is not dict or record.get("WorkId") != work_id: raise HighHelperError("work_authority_response_mismatch")
+            return result
+        except BaseException:
+            self._close_locked(); raise
+        finally:
+            done.set()
+            if watcher is not None: watcher.join(1)
+            self._lock.release()
+
+    def program_launch(self, command, *, program_ref=None, request_id=None, program_path=None, arguments=None,
+                       preflight=None, stopped=None, audit_thread=None, work_id=None, execution=None, new_run=None):
+        """Launch one verified program, once.
+
+        A caller-supplied request ID remains the recovery key after IPC loss;
+        this method never creates another ID or retries the launch.
+        program_path is only honoured in the semantic tier, where the user
+        granted administrator execution as a whole; the local helper still
+        recomputes the file identity and applies every blacklist.
+        """
+        if command not in {"list", "launch", "status", "cancel"}:
+            raise HighHelperError("program_launch_command_rejected")
+        if new_run is not None:
+            if (command != "launch" or execution is not None or program_path is not None
+                    or type(new_run) is not dict or set(new_run) != {"exit_reference", "evidence"}
+                    or type(new_run["exit_reference"]) is not str
+                    or re.fullmatch("[a-f0-9]{64}", new_run["exit_reference"]) is None
+                    or type(new_run["evidence"]) is not str or not new_run["evidence"].strip()
+                    or len(new_run["evidence"]) > 2048
+                    or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in new_run["evidence"])):
+                raise HighHelperError("program_launch_new_run_invalid")
+        if command == "list":
+            if program_ref is not None or request_id is not None:
+                raise HighHelperError("program_launch_binding_rejected")
+        elif program_path is not None:
+            import ntpath
+            if (type(program_path) is not str or not ntpath.isabs(program_path)
+                    or program_path.startswith("\\\\") or "*" in program_path or "?" in program_path
+                    or any(ord(c) < 32 for c in program_path)
+                    or type(arguments) is not str or len(arguments) > 4096
+                    or any(ord(c) < 32 or 127 <= ord(c) <= 159 or c in "*?" for c in arguments)):
+                raise HighHelperError("program_launch_binding_rejected")
+        elif (type(program_ref) is not str or re.fullmatch("[a-f0-9]{64}", program_ref) is None
+                or type(request_id) is not str or re.fullmatch("[a-zA-Z0-9_-]{1,128}", request_id) is None):
+            raise HighHelperError("program_launch_binding_rejected")
+        if command != "list" and (type(request_id) is not str or re.fullmatch("[a-zA-Z0-9_-]{1,128}", request_id) is None
+                or type(program_ref) is not str or re.fullmatch("[a-f0-9]{64}", program_ref) is None):
+            raise HighHelperError("program_launch_binding_rejected")
+        if command == "launch":
+            if not callable(preflight) or not callable(stopped):
+                raise HighHelperError("program_launch_caller_preflight_unavailable")
+            preflight()
+            if stopped(): raise HighHelperError("global_write_stopped")
+        if not self._lock.acquire(blocking=False): raise HighHelperError("helper_session_busy")
+        watcher, watcher_done = None, threading.Event()
+        native_mutex = None
+        try:
+            self._start(); self._verify_peer()
+            if command == "launch":
+                # High only opens this shared object. Keep its Medium-created
+                # lifetime alive, without holding the input resource over IPC.
+                import win32event
+                from flower_control.control.native import FOREGROUND_INPUT_RESOURCE
+                name = "Local\\FlowerControl.Resource.v1." + hashlib.sha256(
+                    FOREGROUND_INPUT_RESOURCE.encode()).hexdigest()
+                native_mutex = win32event.CreateMutex(None, False, name)
+            from flower_control.authorization.dsh_source import native_source_fields
+            request_fields = {"Phase": "program_launch", "Command": command, "TaskId": self.chat_id,
+                "ConnectionId": self._connection_id, "ProgramRef": program_ref or "", "RequestId": request_id or ""}
+            request_fields.update(native_source_fields())
+            if audit_thread is not None:
+                request_fields["Thread"] = audit_thread
+            if work_id is not None:
+                request_fields["WorkId"] = work_id
+            if execution is not None:
+                request_fields["Execution"] = execution
+            if new_run is not None:
+                request_fields["NewRun"] = {"ExitReference": new_run["exit_reference"], "Evidence": new_run["evidence"]}
+            if program_path is not None:
+                request_fields["ProgramPath"] = program_path
+                request_fields["Arguments"] = arguments or ""
+            self._pipe.write(request_fields)
+            if command == "launch":
+                def watch():
+                    while not watcher_done.wait(.02):
+                        try:
+                            if not stopped(): continue
+                            self._pipe.write({"Phase": "program_launch_cancel", "TaskId": self.chat_id,
+                                              "ConnectionId": self._connection_id,
+                                              "ProgramRef": program_ref, "RequestId": request_id})
+                        except BaseException:
+                            try: self._pipe.close()
+                            except BaseException: pass
+                        return
+                watcher = threading.Thread(target=watch, name="flower-program-launch-cancel", daemon=True)
+                watcher.start()
+            result = self._pipe.read(65 if command == "launch" else 8)
+            while type(result) is dict and result.get("Phase") == "program_launch_preflight":
+                self._verify_peer()
+                if (command != "launch" or result.get("TaskId") != self.chat_id
+                        or result.get("ConnectionId") != self._connection_id
+                        or result.get("ProgramRef") != program_ref or result.get("RequestId") != request_id
+                        or type(result.get("Nonce")) is not str
+                        or re.fullmatch("[a-f0-9]{32}", result["Nonce"]) is None):
+                    raise HighHelperError("program_launch_preflight_binding_rejected")
+                preflight()
+                if stopped(): raise HighHelperError("global_write_stopped")
+                self._pipe.write({"Phase": "program_launch_preflight_ready", "TaskId": self.chat_id,
+                                  "ConnectionId": self._connection_id, "Nonce": result["Nonce"],
+                                  "ProgramRef": program_ref, "RequestId": request_id})
+                result = self._pipe.read(65)
+            self._verify_peer()
+            expected = {"Phase": "program_launch", "Command": command, "TaskId": self.chat_id,
+                        "ConnectionId": self._connection_id, "ProgramRef": program_ref or "", "RequestId": request_id or ""}
+            if program_path is not None:
+                expected["ProgramPath"] = program_path
+                expected["Arguments"] = arguments or ""
+            if (type(result) is not dict or any(result.get(key) != value for key, value in expected.items())
+                    or result.get("State") not in {"listed", "created", "exited", "handoff_unknown", "unknown", "rejected", "cancelled"}
+                    or "Dispatched" not in result
+                    or (result["Dispatched"] is not None and type(result["Dispatched"]) is not bool)):
+                raise HighHelperError("program_launch_response_rejected")
+            disposition = {"listed": (False,), "rejected": (False,), "cancelled": (False,), "created": (True,),
+                           "exited": (True,), "handoff_unknown": (True,), "unknown": (None, True)}
+            if not any(result["Dispatched"] is item for item in disposition[result["State"]]):
+                raise HighHelperError("program_launch_response_rejected")
+            return result
+        except BaseException:
+            self._close_locked(); raise
+        finally:
+            watcher_done.set()
+            if watcher is not None: watcher.join(1)
+            if native_mutex is not None: native_mutex.Close()
+            self._lock.release()
+
+    def password_metadata(self, target, *, preflight, stopped):
+        """Read-only companion to a capture; never acquires an input permit."""
+        if type(target) is not HighTarget or target.nonce <= 0:
+            raise HighHelperError("privacy_metadata_binding_rejected")
+        if not self._lock.acquire(blocking=False):
+            raise HighHelperError("helper_session_busy")
+        try:
+            preflight()
+            if stopped(): raise HighHelperError("privacy_scan_cancelled")
+            self._start()
+            self._pipe.write({"Phase": "password_metadata", "TaskId": self.chat_id,
+                "ConnectionId": self._connection_id, "DesktopRevision": target.broker_revision, "Target": target.wire()})
+            reply = self._pipe.read(3.5)
+            self._verify_peer(); preflight()
+            if stopped(): raise HighHelperError("privacy_scan_cancelled")
+            if type(reply) is dict and reply.get('Phase') == 'error':
+                from .privacy_diagnostics import scan_diagnostics
+                diagnostic = scan_diagnostics(reply.get('PrivacyDiagnostics'))
+                reason = reply.get('Reason')
+                code = reason if type(reason) is str and re.fullmatch(r'[a-z][a-z0-9_]{0,127}', reason) else 'privacy_password_scan_incomplete'
+                raise HighHelperError(code,
+                    details={'privacy_diagnostics': diagnostic} if diagnostic else None)
+            if (type(reply) is not dict or set(reply) != {"Phase", "TaskId", "ConnectionId", "DesktopRevision", "Target", "Metadata", "Dispatched"}
+                or reply["Phase"] != "password_metadata" or reply["TaskId"] != self.chat_id
+                or reply["ConnectionId"] != self._connection_id or reply["DesktopRevision"] != target.broker_revision
+                or reply["Dispatched"] is not False
+                or reply["Target"] != {"Hwnd": target.hwnd, "Pid": target.facts["Pid"], "Created": target.facts["Created"], "WindowNonce": target.nonce}):
+                raise HighHelperError("privacy_password_scan_incomplete")
+            metadata = reply["Metadata"]
+            if type(metadata) is not dict or set(metadata) != {"Rectangles", "FocusRectangle", "FocusPassword"}:
+                raise HighHelperError("privacy_password_scan_incomplete")
+            return {"state": "observed", "rectangles": metadata["Rectangles"],
+                "focus_rectangle": metadata["FocusRectangle"], "focus_password": metadata["FocusPassword"],
+                "coverage": "uia_password_property", "dispatched": False}
+        except BaseException:
+            self._close_locked(); raise
+        finally:
+            self._lock.release()
+
     def execute_input(self, task_id, target, plan, **options):
         from .high_broker_types import ComputerInputPlan
         if type(plan) is not ComputerInputPlan:
@@ -946,26 +1691,37 @@ class HighHelperSession:
             raise HighHelperError("app_request_rejected")
         return self.execute(task_id, target, request.operation(activate=activate, restore_minimized=restore_minimized), **options)
 
-    def execute_window_layout(self, task_id, target, plan, *, before_go, stopped, resources=None, deadline_ms=3000):
+    def execute_window_layout(self, task_id, target, plan, *, before_go, stopped, resources=None, deadline_ms=3000, stop_signal=None, computer_stop_generation=None):
         from .high_broker_types import WindowLayoutPlan
         if type(plan) is not WindowLayoutPlan:
             plan = WindowLayoutPlan.from_wire(plan)
         return self.execute(task_id, target, plan.operation(), before_go=before_go, stopped=stopped,
-                            resources=resources, deadline_ms=deadline_ms)
+                            resources=resources, deadline_ms=deadline_ms, stop_signal=stop_signal, computer_stop_generation=computer_stop_generation)
 
-    def execute(self, task_id, target, operation, *, before_go, stopped, resources=None, deadline_ms=3000):
+    def execute(self, task_id, target, operation, *, before_go, stopped, resources=None, deadline_ms=3000, stop_signal=None, computer_stop_generation=None):
         if task_id != self.chat_id:
             raise HighHelperError("chat_binding_mismatch")
-        if type(deadline_ms) is not int or not 100 <= deadline_ms <= 5000:
+        if type(deadline_ms) is not int or not 100 <= deadline_ms <= 30000:
             raise HighHelperError("deadline_rejected")
         if not callable(before_go) or not callable(stopped):
             raise HighHelperError("dispatch_callback_required")
+        if stop_signal is not None and not isinstance(stop_signal, threading.Event):
+            raise HighHelperError("stop_signal_rejected")
+        if computer_stop_generation is not None and (type(computer_stop_generation) is not int or computer_stop_generation < 0):
+            raise HighHelperError("computer_run_binding_required")
         if type(target) is not HighTarget or type(operation) is not dict:
             raise HighHelperError("operation_rejected")
         resources = tuple(target.resources_for(operation) if resources is None else resources)
         # Snapshot caller-owned mutable values before entering the dispatch protocol.
         operation = json.loads(json.dumps(operation, ensure_ascii=True, allow_nan=False))
         _validate_plan(target, operation, resources)
+        try:
+            from .computer_work import operation_budget
+            maximum = operation_budget(operation)
+        except (ValueError, KeyError, TypeError, IndexError) as error:
+            raise HighHelperError(str(error) if isinstance(error, ValueError) else 'input_plan_rejected') from None
+        if deadline_ms > maximum:
+            raise HighHelperError('deadline_rejected')
         binding = None
         if operation["Kind"] in {"computer_input_plan", "app_request", "window_layout"}:
             from .high_broker_types import InputBinding
@@ -974,7 +1730,7 @@ class HighHelperSession:
                 raise HighHelperError("input_task_binding_mismatch")
         if target.broker_revision <= 0:
             raise HighHelperError("desktop_revision_required")
-        if target.facts["Integrity"] not in ({8192} if self.client.medium_fixture else {8192, 12288}):
+        if target.facts["Integrity"] not in ({8192} if self.client.medium_fixture or self.client.ordinary else {8192, 12288}):
             raise HighHelperError("integrity_route_rejected")
         if not self._lock.acquire(blocking=False):
             raise HighHelperError("helper_session_busy")
@@ -998,7 +1754,8 @@ class HighHelperSession:
                 phase, clock = "prepare_ready", time.monotonic()
                 pipe.write({"Phase": "prepare", "Parent": self._parent, "Target": target.wire(), "Operation": operation,
                             "Resources": list(resources), "DeadlineMs": deadline_ms, "TaskId": task_id,
-                            "ConnectionId": self._connection_id, "DesktopRevision": target.broker_revision})
+                            "ConnectionId": self._connection_id, "DesktopRevision": target.broker_revision,
+                            "ComputerStopGeneration": computer_stop_generation})
                 ready = pipe.read(min(3, deadline_ms / 1000 + .5))
                 if type(ready) is not dict:
                     raise HighHelperError("ready_rejected")
@@ -1059,15 +1816,6 @@ class HighHelperSession:
                     ack_attempted = True
                     signal("ack")
                     return True
-                def watch_stop():
-                    while not done.wait(.01):
-                        try:
-                            if stopped():
-                                signal("stop")
-                                return
-                        except BaseException:
-                            pipe.close()
-                            return
                 phase, authorize_at = "before_go", time.monotonic()
                 with before_go(lease):
                     lease.verify()
@@ -1075,12 +1823,15 @@ class HighHelperSession:
                         raise HighHelperError("external_dispatch_not_claimed")
                     timings["before_go"] = (time.monotonic() - authorize_at) * 1000
                     phase, clock = "go_done", time.monotonic()
-                    if stopped():
+                    initial_stop = stopped() or stop_signal is not None and stop_signal.is_set()
+                    if initial_stop:
                         signal("stop")
                     else:
                         lease.go_sent = True
                         signal("go")
-                    watcher = threading.Thread(target=watch_stop, daemon=True)
+                    from .request_stop import RequestStopSender
+                    watcher = RequestStopSender(done=done, stopped=stopped, signal=signal,
+                                                close=pipe.close, stop_signal=stop_signal, already_sent=initial_stop)
                     watcher.start()
                     try:
                         lease._accept(pipe.read(max(.001, lease.deadline - clock) + 1.5))
@@ -1117,6 +1868,8 @@ class HighHelperSession:
             if watcher is not None:
                 watcher.join(.6)
             if isinstance(error, HighHelperError):
+                if watcher is not None and watcher.failure is not None:
+                    error.details["stop_sender_failure"] = watcher.failure
                 error.details.update(phase=phase, **self.lifecycle, parent_timings_ms=timings)
             raise
         finally:

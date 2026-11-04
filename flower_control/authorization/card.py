@@ -79,7 +79,7 @@ class CardDescription:
             "允许目标：\n" + "\n".join(f"  • {item}" for item in self.targets),
             "允许操作：\n" + "\n".join(f"  • {item}" for item in self.actions),
             f"有效范围：{self.boundary}",
-            f"Jev 外联：{self.jev_status}",
+            f"决策 API 外联：{self.jev_status}",
         ))
 
 

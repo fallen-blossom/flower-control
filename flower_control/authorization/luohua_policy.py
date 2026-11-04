@@ -13,12 +13,12 @@ READ_SCOPE = EDIT_SCOPE = SUBMIT_SCOPE = PROFILE_SCOPE
 SCOPES = (PROFILE_SCOPE,)
 
 _READ = frozenset({"new_page", "list_pages", "observe", "read_text",
-                   "page_state", "page_diagnostics", "screenshot", "navigate",
+                   "page_state", "page_diagnostics", "screenshot", "record", "media_state", "navigate", "navigate_paused",
                    "editor_inspect", "editor_read", "back", "forward", "reload", "hover", "scroll",
                    "close_page", "trace", "dialog_state", "wait_condition", "wait_page",
                    "wait_navigation", "chooser_state", "chooser_cancel", "workflow_bind", "workflow_check"})
 _EDIT = frozenset({"fill", "select_option", "set_checked", "editor_replace", "drag", "upload",
-                   "chooser_upload"})
+                   "chooser_upload", "play_media", "pause_media"})
 _SUBMIT = frozenset({"click", "press", "terminal_input", "download", "dialog_action"})
 
 

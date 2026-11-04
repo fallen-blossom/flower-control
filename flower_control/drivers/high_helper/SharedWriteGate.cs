@@ -22,10 +22,17 @@ internal sealed class SharedWriteGate : IDisposable
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     internal record Status(bool Stopped, long Epoch, long ResumeAllEpoch);
 
-    internal SharedWriteGate(string? testNamespace = null)
+    internal SharedWriteGate(string? testNamespace = null, string? verifiedInteractiveSid = null)
     {
         using var identity = WindowsIdentity.GetCurrent();
         var sid = identity.User?.Value ?? throw new Boundary("write_gate_user_unavailable");
+        if (verifiedInteractiveSid is not null)
+        {
+            if (sid != "S-1-5-18" || testNamespace is not null)
+                throw new Boundary("write_gate_interactive_user_rejected");
+            UacSystemBootstrap.VerifyInteractiveUser(Native.Process(Environment.ProcessId).Identity.Session, verifiedInteractiveSid);
+            sid = verifiedInteractiveSid;
+        }
         var name = "Local\\FlowerControl.WriteGate.v1." + sid;
         if (testNamespace is not null)
         {
@@ -80,17 +87,33 @@ internal sealed class SharedWriteGate : IDisposable
         Marshal.WriteInt64(view, 24, 0);
     }
     internal Status Snapshot() => Locked(Read);
-    internal Status Stop() => Locked(() => {
+    // The caller orders its own state locks before this shared mutex. Keep the
+    // observed bytes stable through a bounded maintenance commit; no new input.
+    internal T WithStableStatus<T>(Func<Status, T> commit) => Locked(() => commit(Read()));
+    internal Status Stop(Action? persist = null, bool newStop = true) => Locked(() => {
         var old = Read();
-        if (!old.Stopped) Write(old with { Stopped = true, Epoch = old.Epoch + 1 });
+        // Close admission before durable work. A separate Stop invalidates even
+        // an already-stopped snapshot; retrying one event only ensures closure.
+        if (newStop || !old.Stopped) Write(old with { Stopped = true, Epoch = checked(old.Epoch + 1) });
+        persist?.Invoke();
         return Read();
     });
-    internal Status Resume(long? expectedEpoch = null)
+    internal Status Resume(long? expectedEpoch = null, Action? authorize = null)
     {
         long expected = expectedEpoch ?? Snapshot().Epoch;
         return Locked(() => {
             var old = Read();
             if (old.Epoch != expected) throw new Boundary("resume_state_changed");
+            // The protected CAS commits while all cooperative channels still
+            // see Stop. A rejected/failed CAS must not open the shared gate.
+            try { authorize?.Invoke(); }
+            catch
+            {
+                var current = Read();
+                if (!current.Stopped) Write(current with { Stopped = true, Epoch = checked(current.Epoch + 1) });
+                throw;
+            }
+            if (Read() != old) throw new Boundary("resume_state_changed");
             Write(old with { Stopped = false, ResumeAllEpoch = old.Epoch }); return Read();
         });
     }

@@ -4,6 +4,21 @@ namespace Flower.HighHelper;
 
 internal static class HostWindow
 {
+    private const uint OpenSettingsMessage = 0x8002;
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool PostMessageW(IntPtr hwnd, uint message, UIntPtr wp, IntPtr lp);
+    internal static void RequestSettings(BrokerState core)
+    {
+        // Only the authenticated local admin pipe calls this. The private UI
+        // message is not admitted through UIPI; no policy or Stop is changed.
+        if (!ReferenceEquals(state, core) || core.Shutdown.IsCancellationRequested || window == IntPtr.Zero
+            || !PostMessageW(window, OpenSettingsMessage, UIntPtr.Zero, IntPtr.Zero))
+            throw new Boundary("settings_window_unavailable");
+    }
+    [DllImport("user32.dll")] private static extern uint GetDoubleClickTime();
+    private static long lastTraySelect = long.MinValue;
+    internal sealed record CallbackFailure(uint Message, string Error, long Sequence);
+    private static CallbackFailure? callbackFailure;
+    internal static CallbackFailure? CallbackDiagnostics => Volatile.Read(ref callbackFailure);
     private delegate IntPtr Procedure(IntPtr hwnd, uint message, UIntPtr wp, IntPtr lp);
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] private struct Class
     {
@@ -13,7 +28,7 @@ internal static class HostWindow
         [MarshalAs(UnmanagedType.LPWStr)] public string Name;
         public IntPtr SmallIcon;
     }
-    [StructLayout(LayoutKind.Sequential)] private struct Message
+    [StructLayout(LayoutKind.Sequential)] internal struct Message
     { public IntPtr Hwnd; public uint Kind; public UIntPtr Wp; public IntPtr Lp; public uint Time; public int X, Y; public uint Private; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] private struct IconData
     {
@@ -48,11 +63,6 @@ internal static class HostWindow
     [DllImport("shell32.dll")] private static extern int Shell_NotifyIconGetRect(ref IconIdentifier identifier, out Native.Rect location);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr LoadImageW(IntPtr instance, IntPtr name, uint type, int width, int height, uint flags);
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
-    [DllImport("user32.dll")] private static extern IntPtr CreatePopupMenu();
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool AppendMenuW(IntPtr menu, uint flags, UIntPtr id, string text);
-    [DllImport("user32.dll")] private static extern bool GetCursorPos(out Native.Point point);
-    [DllImport("user32.dll")] private static extern uint TrackPopupMenu(IntPtr menu, uint flags, int x, int y, int reserved, IntPtr hwnd, IntPtr rect);
-    [DllImport("user32.dll")] private static extern bool DestroyMenu(IntPtr menu);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessageW(string message);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool ChangeWindowMessageFilterEx(IntPtr hwnd, uint message, uint action, IntPtr change);
     private static readonly Procedure Proc = WindowProc;
@@ -61,6 +71,34 @@ internal static class HostWindow
     private static IntPtr window;
     private static TrayRegistration? tray;
     private static uint taskbarCreated;
+    private static Task<string?>? permissionSave;
+    private static CancellationTokenSource? permissionSaveStop;
+    private static long trayPermissionReadAt = long.MinValue;
+    private static string trayPermissionSummary = "权限状态待核对";
+    private static UserPermissionSettings? trayPermissions;
+    private static UacCapabilities? trayCapabilities;
+    private static bool trayPermissionFault;
+    private static string? trayPermissionRevision;
+    internal static void BeginOrdinaryControl(BrokerState core, LocalUiOperation operation)
+    {
+        if (!core.OrdinaryResident || permissionSave is not null) throw new Boundary("local_writer_busy");
+        permissionSaveStop = new(); var token = permissionSaveStop.Token;
+        permissionSave = Task.Run(() =>
+        {
+            try { LocalUiWriter.Execute(core, operation, null, token); return (string?)null; }
+            catch (Exception error) { return Program.Code(error); }
+        });
+    }
+    internal static string PrivilegeSummary(UserPermissionSettings permissions)
+    {
+        int tier = UserPermissions.TierOf(permissions);
+        if (tier < 0) return UiText.Get("01 完全停止｜App/Computer/Web 停止派发");
+        if (permissions.UacPolicyError is not null) return UiText.Get("故障｜权限配置需修复");
+        if (tier == 0) return UiText.Get("02 普通控制｜管理员能力关闭");
+        if (tier == 1) return UiText.Get("03 管理员窗口｜不启动管理员进程");
+        string launch = permissions.AdminLaunchMode == "semantic" ? UiText.Get("启动：语义授权") : UiText.Get("启动：名单");
+        return (tier == 2 ? UiText.Get("04 管理员执行｜") : UiText.Get("旧系统接管（已冻结）｜")) + launch + UiText.Get("｜UAC 已冻结");
+    }
     internal static void Run(BrokerState core)
     {
         state = core;
@@ -70,14 +108,14 @@ internal static class HostWindow
         if (RegisterClassExW(ref value) == 0) throw new Boundary("host_window_register_failed", Marshal.GetLastWin32Error());
         try
         {
-            window = CreateWindowExW(0, name, "Flower Control 管理员助手", 0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
+            window = CreateWindowExW(0, name, UiText.Get("Flower Control 管理员助手"), 0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
             if (window == IntPtr.Zero || !SetPropW(window, "FlowerControlTaskIndicator", new IntPtr(1)))
                 throw new Boundary("host_window_failed", Marshal.GetLastWin32Error());
             if (!WTSRegisterSessionNotification(window, 0)) throw new Boundary("session_notification_failed", Marshal.GetLastWin32Error());
             bool hotkey = RegisterHotKey(window, 9, 0x4003, 0x39); // Ctrl+Alt, main-row 9, MOD_NOREPEAT.
             core.HotkeyAvailable(hotkey, hotkey ? null : Marshal.GetLastWin32Error());
             icon = new IconData { Size = (uint)Marshal.SizeOf<IconData>(), Hwnd = window, Id = 1, Flags = 7, Callback = 0x8001,
-                Icon = LoadTrayIcon(), Tip = "Flower Control 管理员助手", Info = "", Title = "" };
+                Icon = LoadTrayIcon(), Tip = UiText.Get("Flower Control 管理员助手"), Info = "", Title = "" };
             taskbarCreated = RegisterWindowMessageW("TaskbarCreated");
             if (taskbarCreated != 0) ChangeWindowMessageFilterEx(window, taskbarCreated, 1, IntPtr.Zero);
             // The exact private tray callback and shell-restart notification
@@ -87,23 +125,39 @@ internal static class HostWindow
             tray = new(() => Shell_NotifyIconW(0, ref icon), () => Shell_NotifyIconW(1, ref icon),
                        () => Shell_NotifyIconW(2, ref icon), TrayIconExists);
             UpdateTray(core);
+            try
+            {
+                if (SettingsWorkspace.HasIncomingHandoff) SettingsWorkspace.Show(window, core);
+            }
+            catch (Exception error)
+            { Console.Error.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { settingsDraftImport = Program.Code(error) })); }
             if (SetTimer(window, new UIntPtr(1), 100, IntPtr.Zero) == UIntPtr.Zero)
                 throw new Boundary("host_timer_failed", Marshal.GetLastWin32Error());
             while (true)
             {
                 var result = GetMessageW(out var message, IntPtr.Zero, 0, 0);
-                if (result == 0) break;
+                if (result == 0) { core.Stop(BrokerShutdownReason.HostMessageQuit); break; }
                 if (result < 0) throw new Boundary("host_message_loop_failed");
-                TranslateMessage(ref message); DispatchMessageW(ref message);
+                if (!SettingsWorkspace.HandleDialogMessage(ref message) && !PermissionSettingsWindow.HandleDialogMessage(ref message))
+                { TranslateMessage(ref message); DispatchMessageW(ref message); }
             }
         }
         finally
         {
-            KillTimer(window, new UIntPtr(1)); tray?.Close(); tray = null; core.TrayAvailable(false);
-            UnregisterHotKey(window, 9); core.HotkeyAvailable(false);
-            WTSUnRegisterSessionNotification(window);
-            if (Native.IsWindow(window)) DestroyWindow(window);
-            UnregisterClassW(name, instance); state = null;
+            try { SettingsWorkspace.ShutdownOwnedWork(); PermissionSettingsWindow.ShutdownOwnedWork(); }
+            finally
+            {
+                // Do not strand a partially committed preference change on exit.
+                permissionSaveStop?.Cancel();
+                try { permissionSave?.GetAwaiter().GetResult(); }
+                finally { permissionSaveStop?.Dispose(); permissionSaveStop = null; permissionSave = null; }
+                KillTimer(window, new UIntPtr(1)); tray?.Close(); tray = null; core.TrayAvailable(false);
+                TrayStateIcons.Release();
+                UnregisterHotKey(window, 9); core.HotkeyAvailable(false);
+                WTSUnRegisterSessionNotification(window);
+                if (Native.IsWindow(window)) DestroyWindow(window);
+                UnregisterClassW(name, instance); state = null;
+            }
         }
     }
     internal static IntPtr LoadTrayIcon()
@@ -118,8 +172,41 @@ internal static class HostWindow
     }
     private static void UpdateTray(BrokerState core)
     {
-        icon.Tip = "Flower Control 管理员助手：" + core.Summary;
-        tray?.Tick(Environment.TickCount64, core.Summary);
+        long now = Environment.TickCount64;
+        if (trayPermissionReadAt == long.MinValue || now - trayPermissionReadAt >= 1000)
+        {
+            SettingsWorkspace.RefreshDisplayPreference();
+            try
+            {
+                trayPermissions = UserPermissions.Read(); trayPermissionFault = false;
+                trayPermissionSummary = PrivilegeSummary(trayPermissions);
+                if (trayPermissionRevision != trayPermissions.Revision)
+                {
+                    trayPermissionRevision = trayPermissions.Revision;
+                    trayCapabilities = trayPermissions.UacMode == "off" ? null : UacRuntime.Capabilities();
+                }
+            }
+            catch (Exception) { trayPermissionFault = true; trayPermissionSummary = UiText.Get("权限配置需修复"); }
+            trayPermissionReadAt = now;
+        }
+        string summary = UiText.BrokerSummary(core.Summary) + UiText.Get("｜") + trayPermissionSummary;
+        int tier = trayPermissions is null ? -1 : UserPermissions.TierOf(trayPermissions);
+        bool route = tier switch {
+            -1 or 0 or 1 or 2 => true,
+            3 => false,
+            _ => false };
+        route &= !core.OrdinaryResident || tier <= 0;
+        if (core.OrdinaryResident && tier > 0) summary += UiText.Get("｜普通执行器；管理员待确认");
+        int visualState = TrayStateIcons.Select(tier, route && !core.IsPaused && !core.TrayUnavailable,
+            trayPermissionFault || trayPermissions?.UacPolicyError is not null || core.TrayFaulted || core.ComputerPaused);
+        TrayMenu.SetVisualState(visualState);
+        SettingsWorkspace.SetVisualState(visualState);
+        icon.Icon = TrayStateIcons.Load(visualState, Math.Max(16, GetSystemMetrics(49)), Math.Max(16, GetSystemMetrics(50)));
+        core.TrayVisualState(TrayStateIcons.DisplayName(visualState));
+        summary += UiText.Get("｜图标：") + TrayStateIcons.DisplayName(visualState);
+        icon.Tip = "Flower Control" + UiText.Get("｜") + summary;
+        if (icon.Tip.Length > 127) icon.Tip = icon.Tip[..127];
+        tray?.Tick(now, summary);
         core.TrayAvailable(tray?.Registered == true);
     }
     private static bool TrayIconExists()
@@ -136,11 +223,32 @@ internal static class HostWindow
         // still cancel. It must not permanently cancel this reusable broker.
         if (message == 0x11) return new IntPtr(1);
         if (message != 0x16) return null;
-        if (sessionEnded) core.Stop();
+        if (sessionEnded) core.Stop(BrokerShutdownReason.SessionEnded);
         return IntPtr.Zero;
     }
     private static IntPtr WindowProc(IntPtr hwnd, uint message, UIntPtr wp, IntPtr lp)
     {
+        try { return WindowMessageCore(hwnd, message, wp, lp); }
+        catch (Exception error)
+        {
+            // Shared Stop reads and tray refresh can fail transiently. Preserve
+            // the UI message loop; never retry the failed action or let an
+            // exception escape a reverse P/Invoke callback into USER32.
+            var previous = CallbackDiagnostics;
+            var failure = new CallbackFailure(message, Program.Code(error), (previous?.Sequence ?? 0) + 1);
+            Volatile.Write(ref callbackFailure, failure);
+            try { Console.Error.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { hostWindowFailure = failure })); }
+            catch { }
+            return IntPtr.Zero;
+        }
+    }
+    private static IntPtr WindowMessageCore(IntPtr hwnd, uint message, UIntPtr wp, IntPtr lp)
+    {
+        if (message == OpenSettingsMessage)
+        {
+            if (state is { } active && !active.Shutdown.IsCancellationRequested) SettingsWorkspace.Show(hwnd, active);
+            return IntPtr.Zero;
+        }
         var core = state;
         if (core is null) return DefWindowProcW(hwnd, message, wp, lp);
         if (taskbarCreated != 0 && message == taskbarCreated)
@@ -150,14 +258,31 @@ internal static class HostWindow
         }
         if (message == 0x113)
         {
+            // Exit must not depend on a successful permission/Stop refresh.
+            // In particular a busy shared mutex must not strand a stopped
+            // broker in its timer callback forever.
+            if (core.Shutdown.IsCancellationRequested) { DestroyWindow(hwnd); PostQuitMessage(0); return IntPtr.Zero; }
+            core.RefreshPermissions();
             BrokerHost.PollDesktop(core);
             UpdateTray(core);
-            if (core.Shutdown.IsCancellationRequested) { DestroyWindow(hwnd); PostQuitMessage(0); }
+            if (permissionSave is { IsCompleted: true } saved)
+            {
+                var failure = saved.GetAwaiter().GetResult(); permissionSave = null;
+                permissionSaveStop?.Dispose(); permissionSaveStop = null;
+                if (failure is not null && !core.Shutdown.IsCancellationRequested)
+                {
+                    Console.Error.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { trayPermissionSave = failure }));
+                    PermissionSettingsWindow.ShowError(hwnd, UiText.Get("设置保存或复核失败。请打开设置核对实际权限；停止状态不会自动恢复。") );
+                }
+            }
             return IntPtr.Zero;
         }
         if (message == 0x312 && wp.ToUInt32() == 9)
         {
-            core.Pause(true); // Shared gate closes before cancellation; no database or model wait.
+            // Ends the current Computer Use run only: in-flight computer work is
+            // cancelled and released. App/Web and the UAC bridge keep working;
+            // the next computer call starts with a fresh observation.
+            core.StopComputerUse();
             UpdateTray(core);
             return IntPtr.Zero;
         }
@@ -166,34 +291,27 @@ internal static class HostWindow
             var change = wp.ToUInt32();
             if (change is 2 or 4 or 7) core.Desktop(false, "desktop_locked");
             if (change is 1 or 3 or 8) { core.Desktop(false, "desktop_transition"); BrokerHost.PollDesktop(core); }
-            if (change == 6) core.Stop();
+            if (change == 6) core.Stop(BrokerShutdownReason.SessionLogoff);
             return IntPtr.Zero;
         }
         var sessionResult = EndSessionMessage(core, message, wp != UIntPtr.Zero);
         if (sessionResult is { } handled) return handled;
-        if (message == 0x8001 && lp.ToInt64() is 0x205 or 0x203)
+        if (message == 0x8001)
         {
-            var stopSnapshot = core.WriteGate?.Snapshot();
-            bool resumeSelected = stopSnapshot?.Stopped ?? core.IsPaused;
-            var menu = CreatePopupMenu();
-            try
-            {
-                AppendMenuW(menu, 2, UIntPtr.Zero, core.Summary);
-                AppendMenuW(menu, 0, new UIntPtr(1), resumeSelected ? "恢复全部写入（需要新观察）" : "停止全部写入（Ctrl+Alt+9）");
-                AppendMenuW(menu, 0, new UIntPtr(2), "正常退出管理员助手");
-                GetCursorPos(out var point);
-                // Native menu is an explicit user entry; protected from Flower targeting.
-                Native.SetForegroundWindow(hwnd);
-                var selected = TrackPopupMenu(menu, 0x100 | 0x2, point.X, point.Y, 0, hwnd, IntPtr.Zero);
-                if (selected == 1)
-                {
-                    try { core.Pause(!resumeSelected, stopSnapshot?.Epoch); }
-                    catch (Boundary error) when (error.Code == "resume_state_changed")
-                    { Console.Error.WriteLine("New Stop retained; reopen the tray menu to resume."); }
-                }
-                if (selected == 2) core.Stop();
-            }
-            finally { DestroyMenu(menu); }
+            uint trayEvent = (uint)(lp.ToInt64() & 0xffff);
+            // Legacy callbacks deliver button-up; newer Shell/keyboard paths
+            // deliver NIN_SELECT/NIN_KEYSELECT or WM_CONTEXTMENU. A double click
+            // already contains the first button-up; do not open twice.
+            bool select = trayEvent is 0x202 or 0x400 or 0x401;
+            bool context = trayEvent is 0x205 or 0x7b;
+            if (!select && !context) return IntPtr.Zero;
+            long now = Environment.TickCount64;
+            if (select && lastTraySelect != long.MinValue && now - lastTraySelect <= GetDoubleClickTime()) return IntPtr.Zero;
+            if (select) lastTraySelect = now;
+            // Self-drawn dark popup; a local creation failure must not take
+            // down the broker, its tray, or the emergency-stop message loop.
+            try { TrayMenu.Show(hwnd, core); }
+            catch (Exception error) { Console.Error.WriteLine("Tray menu failed: " + Program.Code(error)); }
             return IntPtr.Zero;
         }
         return DefWindowProcW(hwnd, message, wp, lp);

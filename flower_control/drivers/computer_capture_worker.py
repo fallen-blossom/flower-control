@@ -40,6 +40,21 @@ _WGC_EXE = (Path(__file__).with_name("computer_wgc") / "bin" / "Release" /
             "net10.0-windows10.0.26100.0" / "win-x64" / "Flower.ComputerWgc.exe")
 
 
+def wgc_executable() -> Path:
+    repository = Path(__file__).resolve().parents[2]
+    interpreter = Path(sys.executable).resolve()
+    if repository.name != "python-source" and interpreter.name.casefold() != "flower-python.exe":
+        return _WGC_EXE
+    from .app_worker import _installed_native_executable
+    from flower_control.control.state import ControlError
+    try:
+        return _installed_native_executable(repository, interpreter, "WgcWorkerHashes", "wgc",
+            frozenset({"Flower.ComputerWgc.exe", "Flower.ComputerWgc.dll", "Flower.ComputerWgc.deps.json",
+                       "Flower.ComputerWgc.runtimeconfig.json"}), "Flower.ComputerWgc.exe", "wgc_installed_worker_unverified")
+    except ControlError:
+        raise WgcUnavailable("wgc_installed_worker_unverified") from None
+
+
 class WgcUnavailable(RuntimeError):
     pass
 
@@ -61,7 +76,8 @@ def _visible_bounds(hwnd: int) -> tuple[int, int, int, int]:
 
 def capture_wgc(identity: WindowIdentity) -> tuple[dict, bytes]:
     """The .NET child inherits this worker's kill-on-close Job."""
-    if not _WGC_EXE.is_file():
+    executable = wgc_executable()
+    if not executable.is_file():
         raise WgcUnavailable("wgc_binary_missing")
     assert_window(identity)
     if not win32gui.IsWindowVisible(identity.hwnd) or win32gui.IsIconic(identity.hwnd):
@@ -70,7 +86,7 @@ def capture_wgc(identity: WindowIdentity) -> tuple[dict, bytes]:
     visible_bounds = _visible_bounds(identity.hwnd)
     body = json.dumps(asdict(identity), separators=(",", ":")).encode("utf-8") + b"\n"
     child = subprocess.Popen(
-        [str(_WGC_EXE)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        [str(executable)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=_native_environment(),
         creationflags=subprocess.CREATE_NO_WINDOW)
     try:

@@ -16,7 +16,10 @@ from flower_control.control.arbitration import wait_for_turn
 from flower_control.control.jev import JevClient
 from flower_control.control.jev_diagnostics import JevUsage, current_context, jev_context
 from flower_control.control.native import process_identity
+from flower_control.control.native import FOREGROUND_INPUT_RESOURCE
 from flower_control.control.state import ControlError, StateStore
+from flower_control.control.business_plan import planned_web_call
+from flower_control.browsers import profile_resource_id
 from flower_control.control.scheduling import Phase
 from flower_control.control.targets import TargetRequest, candidate_from_dom
 from flower_control.control.target_selection import select_target, selection_permitted_async
@@ -27,18 +30,20 @@ from .web_business import WebBusiness, file_readback, match_probe, probe_request
 from .web_effects import error_with_effect, KNOWN_STAGES
 from .web_batch import validate_batch
 from .web_flow import execute_flow
+from .web_diagnostics import safe_failure_facts, exception_facts
 
 
-_READ_ONLY = frozenset({"list_pages", "observe", "read_text", "page_state",
-                        "page_diagnostics", "screenshot", "editor_inspect", "editor_read",
-                        "dialog_state", "wait_condition", "wait_page", "wait_navigation", "chooser_state",
-                        "workflow_bind", "workflow_check", "result_probe"})
+_READ_ONLY = frozenset({"list_pages", "list_pending_pages", "recover_pending_page", "native_window", "window_visibility", "local_upload_pending", "close_status", "mark_page", "clear_page_mark", "observe", "read_text", "page_state",
+                        "page_diagnostics", "screenshot", "record", "media_state", "editor_inspect", "editor_read",
+                        "dialog_state", "wait_condition", "assert_condition", "wait_page", "wait_navigation", "chooser_state",
+                        "workflow_bind", "workflow_check", "result_probe", "message_baseline",
+                        "local_upload_status", "local_upload_release"})
 
 # The public run path calls the worker directly, bypassing RemotePageDriver's
 # defaults. Keep the worker payload aligned with those proxy/PageDriver APIs.
 _READ_DEFAULTS = {
     "observe": {"frame_index": 0,
-                "selector": "button,input,textarea,select,a,[role],[contenteditable]",
+                "selector": "button,input,textarea,select,a,video,audio,[role],[contenteditable]",
                 "offset": 0, "limit": 100, "ttl": 15},
     "read_text": {"offset": 0, "limit": 16000},
     "page_state": {"offset": 0, "limit": 16000},
@@ -86,14 +91,59 @@ class ControlledWeb:
         kind = getattr(session, "profile_kind", "ai")
         if persistent and kind not in ("ai", "luohua"):
             raise ControlError("invalid_profile_kind")
-        self.resource = (f"web-profile:{kind}-v1" if persistent
+        self.profile_resource = profile_resource_id(kind, getattr(session, "brave_executable", None)) if persistent else None
+        self.shared_browser = bool(getattr(session, "shared_browser", False))
+        from .web_shared_profile import borrower_resource
+        self.resource = (borrower_resource(session.persistent_profile, task) if self.shared_browser else self.profile_resource if persistent
                          else "web-session:" + session.session_id)
-        self.scope = "flower-private:luohua" if persistent and kind == "luohua" else None
+        from flower_control.browsers import personal_profile_scope
+        self.scope = personal_profile_scope(getattr(session, "brave_executable", None)) if persistent and kind == "luohua" else None
         store.register_resource(self.resource, required_scope=self.scope)
-        if not persistent:
+        if self.shared_browser:
+            store.register_resource(self.profile_resource, required_scope=self.scope)
+        if not persistent or self.shared_browser:
             store.bind_owned_resource(self.owner, self.resource)
 
+    @planned_web_call
     async def execute(self, command: str, arguments: dict, *, action_id: str) -> dict:
+        try:
+            if self.shared_browser and command != "chooser_cancel":
+                from .web_shared_profile import require_profile_gate
+                require_profile_gate(self.store, self.profile_resource)
+            self.require_intent_policy(action_id, bind=True)
+            if self.shared_browser and command not in _READ_ONLY:
+                with self.store.read_transaction() as db:
+                    debt = db.execute("SELECT 1 FROM web_quarantine_recovery_debts WHERE resource=?", (self.resource,)).fetchone()
+                    active = self.store._quarantine_permit_active(db, self.resource) if debt else False
+                if debt and not active:
+                    self.owner = self.store.renew_or_replace_owner(self.task, self.owner)
+                    self.store.refresh_closed_web_borrower(self.owner, self.resource)
+                native_window = command in {"new_page", "hide_page", "show_page"} and not getattr(self.session, "headless", True)
+                if native_window:
+                    with self.store.read_transaction() as db:
+                        front_debt = db.execute("SELECT 1 FROM web_quarantine_recovery_debts WHERE resource=?",
+                                                (FOREGROUND_INPUT_RESOURCE,)).fetchone()
+                        front_active = self.store._quarantine_permit_active(db, FOREGROUND_INPUT_RESOURCE) if front_debt else False
+                        self.store._require_scope(db, self.task, self.scope)
+                    if front_debt and not front_active:
+                        from .web_shared_profile import require_profile_gate
+                        from ..control.foreground_recovery import _refresh_closed_web_foreground
+                        from ..control.native import process_is_verified_alive
+                        def assert_browser():
+                            if self.store.task_write_stopped(self.task):
+                                raise ControlError("global_write_stopped")
+                            require_profile_gate(self.store, self.profile_resource)
+                            pid = getattr(self.session, "process_id", None)
+                            created = getattr(self.session, "process_created", None)
+                            if type(pid) is not int or not created or not process_is_verified_alive(f"{pid}:{created}"):
+                                raise ControlError("web_recovery_browser_unverified")
+                            with self.store.read_transaction() as db:
+                                self.store._require_scope(db, self.task, self.scope)
+                        _refresh_closed_web_foreground(self.store, assert_browser, target_resource=self.resource)
+        except ControlError as error:
+            error.web_dispatched = False
+            error.web_stage = "control_policy_preflight"
+            raise
         if command == "result_probe":
             raise ControlError("unsupported_controlled_command")
         lock = self._action_locks.setdefault(action_id, asyncio.Lock())
@@ -121,6 +171,23 @@ class ControlledWeb:
                 if (action_id not in self._business_pending
                         and action_id + ":targets" not in self._business_pending):
                     self._operation_usage.pop(action_id, None)
+
+    def require_intent_policy(self, action_id, *, bind=False):
+        from flower_control.permissions import revision, PermissionError
+        try:
+            current = revision()
+        except PermissionError as error:
+            raise ControlError(error.code) from None
+        with self.store.transaction() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS web_policy_intents "
+                       "(task TEXT,action TEXT,revision TEXT NOT NULL,PRIMARY KEY(task,action))")
+            prior = db.execute("SELECT revision FROM web_policy_intents WHERE task=? AND action=?",
+                               (self.task, action_id)).fetchone()
+            if prior is None and bind:
+                db.execute("INSERT INTO web_policy_intents VALUES(?,?,?)", (self.task, action_id, current))
+            elif (prior[0] if prior else "absent") != current:
+                raise ControlError("user_policy_requires_new_observation")
+        return current
 
     async def _execute_batch(self, arguments, action_id):
         steps = validate_batch(arguments)
@@ -154,6 +221,12 @@ class ControlledWeb:
                     outcome = await self._execute_direct(step["command"], values, action_id=child_id)
                 if "dialog_response" in values:
                     outcome = await self._continue_expected_dialog(outcome, values, child_id, action_id)
+            except asyncio.CancelledError:
+                self._batch_finish(action_id, {"state": "cancelled", "completed_steps": index,
+                    "next_step": index, "reason": "host_cancelled", "steps": outcomes,
+                    "failed_action_id": child_id, "replay_old_action": False,
+                    "business_result_verified": False})
+                raise
             except (ControlError, RuntimeError, ValueError) as error:
                 return self._batch_finish(action_id, {"state": "stopped", "completed_steps": index, "next_step": index,
                         "reason": getattr(error, "code", "batch_step_failed"), "steps": outcomes,
@@ -298,13 +371,14 @@ class ControlledWeb:
             request = TargetRequest(arguments["goal_hint"], observed["observation_id"],
                                     data["generation"], candidates, time.monotonic() + 12,
                                     complete=data["complete"], fallback_id=exact[0] if len(exact) == 1 else None,
-                                    candidate_scope="bounded", task_stage=arguments.get("task_stage", operation))
+                                    candidate_scope="bounded", task_stage=arguments.get("task_stage", operation),
+                                    assessment_questions=())
 
             async def permitted():
                 if self.store.write_stopped():
                     return False
                 return await selection_permitted_async(self.store, self.task,
-                    (self.resource,), (self.scope,) if self.scope else ())
+                    (self.resource,), (self.scope,) if self.scope else (), observed["observation_id"])
 
             async def fresh():
                 return self.session.guarded and request.expires_at > time.monotonic()
@@ -362,27 +436,44 @@ class ControlledWeb:
                                           semantic_expires_at=cached.expires_at)
 
     async def _execute_direct(self, command, arguments, *, action_id, **options):
+        preflight = {"queue_prepared": False}
         try:
-            return await self._execute_direct_impl(command, arguments, action_id=action_id, **options)
+            return await self._execute_direct_impl(command, arguments, action_id=action_id,
+                                                   _queue_preflight=preflight, **options)
         except (Exception, asyncio.CancelledError) as error:
+            if (isinstance(error, ControlError) and not preflight["queue_prepared"]
+                    and not hasattr(error, "web_dispatched")):
+                # This call never completed its queue preparation and cannot
+                # have entered a worker. Existing nonqueued receipts are read
+                # only after queue_prepared and keep their original facts.
+                error.web_dispatched = False
+                error.web_stage = "control_queue_preflight"
             self._finish_failed_business(action_id, error)
             raise
 
     async def _execute_direct_impl(self, command: str, arguments: dict, *, action_id: str,
                               selection: dict | None = None,
                               task_hint: str | None = None,
-                              semantic_expires_at: float | None = None, _internal_probe=False) -> dict:
+                              semantic_expires_at: float | None = None, _internal_probe=False,
+                              _queue_preflight=None) -> dict:
         task_hint = arguments.get("goal_hint", command) if task_hint is None else task_hint
-        if not _internal_probe and command not in {"new_page", "list_pages", "observe", "read_text", "page_state",
-                           "page_diagnostics", "screenshot", "fill", "type", "click", "hover",
+        if not _internal_probe and command not in {"new_page", "list_pending_pages", "recover_pending_page", "native_window", "window_visibility", "reconcile_window_visibility", "prepare_hide_page", "hide_page", "show_page", "list_pages", "close_status", "mark_page", "clear_page_mark", "mark_tab", "observe", "read_text", "page_state",
+                           "page_diagnostics", "screenshot", "record", "media_state", "play_media", "pause_media", "navigate_paused", "fill", "type", "click", "hover",
                            "press", "select_option", "set_checked", "drag", "upload", "download", "trace",
                            "navigate", "back", "forward", "reload", "close_page", "scroll",
                            "editor_inspect", "editor_read", "editor_replace", "terminal_input",
-                           "dialog_state", "dialog_action", "wait_condition", "wait_page", "wait_navigation",
-                           "chooser_state", "chooser_upload", "chooser_cancel", "workflow_bind", "workflow_check"}:
+                           "dialog_state", "dialog_action", "wait_condition", "assert_condition", "transition", "wait_page", "wait_navigation",
+                           "chooser_state", "chooser_upload", "chooser_cancel", "workflow_bind", "workflow_check", "message_baseline",
+                           "local_upload_begin", "local_upload_pending", "local_upload_status", "local_upload_commit", "local_upload_release"}:
             raise ControlError("unsupported_controlled_command")
-        if command not in _READ_ONLY and self.store.write_stopped():
+        if (command not in _READ_ONLY or command == "record") and self.store.write_stopped():
             raise error_with_effect(ControlError("global_stop_active"), dispatched=False, stage="preflight")
+        if command == "record":
+            from .web_recording import record_options
+            record_options(arguments)
+        if command == "native_window" and (set(arguments) != {"page_id"}
+                or type(arguments.get("page_id")) is not str or not 1 <= len(arguments["page_id"]) <= 64):
+            raise ControlError("invalid_native_window_request")
         # Add only omitted options, after origin consumption and before hashing
         # the exact worker request. Explicit values retain their normal checks.
         arguments = {**_READ_DEFAULTS.get(command, {}), **arguments}
@@ -400,16 +491,26 @@ class ControlledWeb:
                 or not 1 <= arguments["limit"] <= 50):
             raise ControlError("invalid_diagnostic_bounds")
         fingerprint = command_hash(command, arguments)
-        action_scope = (command_scope("observe" if _internal_probe else "fill" if command == "type" else command) if self.scope else None)
+        if self.scope:
+            command_scope("observe" if _internal_probe or command in {"list_pending_pages", "recover_pending_page", "native_window", "window_visibility", "reconcile_window_visibility", "prepare_hide_page", "hide_page", "show_page", "close_status", "mark_page", "clear_page_mark", "assert_condition", "message_baseline", "local_upload_pending", "local_upload_status", "local_upload_release"}
+                          else "upload" if command in {"local_upload_begin", "local_upload_commit"}
+                          else "fill" if command in {"type", "mark_tab"} else "click" if command == "transition" else command)
+        action_scope = self.scope
+        native_create = command in {"new_page", "hide_page", "show_page"} and self.shared_browser and not getattr(self.session, "headless", True)
+        resources = (self.resource, FOREGROUND_INPUT_RESOURCE) if native_create else (self.resource,)
+        if native_create:
+            self.store.register_resource(FOREGROUND_INPUT_RESOURCE)
         owner = self.store.renew_or_replace_owner(self.task, self.owner)
         self.owner = owner
         action = self.store.enqueue(owner, action_id=action_id, fingerprint=fingerprint,
-                                    resources=(self.resource,), scope=action_scope,
+                                    resources=resources, scope=action_scope,
                                     read_only=command in _READ_ONLY,
                                     phase=(Phase.START if command in {"new_page", "navigate"}
                                            else Phase.FINISH if command == "close_page" else Phase.WORK),
                                     context={"channel": "web", "operation": command,
-                                             "task_hint": arguments.get("task_stage", task_hint), "foreground_needed": False})
+                                             "task_hint": arguments.get("task_stage", task_hint), "foreground_needed": native_create})
+        if _queue_preflight is not None:
+            _queue_preflight["queue_prepared"] = True
         if action["state"] != "queued":
             return {"receipt": self.store.status(owner, action_id), "replayed": False,
                     "business_result": self.business_status(action_id)}
@@ -426,7 +527,7 @@ class ControlledWeb:
                         'candidate_count': None,
                         'selection_action_id': selection.get('action_id') if selection else None})
         wait_started = time.monotonic()
-        decision = await wait_for_turn(self.store, owner, action_id, (self.resource,),
+        decision = await wait_for_turn(self.store, owner, action_id, resources,
                                    client_factory=self.jev_client_factory)
         if business:
             business.scheduling_wait_ms += max(0, round((time.monotonic()-wait_started)*1000))
@@ -454,7 +555,8 @@ class ControlledWeb:
                 # exact zero-effect evidence, independent of its error code.
                 self.store.record_action_effects(owner, action_id,
                                                  activation_dispatched=False,
-                                                 business_dispatched=False)
+                                                 business_dispatched=False,
+                                                 **({"input_release": "released", "pointer_events": 0} if native_create else {}))
                 self.store.finish(owner, action_id, "not_verified",
                                   result_code="web_permit_not_issued")
                 raise
@@ -462,11 +564,15 @@ class ControlledWeb:
 
             async def check():
                 self.store.check_dispatch(owner, action_id)
+                if self.shared_browser:
+                    from .web_shared_profile import require_profile_gate
+                    require_profile_gate(self.store, self.profile_resource)
 
             def record_effects(dispatched):
                 self.store.record_action_effects(owner, action_id,
                                                  activation_dispatched=False,
-                                                 business_dispatched=dispatched)
+                                                 business_dispatched=dispatched,
+                                                 **({"input_release": "released", "pointer_events": 0} if native_create else {}))
 
             call_started = time.monotonic()
             try:
@@ -501,9 +607,12 @@ class ControlledWeb:
                               else "web_read_unavailable")
                     self.store.finish(owner, action_id, "not_verified",
                                       result_code=reason)
-                    raise error_with_effect(ControlError(reason),
+                    failure = error_with_effect(ControlError(reason),
                         dispatched=getattr(error, "web_dispatched", None),
-                        stage=getattr(error, "web_stage", "unknown")) from error
+                        stage=getattr(error, "web_stage", "unknown"))
+                    failure.web_diagnostics = (safe_failure_facts(getattr(error, "web_diagnostics", None))
+                        or exception_facts(error, "worker_read", max(0, round((time.monotonic()-call_started)*1000))))
+                    raise failure from error
                 if getattr(error, "web_dispatched", None) is False:
                     reason = ("invalid_worker_argument" if str(error) == "invalid_worker_argument"
                               else "web_write_not_dispatched")
@@ -521,9 +630,11 @@ class ControlledWeb:
             if command in {"observe", "page_state", "result_probe"} and isinstance(result, dict) and "generation" in result:
                 observation_id = self.store.observe(owner, self.resource,
                     f"{self.session.session_id}:{arguments.get('page_id')}:{result['generation']}", ttl=15)
-            verified = command in {"new_page", "list_pages", "observe", "read_text", "page_state",
+            verified = command in {"new_page", "list_pending_pages", "native_window", "window_visibility", "reconcile_window_visibility", "prepare_hide_page", "hide_page", "show_page", "local_upload_pending", "list_pages", "observe", "read_text", "page_state",
                                    "page_diagnostics", "screenshot",
                                    "editor_inspect", "editor_read", "dialog_state"} or (
+                command == "recover_pending_page" and isinstance(result, dict)
+                and result.get("state") in {"page_recovered", "target_not_live"}) or (
                 isinstance(result, dict) and result.get("state") == "verified")
             self.store.finish(owner, action_id, "verified" if verified else "not_verified",
                               result_code="driver_checked")
@@ -550,11 +661,16 @@ class ControlledWeb:
                 business.probe_call_ms = max(0, round((time.monotonic()-probe_started)*1000))
                 oracle = 'file_postcondition'
                 failure = None if matched else 'business_mismatch'
+            elif 'wait_for' in arguments and (not isinstance(result, dict) or result.get('state') != 'verified'):
+                failure = 'business_mismatch'
             elif request and not (isinstance(result, dict) and result.get('verification') in {'dialog_pending', 'chooser_pending'}):
                 boundary = ('exact_dom_value' if command in {'fill', 'type', 'set_checked', 'select_option'}
                             else 'specified_dom_condition')
                 if 'condition' in request:
-                    generation = result.get('generation', result.get('page_state', {}).get('generation')) if isinstance(result, dict) else None
+                    state = result.get('page_state') if isinstance(result, dict) else None
+                    generation = result.get('generation') if isinstance(result, dict) else None
+                    if generation is None and isinstance(state, dict):
+                        generation = state.get('generation')
                     if type(generation) is not int:
                         raise ControlError('result_generation_unavailable')
                     request['expected_generation'] = generation

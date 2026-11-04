@@ -58,13 +58,18 @@ class ClosedBrowserUpdateTests(unittest.IsolatedAsyncioTestCase):
             await browser.reconnect(self.marker["session_id"])
         self.assertIsNone(browser._profile_lock)
 
-    async def test_running_marker_cannot_use_closed_upgrade(self):
+    async def test_running_marker_with_all_dead_identities_is_sealed_and_launches(self):
         self.marker.update(state="running", owner_task="old-task")
         browser = self.session()
-        with patch.object(browser, "_launch_brave") as launch:
-            with self.assertRaisesRegex(ControlError, "ai_profile_identity_unverified"):
+        with patch("flower_control.drivers.web_session.process_is_alive", return_value=False), \
+                patch.object(browser, "_launch_brave", side_effect=RuntimeError("fixture-no-launch")) as launch:
+            with self.assertRaisesRegex(RuntimeError, "fixture-no-launch"):
                 await browser.start()
-        launch.assert_not_called()
+        launch.assert_called_once()
+        sealed = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(sealed["state"], "closed")
+        self.assertNotIn("owner_task", sealed)
+        self.assertIsNone(browser._profile_lock)
 
     async def test_live_browser_owner_or_worker_each_block_update(self):
         browser_id = f"{self.marker['browser_pid']}:{self.marker['browser_created']}"
@@ -75,10 +80,22 @@ class ClosedBrowserUpdateTests(unittest.IsolatedAsyncioTestCase):
                 with patch("flower_control.drivers.web_session.process_is_alive",
                            side_effect=lambda current: current == identity), \
                         patch.object(browser, "_launch_brave") as launch:
-                    with self.assertRaisesRegex(ControlError, "ai_profile_identity_unverified"):
+                    with self.assertRaisesRegex(ControlError, "ai_profile_previous_instance_alive"):
                         await browser.start()
                 launch.assert_not_called()
                 self.assertIsNone(browser._profile_lock)
+
+    async def test_running_marker_with_live_browser_reports_actionable_code(self):
+        self.marker.update(state="running", owner_task="old-task")
+        alive = f"{self.marker['browser_pid']}:{self.marker['browser_created']}"
+        browser = self.session()
+        with patch("flower_control.drivers.web_session.process_is_alive",
+                   side_effect=lambda current: current == alive), \
+                patch.object(browser, "_launch_brave") as launch:
+            with self.assertRaisesRegex(ControlError, "ai_profile_previous_instance_alive"):
+                await browser.start()
+        launch.assert_not_called()
+        self.assertIsNone(browser._profile_lock)
 
     async def test_wrong_profile_path_kind_executable_or_invalid_digest_still_block(self):
         initial = self.marker.copy()

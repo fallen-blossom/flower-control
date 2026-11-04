@@ -74,6 +74,15 @@ def resolve_operator_at(home: Path | None) -> dict:
 
 
 def resolve_operator() -> dict:
+    if os.environ.get('FLOWER_OPERATOR_HOST') == 'dsh-desktop':
+        from flower_control.dsh_metadata import read_display
+        metadata = read_display()
+        model, provider = metadata.get('model'), metadata.get('provider')
+        if model or provider:
+            return {'label': operator_label(model, provider), 'model': model, 'provider': provider,
+                    'source': 'dsh-session-request-header', 'config_path': None}
+        return {'label': 'DSH', 'model': None, 'provider': None,
+                'source': 'native-host', 'config_path': None}
     if os.environ.get('FLOWER_OPERATOR_HOST') == 'local-mcp':
         return {'label': 'AI Agent', 'model': None, 'provider': None,
                 'source': 'native-host', 'config_path': None}

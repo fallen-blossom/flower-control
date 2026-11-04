@@ -11,18 +11,32 @@ from collections.abc import Callable
 from .luohua_policy import PROFILE_SCOPE
 from flower_control.control.state import ControlError, StateStore, _id
 from flower_control.control.write_gate import WriteGateError
+from flower_control.browsers import personal_profile_scope
 
 
 class ChatProfileAuthorization:
-    def __init__(self, store: StateStore):
+    def __init__(self, store: StateStore, *, browser: str = "brave"):
         self.store = store
+        self.browser = browser
+        self.scope = personal_profile_scope(browser=browser)
+
+    def _decision(self, db, task):
+        if self.browser == "brave":
+            return db.execute("SELECT state FROM profile_authorizations WHERE task=?", (task,)).fetchone()
+        return db.execute("SELECT state FROM browser_profile_authorizations WHERE task=? AND browser=?",
+                          (task, self.browser)).fetchone()
+
+    def _save_decision(self, db, task, state, now):
+        if self.browser == "brave":
+            db.execute("INSERT OR REPLACE INTO profile_authorizations VALUES (?,?,?)", (task, state, now))
+        else:
+            db.execute("INSERT OR REPLACE INTO browser_profile_authorizations VALUES (?,?,?,?)", (task, self.browser, state, now))
 
     def _status(self, db, task: str) -> dict:
         row = self.store._task(db, task)
-        decision = db.execute("SELECT state FROM profile_authorizations WHERE task=?",
-                              (task,)).fetchone()
+        decision = self._decision(db, task)
         grant = db.execute("SELECT expires FROM grants WHERE task=? AND scope=?",
-                           (task, PROFILE_SCOPE)).fetchone()
+                           (task, self.scope)).fetchone()
         allowed = bool(grant and grant[0] > self.store.clock())
         if decision and decision[0] in ("denied", "revoked"):
             return {"state": decision[0], "authorized": False}
@@ -55,8 +69,7 @@ class ChatProfileAuthorization:
             row = self.store._task(db, task)
             if not row["host_binding"] or not row["host_binding"].startswith("origin:"):
                 raise ControlError("trusted_chat_binding_required")
-            previous = db.execute("SELECT state FROM profile_authorizations WHERE task=?",
-                                  (task,)).fetchone()
+            previous = self._decision(db, task)
             now = self.store.clock()
             if decision == "allow":
                 # A repeat allow must not clear an explicit Stop. A new grant
@@ -68,9 +81,9 @@ class ChatProfileAuthorization:
                 event_id = "semantic:" + _id()
                 check_stopped()
                 db.execute("INSERT INTO grant_events VALUES (?,?,?,?)",
-                           (event_id, task, PROFILE_SCOPE, 1e300))
+                           (event_id, task, self.scope, 1e300))
                 db.execute("INSERT OR REPLACE INTO grants VALUES (?,?,?,?)",
-                           (task, PROFILE_SCOPE, event_id, 1e300))
+                           (task, self.scope, event_id, 1e300))
                 if previous and previous[0] in ("denied", "revoked"):
                     self.store._resume_from_user_event(db, task, expected_epoch=resume_epoch)
                 else:
@@ -78,7 +91,7 @@ class ChatProfileAuthorization:
                 state = "allowed"
             elif decision == "resume":
                 grant = db.execute("SELECT expires FROM grants WHERE task=? AND scope=?",
-                                   (task, PROFILE_SCOPE)).fetchone()
+                                   (task, self.scope)).fetchone()
                 # Continuing ordinary work is independent of private-profile
                 # permission. Resume never inserts or restores a grant.
                 check_stopped()
@@ -89,11 +102,11 @@ class ChatProfileAuthorization:
                 state = {"pause": "paused", "deny": "denied", "revoke": "revoked"}[decision]
                 check_stopped()
                 if decision in ("deny", "revoke"):
-                    db.execute("DELETE FROM grants WHERE task=? AND scope=?", (task, PROFILE_SCOPE))
+                    db.execute("DELETE FROM grants WHERE task=? AND scope=?", (task, self.scope))
                 db.execute("UPDATE tasks SET paused=1,revision=revision+1 WHERE id=?", (task,))
                 self.store._stop_task_actions(db, task)
             check_stopped()
-            db.execute("INSERT OR REPLACE INTO profile_authorizations VALUES (?,?,?)", (task, state, now))
+            self._save_decision(db, task, state, now)
             self.store._record_event(db, "profile_authorization", task=task,
                                      details={"decision": decision, "state": state})
             result = self._status(db, task)

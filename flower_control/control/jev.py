@@ -1,6 +1,6 @@
 """Bounded TypeSafe text primitives; no authority or input dispatch.
 
-Protocol verified against https://api.typesafe.ai/openapi.json (2026-10-01).
+Protocol verified against https://api.typesafe.ai/openapi.json (2026-10-27).
 Scheduling and targets use bounded credential-free text with local identity maps.
 Credentials are supplied in memory by a separately authorized local adapter.
 """
@@ -108,7 +108,7 @@ def _answers(data, questions, model):
     if set(answers) != set(questions):
         raise ValueError("invalid_response")
     def probability(value):
-        return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
+        return type(value) in (int, float) and 0 <= value <= 1 and math.isfinite(value)
     for name, question in questions.items():
         answer = answers[name]
         kind = question["type"]
@@ -133,7 +133,7 @@ def _answers(data, questions, model):
             score = answer.get("score")
             legend = {str(i): value for i, value in enumerate(criteria)}
             if (answer.get("legend") != legend or type(score) not in (int, float)
-                    or not math.isfinite(score) or not 0 <= score <= len(criteria) - 1
+                    or not 0 <= score <= len(criteria) - 1 or not math.isfinite(score)
                     or abs(score - sum(int(k) * v for k, v in probabilities.items())) > 0.02):
                 raise ValueError("invalid_response")
     fields = {"choice": {"type", "choice", "confidence", "probabilities"},
@@ -218,34 +218,10 @@ def _validate_request(request: JevRequest) -> dict:
     return state
 
 
-class JevClient:
+class DecisionPrimitives:
     # Internal producer boundary; future visual adapters require their own
     # protocol and data-flow approval rather than reusing the text endpoint.
     input_capabilities = frozenset({"short_text", "structured_text"})
-
-    def __init__(self, api_key: str, model: str, *, transport=None, clock=time.monotonic,
-                 event_sink=None):
-        if not api_key or "\r" in api_key or "\n" in api_key:
-            raise ValueError("invalid_jev_credential")
-        if not re.fullmatch(r"jev-\d+\.\d+\.\d+", model):
-            raise ValueError("pinned_jev_model_required")
-        self.model = model
-        self.clock = clock
-        self.event_sink = event_sink
-        self.client_id = uuid.uuid4().hex
-        self._http_slots = asyncio.Semaphore(3)
-        self._request_index = 0
-        self._last_request_at = None
-        self.http = httpx.AsyncClient(
-            base_url="https://api.typesafe.ai", trust_env=False, follow_redirects=False,
-            headers={"Authorization": f"Bearer {api_key}"},
-            transport=transport, limits=httpx.Limits(max_connections=3,
-                                                    max_keepalive_connections=3,
-                                                    keepalive_expiry=300),
-        )
-
-    async def close(self):
-        await self.http.aclose()
 
     async def choose_scheduling(self, request: JevRequest, *, deadline: float,
                                 permitted: Callable[[], Awaitable[bool]]) -> JevSelection:
@@ -350,17 +326,80 @@ class JevClient:
             permitted=permitted, fresh=fresh, kind="batch", max_attempts=max_attempts,
             total_budget=total_budget)
 
+
+
+class JevClient(DecisionPrimitives):
+    """Legacy name for the shared bounded decision HTTP implementation."""
+    provider = "jev"
+    base_url = "https://api.typesafe.ai"
+    endpoint = "/v1/systemone"
+    model_pattern = r"jev-\d+\.\d+\.\d+"
+    model_error = "pinned_jev_model_required"
+    # Jev limits rubric levels, not the number of independent questions.
+    score_limit = 10
+    retry_statuses = frozenset({429, 529})
+    invalid_request_statuses = frozenset({422})
+
+    def __init__(self, api_key: str, model: str, *, transport=None, clock=time.monotonic,
+                 event_sink=None):
+        if not api_key or "\r" in api_key or "\n" in api_key:
+            raise ValueError("invalid_jev_credential")
+        if not re.fullmatch(self.model_pattern, model):
+            raise ValueError(self.model_error)
+        self.model = model
+        self.clock = clock
+        self.event_sink = event_sink
+        self.client_id = uuid.uuid4().hex
+        self._closed = False
+        self._request_index = 0
+        self._last_request_at = None
+        self.http = httpx.AsyncClient(
+            base_url=self.base_url, trust_env=False, follow_redirects=False,
+            headers={"Authorization": f"Bearer {api_key}"},
+            transport=transport, limits=httpx.Limits(max_connections=None,
+                                                    max_keepalive_connections=None,
+                                                    keepalive_expiry=300),
+        )
+
+    async def close(self):
+        self._closed = True
+        await self.http.aclose()
+
+    def _validate_questions(self, questions):
+        if any(q.get("type") == "score" and len(q.get("criteria", ())) > self.score_limit
+               for q in questions.values()):
+            raise ValueError("decision_score_limit_exceeded")
+
+    def _wire_payload(self, payload):
+        return payload
+
+    def _wire_answers(self, data, payload):
+        return _answers(data, payload["questions"], self.model)
+
     async def _request_questions(self, state, questions, *, deadline, permitted,
                                  fresh=None, kind="target", max_attempts=1,
                                  total_budget=5.0):
         _validate_budget(max_attempts, total_budget)
+        self._validate_questions(questions)
         started = self.clock()
+        if self._closed:
+            # A closed client must never open a new request or consume a late
+            # response from a previous attempt.
+            return JevBatchResult(None, "transport_failed", 0)
         if not math.isfinite(deadline) or deadline <= started:
             return JevBatchResult(None, "expired", 0)
         end = min(deadline, started + total_budget)
         context = current_context()
+        from flower_control.permissions import revision, PermissionError
+        try:
+            candidate_policy_revision = revision()
+        except PermissionError:
+            return JevBatchResult(None, "user_policy_unavailable", 0)
         call_id = uuid.uuid4().hex
-        payload = {"model": self.model, "state": state, "questions": questions}
+        from flower_control.privacy import redact_candidate_text
+        # Model/endpoint are fixed protocol identity, never user text. The
+        # rubric legend must be checked against this exact redacted snapshot.
+        payload = {"model": self.model, **redact_candidate_text({"state": state, "questions": questions})}
         def result(answers, reason):
             return JevBatchResult(answers, reason, max(0, round((self.clock()-started)*1000)))
         def emit(event, details):
@@ -376,123 +415,145 @@ class JevClient:
                 except Exception:
                     pass
         async def checks(after=False):
+            from flower_control.permissions import active_policy, PermissionError
+            if self._closed:
+                return "transport_failed"
+            try:
+                if revision() != candidate_policy_revision:
+                    return "permission_changed"
+                if not active_policy.read()["JevEnabled"]:
+                    return "disabled_by_user"
+            except PermissionError:
+                return "user_policy_unavailable"
             if self.clock() >= end:
-                return "expired"
+                return "timeout"
             if await permitted() is not True:
                 return "permission_changed" if after else "not_permitted"
             if fresh is not None and await fresh() is not True:
                 return "stale_observation"
-            return "expired" if self.clock() >= end else None
+            # An asynchronous callback may have changed the privacy policy.
+            # Check again synchronously before any request can be dispatched.
+            try:
+                if revision() != candidate_policy_revision:
+                    return "permission_changed"
+                if not active_policy.read()["JevEnabled"]:
+                    return "disabled_by_user"
+            except PermissionError:
+                return "user_policy_unavailable"
+            return "timeout" if self.clock() >= end else None
         try:
-            async with asyncio.timeout(end-started) as budget_timeout:
+            # Policy loading and redaction already consumed part of this call's
+            # budget. Only a request expired at entry uses the "expired" reason.
+            async with asyncio.timeout(end-self.clock()) as budget_timeout:
                 for index in range(1, max_attempts+1):
                     reason = await checks()
                     if reason:
                         return result(None, reason)
-                    # Bound concurrent active attempts; queue wait shares the budget.
-                    queued = self.clock()
-                    async with self._http_slots:
-                        reason = await checks()
-                        if reason:
-                            return result(None, reason)
-                        slot_wait_ms = max(0, round((self.clock()-queued)*1000))
-                        self._request_index += 1
-                        now = self.clock()
-                        attempt = {"request_id": uuid.uuid4().hex, "call_id": call_id,
-                            "client_id": self.client_id, "request_index": self._request_index,
-                            "attempt_index": index, "max_attempts": max_attempts,
-                            "kind": kind, "question_count": len(questions),
-                            "candidate_count": len(state.get("candidates", [])) if type(state) is dict else 0,
-                            "slot_wait_ms": slot_wait_ms,
-                            "gap_ms": None if self._last_request_at is None else max(0, round((now-self._last_request_at)*1000))}
-                        self._last_request_at = now
-                        trace_events = set()
-                        trace_starts, trace_ms = {}, {}
-                        async def trace(name, info):
-                            # Never inspect info, which can contain private headers.
-                            relevant = ("connection.connect_tcp", "connection.start_tls",
-                                "http11.send_request_headers", "http2.send_request_headers",
-                                "http11.receive_response_headers", "http2.receive_response_headers",
-                                "http11.receive_response_body", "http2.receive_response_body")
-                            for prefix in relevant:
-                                if name == prefix+".started":
-                                    trace_events.add(name)
-                                    trace_starts[prefix] = self.clock()
-                                elif name == prefix+".complete":
-                                    trace_events.add(name)
-                                    if prefix in trace_starts:
-                                        trace_ms[prefix] = max(0, round((self.clock()-trace_starts[prefix])*1000))
-                        status = None
-                        usage = {}
-                        outcome = "interrupted"
-                        http_ms = None
-                        retry_after = None
-                        emit("jev_http_started", attempt)
-                        http_start = self.clock()
+                    self._request_index += 1
+                    now = self.clock()
+                    attempt = {"request_id": uuid.uuid4().hex, "call_id": call_id,
+                        "client_id": self.client_id, "request_index": self._request_index,
+                        "attempt_index": index, "max_attempts": max_attempts,
+                        "kind": kind, "question_count": len(questions),
+                        "candidate_count": len(state.get("candidates", [])) if type(state) is dict else 0,
+                        "slot_wait_ms": 0, "provider": self.provider, "model": self.model,
+                        "gap_ms": None if self._last_request_at is None else max(0, round((now-self._last_request_at)*1000))}
+                    self._last_request_at = now
+                    trace_events = set()
+                    trace_starts, trace_ms = {}, {}
+                    async def trace(name, info):
+                        # Never inspect info, which can contain private headers.
+                        relevant = ("connection.connect_tcp", "connection.start_tls",
+                            "http11.send_request_headers", "http2.send_request_headers",
+                            "http11.receive_response_headers", "http2.receive_response_headers",
+                            "http11.receive_response_body", "http2.receive_response_body")
+                        for prefix in relevant:
+                            if name == prefix+".started":
+                                trace_events.add(name)
+                                trace_starts[prefix] = self.clock()
+                            elif name == prefix+".complete":
+                                trace_events.add(name)
+                                if prefix in trace_starts:
+                                    trace_ms[prefix] = max(0, round((self.clock()-trace_starts[prefix])*1000))
+                    status = None
+                    usage = {}
+                    outcome = "interrupted"
+                    http_ms = None
+                    retry_after = None
+                    emit("jev_http_started", attempt)
+                    http_start = self.clock()
+                    try:
                         try:
-                            try:
-                                async with self.http.stream("POST", "/v1/systemone", json=payload,
-                                    timeout=max(0.001, end-self.clock()), extensions={"trace": trace}) as response:
-                                    status = response.status_code
-                                    if status != 200:
-                                        outcome = ("authentication_failed" if status in (401,403) else
-                                            "invalid_request" if status == 422 else
-                                            "rate_limited" if status == 429 else
-                                            "service_overloaded" if status == 529 else "service_failed")
-                                        retry_after = _retry_delay(response.headers.get("Retry-After", ""))
-                                    else:
-                                        body = bytearray()
-                                        async for chunk in response.aiter_bytes():
-                                            body.extend(chunk)
-                                            if len(body) > 65536:
-                                                outcome = "response_too_large"
-                                                break
-                                        else:
-                                            outcome = "received"
-                            finally:
-                                http_ms = max(0, round((self.clock()-http_start)*1000))
-                            if outcome == "received":
-                                reason = await checks(after=True)
-                                if reason:
-                                    outcome = reason
-                                    return result(None, reason)
-                                try:
-                                    data = json.loads(body)
-                                    answers = _answers(data, questions, self.model)
-                                except (ValueError, TypeError, KeyError) as error:
-                                    outcome = "invalid_choice" if str(error) == "invalid_choice" else "invalid_response"
+                            async with self.http.stream("POST", self.endpoint, json=self._wire_payload(payload),
+                                timeout=max(0.001, end-self.clock()), extensions={"trace": trace}) as response:
+                                status = response.status_code
+                                if status != 200:
+                                    outcome = ("authentication_failed" if status in (401,403) else
+                                        "invalid_request" if status in self.invalid_request_statuses else
+                                        "rate_limited" if status == 429 else
+                                        "service_overloaded" if status == 529 else "service_failed")
+                                    retry_after = _retry_delay(response.headers.get("Retry-After", ""))
                                 else:
-                                    raw_usage = data.get("usage")
-                                    if type(raw_usage) is dict:
-                                        usage = {k: raw_usage[k] for k in ("input_tokens", "output_tokens")
-                                                 if type(raw_usage.get(k)) is int and 0 <= raw_usage[k] <= 10**9}
-                                    outcome = "selected" if kind != "batch" else "answered"
-                                    return result(answers, outcome)
-                        except (TimeoutError, httpx.TimeoutException):
-                            outcome = "timeout"
-                        except httpx.TransportError:
+                                    body = bytearray()
+                                    async for chunk in response.aiter_bytes():
+                                        body.extend(chunk)
+                                        if len(body) > 65536:
+                                            outcome = "response_too_large"
+                                            break
+                                    else:
+                                        outcome = "received"
+                        finally:
+                            http_ms = max(0, round((self.clock()-http_start)*1000))
+                        if outcome == "received":
+                            reason = await checks(after=True)
+                            if reason:
+                                outcome = reason
+                                return result(None, reason)
+                            try:
+                                data = json.loads(body)
+                                answers = self._wire_answers(data, payload)
+                            except (ValueError, TypeError, KeyError) as error:
+                                outcome = "invalid_choice" if str(error) == "invalid_choice" else "invalid_response"
+                            else:
+                                # Decoding/validation can run synchronously
+                                # past the deadline before the timer fires.
+                                if self.clock() >= end:
+                                    outcome = "timeout"
+                                    return result(None, outcome)
+                                raw_usage = data.get("usage")
+                                if type(raw_usage) is dict:
+                                    usage = {k: raw_usage[k] for k in ("input_tokens", "output_tokens")
+                                             if type(raw_usage.get(k)) is int and 0 <= raw_usage[k] <= 10**9}
+                                outcome = "selected" if kind != "batch" else "answered"
+                                return result(answers, outcome)
+                    except (TimeoutError, httpx.TimeoutException):
+                        outcome = "timeout"
+                    except httpx.TransportError:
+                        outcome = "transport_failed"
+                    except asyncio.CancelledError:
+                        outcome = "timeout" if budget_timeout.expired() else "cancelled"
+                        raise
+                    except Exception:
+                        if self._closed:
                             outcome = "transport_failed"
-                        except asyncio.CancelledError:
-                            outcome = "timeout" if budget_timeout.expired() else "cancelled"
-                            raise
-                        except Exception:
+                        else:
                             outcome = "client_failed"
                             raise
-                        finally:
-                            sent = any(n.endswith("send_request_headers.started") for n in trace_events)
-                            tcp = "connection.connect_tcp.started" in trace_events
-                            tls = "connection.start_tls.started" in trace_events
-                            connection = ("new_connection_observed" if "connection.connect_tcp.complete" in trace_events else
-                                "reused_connection_observed" if sent and not tcp and not tls else
-                                "connection_attempt_observed" if tcp or tls else "unknown")
-                            # Header wait contains server/model time, never labelled RTT.
-                            emit("jev_http_finished", {**attempt, "reason": outcome, "http_invoked": True,
-                                "request_ms": max(0, round((self.clock()-now)*1000)), "http_phase_ms": http_ms,
-                                "status_code": status, "connection": connection,
-                                "tcp_started": tcp, "tls_started": tls, "trace_observed": bool(trace_events),
-                                "trace_phase_ms": trace_ms, "usage": usage})
+                    finally:
+                        sent = any(n.endswith("send_request_headers.started") for n in trace_events)
+                        tcp = "connection.connect_tcp.started" in trace_events
+                        tls = "connection.start_tls.started" in trace_events
+                        connection = ("new_connection_observed" if "connection.connect_tcp.complete" in trace_events else
+                            "reused_connection_observed" if sent and not tcp and not tls else
+                            "connection_attempt_observed" if tcp or tls else "unknown")
+                        # Header wait contains server/model time, never labelled RTT.
+                        emit("jev_http_finished", {**attempt, "reason": outcome, "http_invoked": True,
+                            "request_ms": max(0, round((self.clock()-now)*1000)), "http_phase_ms": http_ms,
+                            "status_code": status, "connection": connection,
+                            "tcp_started": tcp, "tls_started": tls, "trace_observed": bool(trace_events),
+                            "trace_phase_ms": trace_ms, "usage": usage})
                     # Only explicit service overload/limiting responses are retried.
-                    if status not in (429, 529) or index >= max_attempts:
+                    if status not in self.retry_statuses or index >= max_attempts:
                         return result(None, outcome)
                     delay = retry_after if retry_after is not None else random.uniform(0.1, 0.2) * 2**(index-1)
                     # Even Retry-After: 0 must not create a tight request loop.

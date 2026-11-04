@@ -5,8 +5,11 @@ import argparse
 import getpass
 
 import win32cred
+import pywintypes
 
 from flower_control.authorization.hook_bridge import state_directory
+from flower_control.control.decision_settings import load_settings
+from flower_control.control.decision_setup import store_key, prompt_key
 from flower_control.control.jev_runtime import (CREDENTIAL_TARGET,
                                                  enabled, set_enabled)
 
@@ -17,23 +20,25 @@ def main() -> None:
     command = parser.parse_args().command
     directory = state_directory()
     if command == "status":
-        print("Jev enabled" if enabled(directory) else "Jev disabled")
+        print("Jev enabled" if "jev" in load_settings(directory).enabled else "Jev disabled")
         return
     if command == "disable":
         set_enabled(directory, False)
-        print("Jev disabled; new decisions use local scheduling")
+        print("Jev disabled; other services follow the saved order")
         return
-    key = getpass.getpass("Jev API key (stored only in Windows Credential Manager): ")
-    data = key.encode("utf-16-le")
-    if not data or len(data) > 2560 or "\r" in key or "\n" in key or "\x00" in key:
-        raise SystemExit("Invalid key; Jev setting was not changed")
-    win32cred.CredWrite({
-        "Type": win32cred.CRED_TYPE_GENERIC,
-        "TargetName": CREDENTIAL_TARGET,
-        "CredentialBlob": key,
-        "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
-        "UserName": "FlowerControl",
-    }, 0)
+    try:
+        key = prompt_key("jev")
+        if not key:
+            print("Cancelled; Jev setting was not changed")
+            return
+        store_key(directory, "jev", key)
+    except (EOFError, KeyboardInterrupt):
+        print("Cancelled; Jev setting was not changed")
+        return
+    except (OSError, ValueError, UnicodeError, pywintypes.error, getpass.GetPassWarning):
+        raise SystemExit("Key save not confirmed; Jev setting was not changed") from None
+    finally:
+        key = None
     set_enabled(directory, True)
     print("Jev enabled for Flower Control")
 

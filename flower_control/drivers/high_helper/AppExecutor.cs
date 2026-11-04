@@ -8,6 +8,15 @@ internal static class AppExecutor
 {
     private static readonly string[] Commands = ["observe", "read_text", "invoke", "set_value", "set_toggle",
         "select_item", "expand_collapse", "scroll", "realize_item", "close_window", "focus", "guarded_input"];
+    internal static void CheckWithClosedTargetDrain(Action check, Action authority, Func<bool> drain)
+    {
+        try { check(); }
+        catch (Boundary error) when (error.Code is "target_not_ordinary_root" or "target_identity_changed")
+        {
+            authority();
+            if (!drain()) throw;
+        }
+    }
     // Synthetic diagnostics are identified by the private CLR type, never a worker-supplied JSON marker.
     internal static void AttachFailure(Receipt result, string command, AppCheckpointFrame? checkpoint, string code)
     {
@@ -46,13 +55,56 @@ internal static class AppExecutor
             if (command is "set_toggle" or "expand_collapse") keys.Add("desired");
             if (command == "select_item" && arguments.TryGetProperty("desired", out _)) keys.Add("desired");
             if (command == "observe" && arguments.TryGetProperty("tree", out _)) keys.Add("tree");
+            bool diagnostic = arguments.TryGetProperty("diagnostic", out var diagnosticValue);
+            if (diagnostic)
+            {
+                if (command != "observe" || arguments.TryGetProperty("tree", out _) || arguments.GetProperty("privacy").GetString() != "content_allowed")
+                    throw new Boundary("app_request_rejected");
+                keys.Add("diagnostic");
+                Fields(diagnosticValue, ["reference", "observation", "properties"]);
+                var names = diagnosticValue.GetProperty("properties");
+                if (names.ValueKind != JsonValueKind.Array || names.GetArrayLength() != 1 || names[0].GetString() != "help_text")
+                    throw new Boundary("app_request_rejected");
+                Fields(diagnosticValue.GetProperty("reference"), ["runtime_id", "automation_id"]);
+                Fields(diagnosticValue.GetProperty("observation"), ["root_runtime_id", "reference_runtime_id", "observed_at_ms"]);
+                static int[] DiagnosticId(JsonElement id)
+                {
+                    if (id.ValueKind != JsonValueKind.Array || id.GetArrayLength() is < 1 or > 32)
+                        throw new Boundary("app_request_rejected");
+                    return id.EnumerateArray().Select(item => item.GetInt32()).ToArray();
+                }
+                var diagnosticReference = diagnosticValue.GetProperty("reference");
+                var diagnosticObservation = diagnosticValue.GetProperty("observation");
+                if (!DiagnosticId(diagnosticReference.GetProperty("runtime_id")).SequenceEqual(DiagnosticId(diagnosticObservation.GetProperty("reference_runtime_id")))
+                    || !DiagnosticId(arguments.GetProperty("target").GetProperty("root_runtime_id")).SequenceEqual(DiagnosticId(diagnosticObservation.GetProperty("root_runtime_id")))
+                    || diagnosticReference.GetProperty("automation_id").GetString() is not { Length: <= 256 }
+                    || diagnosticObservation.GetProperty("observed_at_ms").GetInt64() <= 0)
+                    throw new Boundary("app_request_rejected");
+            }
             if (command == "scroll") { keys.Add("direction"); keys.Add("amount"); }
             if (command == "realize_item") keys.Add("item_name");
             if (command == "read_text") keys.Add("text");
+            if (arguments.TryGetProperty("execution_mode", out var executionMode))
+            {
+                if (command is not ("set_value" or "set_toggle" or "select_item" or "expand_collapse")
+                    || executionMode.GetString() != "must_background") throw new Boundary("app_request_rejected");
+                keys.Add("execution_mode");
+            }
+            if (arguments.TryGetProperty("expected_value_hash", out var valueHash))
+            {
+                if (command != "set_value" || valueHash.GetString() is not { } hash
+                    || !System.Text.RegularExpressions.Regex.IsMatch(hash, "^[a-f0-9]{64}$")) throw new Boundary("app_request_rejected");
+                keys.Add("expected_value_hash");
+            }
+            if (arguments.TryGetProperty("transition", out var transition))
+            {
+                if (command != "invoke") throw new Boundary("app_request_rejected");
+                ValidateTransition(transition);
+                keys.Add("transition");
+            }
             if (command != "close_window" && arguments.TryGetProperty("local", out _)) keys.Add("local");
             Fields(arguments, keys.ToArray());
-            if (command == "guarded_input")
-                _ = ComputerPlans.TextBatches(arguments.GetProperty("text").GetString()!, splitTabs: true);
+            if (command == "guarded_input") GuardedBatches(arguments);
             var destination = arguments.GetProperty("target");
             Fields(destination, ["pid", "hwnd", "process_start_filetime", "root_runtime_id"]);
             if (destination.GetProperty("pid").GetInt32() != target.Pid
@@ -72,14 +124,14 @@ internal static class AppExecutor
             if (step is < 0 or > 2) throw new Boundary("app_binding_rejected");
             bool noObservation = binding.GetProperty("observation_id").ValueKind == JsonValueKind.Null;
             if (noObservation != (binding.GetProperty("generation").ValueKind == JsonValueKind.Null)
-                || noObservation && (command is not ("observe" or "close_window") || step is not null))
+                || noObservation && (diagnostic || command is not ("observe" or "close_window") || step is not null))
                 throw new Boundary("app_binding_rejected");
             if (value.GetRawText().Length > 98304) throw new Boundary("app_request_rejected");
             return new(command, arguments.Clone(), new(Text("task_id", 128), Text("action_id", 512),
                 noObservation ? null : Text("observation_id", 256), noObservation ? null : Text("generation", 4096), step));
         }
         catch (Boundary) { throw; }
-        catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException or FormatException)
+        catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException)
         { throw new Boundary("app_request_rejected"); }
     }
     private static void Fields(JsonElement value, string[] fields)
@@ -87,32 +139,162 @@ internal static class AppExecutor
         if (value.ValueKind != JsonValueKind.Object || !value.EnumerateObject().Select(p => p.Name).ToHashSet().SetEquals(fields)
             || value.EnumerateObject().Count() != fields.Length) throw new Boundary("app_request_rejected");
     }
+    private static void ValidateTransition(JsonElement value)
+    {
+        Fields(value, ["precondition", "postcondition"]);
+        foreach (var label in new[] { "precondition", "postcondition" })
+        {
+            var condition = value.GetProperty(label);
+            Fields(condition, ["reference", "field", "equals"]);
+            var reference = condition.GetProperty("reference");
+            Fields(reference, ["runtime_id", "automation_id"]);
+            var runtimeId = reference.GetProperty("runtime_id");
+            if (runtimeId.ValueKind != JsonValueKind.Array || runtimeId.GetArrayLength() is < 1 or > 32
+                || reference.GetProperty("automation_id").GetString() is not { Length: <= 256 })
+                throw new Boundary("app_request_rejected");
+            foreach (var id in runtimeId.EnumerateArray()) _ = id.GetInt32();
+            var field = condition.GetProperty("field").GetString();
+            var expected = condition.GetProperty("equals");
+            if (field is "selected" or "focused")
+            {
+                if (expected.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    throw new Boundary("app_request_rejected");
+            }
+            else if (field is not ("name" or "value" or "toggle_state" or "expand_collapse_state")
+                || expected.ValueKind != JsonValueKind.String || expected.GetString()!.Length > 8192)
+                throw new Boundary("app_request_rejected");
+        }
+    }
+    private static PlannedBatch[] GuardedBatches(JsonElement arguments)
+    {
+        var batches = ComputerPlans.TextBatches(arguments.GetProperty("text").GetString()!, splitTabs: true);
+        if (arguments.TryGetProperty("replace", out var replace) && replace.GetBoolean())
+        {
+            var ctrl = Executor.KeyPair(0x11, false); var keyA = Executor.KeyPair(0x41, false);
+            batches = [new(0, [new(0, [ctrl[0], keyA[0], keyA[1], ctrl[1]])]), ..batches];
+        }
+        if (batches.Length > 131) throw new Boundary("input_plan_rejected");
+        return batches;
+    }
+    internal static int ExecutionBudget(AppPlan plan) => plan.Command == "guarded_input"
+        ? ComputerPlans.ExecutionBudget(new(plan.Binding, "text", null, GuardedBatches(plan.Arguments))) : 5000;
     internal static void Execute(BrokerPolicy policy, Prepare prepare, Bound bound, Func<bool> stopped, Stopwatch clock, Receipt result,
         SharedWriteGate? writeGate = null, InputLedger? inputLedger = null)
     {
         var plan = Parse(prepare.Operation.Plan!.Value, prepare.Target);
+        UserPermissions.RequireAppTarget(prepare.Target);
         long stopEpoch = writeGate?.Snapshot().Epoch ?? 0;
         var guardedBatches = plan.Command == "guarded_input"
-            ? ComputerPlans.TextBatches(plan.Arguments.GetProperty("text").GetString()!, splitTabs: true) : null;
-        if (guardedBatches is not null && plan.Arguments.TryGetProperty("replace", out var replace) && replace.GetBoolean())
-        {
-            var ctrl = Executor.KeyPair(0x11, false); var keyA = Executor.KeyPair(0x41, false);
-            guardedBatches = [new(0, [new(0, [ctrl[0], keyA[0], keyA[1], ctrl[1]], [])]), ..guardedBatches];
-            if (guardedBatches.Length > 131) throw new Boundary("input_plan_rejected");
-        }
+            ? GuardedBatches(plan.Arguments) : null;
         int guardedSent = 0;
         if (guardedBatches is not null && (!prepare.Operation.Activate || inputLedger is null))
             throw new Boundary("guarded_input_requires_foreground_ledger");
         bool childGo = false;
-        using var foregroundEvents = prepare.Operation.Activate
-            ? new ForegroundEvents(bound, () => Volatile.Read(ref childGo)) : null;
-        void Check()
+        var targetPeer = Native.Process(bound.Pid).Identity;
+        AppContinuationAnchor[] continuation = plan.Command == "invoke"
+            ? Native.BindAppContinuationAnchors(prepare.Target, bound) : [];
+        AppContinuationAnchor? Continuation()
         {
-            foregroundEvents?.Check();
-            Executor.Check(prepare, bound, stopped, clock, false, false);
-            if (prepare.Operation.Activate && !Native.ForegroundOrOwnedPopup(bound, childGo))
-                throw new Boundary("foreground_changed");
+            if (!Volatile.Read(ref childGo) || plan.Command != "invoke") return null;
+            Native.VerifyPeer(targetPeer);
+            return Native.LiveAppContinuationAnchor(continuation);
         }
+        var closeDrain = new AppCloseDrain(() => clock.ElapsedMilliseconds);
+        bool destroyNotified = false;
+        bool ExpectedDestroyed()
+        {
+            if (Continuation() is not { } ancestor) return false;
+            UserPermissions.RequireAppTarget(ancestor.Target);
+            var current = Native.GetForegroundWindow().ToInt64();
+            bool gone = !Native.IsWindow(new IntPtr(bound.Hwnd));
+            // DESTROY can arrive before IsWindow becomes false, after child
+            // nonce/owner properties have already been removed. Only drain
+            // this sent Invoke toward its exact pre-bound, still-live owner.
+            if (!closeDrain.Allows(gone, current == 0 && gone
+                    || current != bound.Hwnd && Native.TargetOrOwnedPopup(ancestor.Bound, current, true)))
+                return false;
+            Volatile.Write(ref destroyNotified, true);
+            return true;
+        }
+        bool AllowedForeground(long hwnd)
+        {
+            bool suffixPending = guardedBatches is not null && guardedSent < guardedBatches.Length;
+            if (Native.TargetOrOwnedPopup(bound, hwnd, Volatile.Read(ref childGo) && !suffixPending)) return true;
+            var ancestor = Continuation();
+            if (ancestor is null) return false;
+            bool gone = !Native.IsWindow(new IntPtr(bound.Hwnd));
+            if (!gone && !Volatile.Read(ref destroyNotified) && !Native.AppContinuationChainMatches(bound, continuation)) return false;
+            UserPermissions.RequireAppTarget(ancestor.Target);
+            // Zero foreground can occur between menu destruction and owner activation.
+            // This is drain-only: the one Invoke has already gone, with no input suffix.
+            return closeDrain.Allows(gone, hwnd == 0 && gone
+                || Native.TargetOrOwnedPopup(ancestor.Bound, hwnd, true));
+        }
+        using var foregroundEvents = prepare.Operation.Activate
+            ? new ForegroundObservation(() => new ForegroundEvents(bound, allowedForeground: AllowedForeground,
+                expectedDestroyed: ExpectedDestroyed)) : null;
+        bool NeedsForeground() => prepare.Operation.Activate && (!Volatile.Read(ref childGo)
+            || guardedBatches is not null && guardedSent < guardedBatches.Length);
+        var priority = new ForegroundPriority(() => inputLedger?.State ?? "released",
+            () => {
+                Executor.CheckAuthority(prepare, stopped, clock, inputLedger, checkExternal: false);
+                Native.VerifyPeer(targetPeer); UserPermissions.RequireAppTarget(prepare.Target);
+            }, () => {
+                if (!NeedsForeground() || inputLedger is null) throw new Boundary("foreground_changed");
+                foregroundEvents?.CheckRecovery();
+                if (Native.ForegroundChangeReason(bound, Native.GetForegroundWindow().ToInt64()) == "new_window_detected")
+                    throw new Boundary("new_window_detected");
+                foregroundEvents?.Suspend();
+                ++result.ForegroundRecoveries;
+                Executor.Execute(prepare with { Operation = new Operation("activate", RestoreMinimized: true) },
+                    bound, stopped, clock, inputLedger, result, implicitActivation: true);
+            }, () => foregroundEvents?.Restart());
+        bool DrainClosedTarget()
+        {
+            if (Continuation() is not { } ancestor) return false;
+            bool exists = Native.IsWindow(new IntPtr(bound.Hwnd));
+            // File dialogs can hide their root before the one sent Invoke
+            // returns. Keep draining its exact worker instead of killing a
+            // still-running save callback. This admits no additional go/input.
+            if (exists && !Native.HiddenAppContinuationMatches(bound, continuation)) return false;
+            UserPermissions.RequireAppTarget(ancestor.Target);
+            if (prepare.Operation.Activate && !AllowedForeground(Native.GetForegroundWindow().ToInt64()))
+                throw new Boundary("foreground_changed");
+            result.AppLifecycle = new(exists ? "transient_target_hidden" : "transient_target_closed", ancestor.Bound);
+            result.RequiresNewObservation = true;
+            return true;
+        }
+        void CheckCore()
+        {
+            Executor.CheckAuthority(prepare, stopped, clock);
+            Native.VerifyPeer(targetPeer);
+            try { foregroundEvents?.Check(); }
+            catch (Boundary error) when (!NeedsForeground() && error.Code is "foreground_changed" or "target_minimized") { }
+            if (DrainClosedTarget()) return; // Only drain the sent Invoke and confirm exit.
+            if (Volatile.Read(ref destroyNotified)
+                    && closeDrain.Allows(false, AllowedForeground(Native.GetForegroundWindow().ToInt64())))
+                return; // Bounded teardown only; the final still-live check remains below.
+            if (continuation.Length != 0 && !Native.AppContinuationChainMatches(bound, continuation))
+            {
+                // The child may also disappear while the owner chain is read.
+                // A still-live changed chain remains an identity failure.
+                Executor.CheckAuthority(prepare, stopped, clock);
+                Native.VerifyPeer(targetPeer);
+                if (DrainClosedTarget()) return;
+                throw new Boundary("target_identity_changed");
+            }
+            // A child may disappear between IsWindow and CheckTarget. Recheck
+            // authority and its original owner; no provider operation is retried.
+            bool drained = false;
+            CheckWithClosedTargetDrain(
+                () => Executor.Check(prepare, bound, stopped, clock, false, false),
+                () => { Executor.CheckAuthority(prepare, stopped, clock); Native.VerifyPeer(targetPeer); },
+                () => drained = DrainClosedTarget());
+            if (drained) return;
+            if (NeedsForeground() && !AllowedForeground(Native.GetForegroundWindow().ToInt64()))
+                throw new Boundary(Native.ForegroundChangeReason(bound, Native.GetForegroundWindow().ToInt64()));
+        }
+        void Check() => priority.Check(CheckCore);
         Check();
         var dispatchAt = clock.Elapsed.TotalMilliseconds;
         if (plan.Command == "close_window")
@@ -178,7 +360,7 @@ internal static class AppExecutor
                 // source even when a fast worker has already exited with a result.
                 using var stop = new CancellationTokenSource();
                 var read = Task.Run(() => Protocol.Read(child.Process.StandardOutput.BaseStream,
-                    Math.Max(1, prepare.DeadlineMs - (int)clock.ElapsedMilliseconds), stop.Token, 98304));
+                    Math.Max(1, prepare.DeadlineMs - (int)clock.ElapsedMilliseconds), stop.Token, plan.Command == "observe" ? 1_100_000 : 98304));
                 try
                 {
                     while (!read.IsCompleted) { Thread.Sleep(20); Check(); }
@@ -196,7 +378,11 @@ internal static class AppExecutor
                                 || reply.RootElement.GetProperty("focused").ValueKind != JsonValueKind.True
                                 || guardedSent >= guardedBatches.Length) throw new Boundary("app_focus_guard_rejected");
                             var input = new ComputerPlan(plan.Binding, "text", null, [guardedBatches[guardedSent]]);
-                            ComputerPlans.Execute(input, prepare, bound, stopped, clock, inputLedger, result);
+                            var previousRecovery = inputLedger.PreDispatchRecovery;
+                            inputLedger.PreDispatchRecovery = priority.Recover;
+                            try { ComputerPlans.Execute(input, prepare, bound,
+                                () => { Check(); return stopped(); }, clock, inputLedger, result); }
+                            finally { inputLedger.PreDispatchRecovery = previousRecovery; }
                             ++guardedSent;
                             result.InputResult!.CompletedPlans = guardedSent;
                             result.InputResult.CompletedSegments = guardedSent;
@@ -230,7 +416,21 @@ internal static class AppExecutor
                     result.Reason = reply.RootElement.TryGetProperty("reason", out var reason) && reason.ValueKind == JsonValueKind.String ? reason.GetString() : null;
                     child.Process.StandardInput.Close();
                     while (!child.Process.WaitForExit(20)) Check();
-                    foregroundEvents?.Check();
+                    Check(); // A fast completed worker can close its transient root between samples.
+                    // Returning UIA providers need not wait for the owner's
+                    // asynchronous DestroyWindow. Drain the remaining original
+                    // allowance only, with fresh authority/events and no go.
+                    while (closeDrain.TransitionStarted && Native.IsWindow(new IntPtr(bound.Hwnd))
+                           && Native.IsWindowVisible(new IntPtr(bound.Hwnd)))
+                    {
+                        if (!closeDrain.Allows(false, AllowedForeground(Native.GetForegroundWindow().ToInt64())))
+                            throw new Boundary("foreground_changed");
+                        Check(); Thread.Sleep(5);
+                    }
+                    Check();
+                    if (closeDrain.TransitionStarted && Native.IsWindow(new IntPtr(bound.Hwnd))
+                        && Native.IsWindowVisible(new IntPtr(bound.Hwnd)))
+                        throw new Boundary("foreground_changed");
                     result.TimingsMs["dispatch"] = clock.Elapsed.TotalMilliseconds - dispatchAt;
                     return;
                 }

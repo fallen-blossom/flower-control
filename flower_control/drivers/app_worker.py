@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -29,10 +30,80 @@ from flower_control.drivers.app_scope import validate_local_scope
 from flower_control.drivers.app_timing import timed_phase, safe_timings, NATIVE_EXECUTION_FIELDS
 
 
-MAX_MESSAGE = 98_304
+MAX_MESSAGE = 1_100_000
 NATIVE_EXE = Path(__file__).with_name("app_native") / "bin" / "Release" / "net10.0-windows10.0.19041.0" / "win-x64" / "Flower.AppWorker.exe"
+_APP_BUNDLE_NAMES = frozenset({"Flower.AppWorker.exe", "Flower.AppWorker.dll",
+                             "Flower.AppWorker.deps.json", "Flower.AppWorker.runtimeconfig.json"})
+
+
+def native_executable() -> Path:
+    """Resolve the companion from this frozen version, with no development fallback."""
+    repository = Path(__file__).resolve().parents[2]
+    interpreter = Path(sys.executable).resolve()
+    frozen = repository.name == "python-source" or interpreter.name.casefold() == "flower-python.exe"
+    if not frozen:
+        return NATIVE_EXE
+    return _installed_native_executable(repository, interpreter, "AppWorkerHashes", "app",
+        _APP_BUNDLE_NAMES, "Flower.AppWorker.exe", "app_installed_worker_unverified")
+
+
+def _installed_native_executable(repository, interpreter, hash_field, child_directory,
+                                 required_names, executable_name, error_code):
+    """Private shared resolver for the two version-local native companions."""
+    from .high_helper import _installed_bundle, _unique_pairs, _digest, HighHelperError
+    import re
+    try:
+        bundle, version = _installed_bundle()
+        policy_path = bundle.directory / "broker.json"
+        if policy_path.stat().st_size > 256_000:
+            raise ValueError("policy_too_large")
+        policy = json.loads(policy_path.read_bytes(), object_pairs_hook=_unique_pairs)
+        if (type(policy) is not dict or policy.get("Schema") != 1 or policy.get("Version") != version
+                or os.path.normcase(os.path.abspath(policy.get("Repository", ""))) != os.path.normcase(str(repository))
+                or interpreter.name.casefold() == "flower-python.exe" and interpreter.parent != bundle.directory.resolve()):
+            raise ValueError("frozen_version_mismatch")
+        hashes = policy.get(hash_field)
+        if type(hashes) is not dict or not required_names <= hashes.keys() or not 4 <= len(hashes) <= 32:
+            raise ValueError("app_bundle_rejected")
+        directory = bundle.directory / child_directory
+        if directory.is_symlink() or directory.is_junction() or not directory.is_dir():
+            raise ValueError("app_bundle_rejected")
+        folded = set()
+        for name, expected in hashes.items():
+            if (type(name) is not str or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}\.(exe|dll|json)", name)
+                    or name.endswith((" ", ".")) or name.casefold() in folded
+                    or type(expected) is not str or not re.fullmatch(r"[a-f0-9]{64}", expected)):
+                raise ValueError("app_bundle_rejected")
+            folded.add(name.casefold())
+            path = directory / name
+            if path.is_symlink() or path.is_junction() or not path.is_file() or _digest(path) != expected:
+                raise ValueError("app_bundle_changed")
+        return directory / executable_name
+    except (HighHelperError, OSError, ValueError, TypeError, KeyError):
+        raise ControlError(error_code) from None
 COMMANDS = frozenset({"observe", "set_value", "invoke", "focus", "guarded_input", "set_toggle", "select_item",
                       "expand_collapse", "scroll", "realize_item", "read_text"})
+
+
+def validate_observe_limits(limits, *, content):
+    bounds = {"max_nodes": (1, 500), "max_depth": (0, 12), "max_bytes": (1, 1_000_000),
+              "max_ms": (1, 2000), "max_provider_calls": (1, 5000)}
+    if (type(limits) is not dict or not {"max_nodes", "max_depth"} <= limits.keys()
+            or not limits.keys() <= bounds.keys() | {"filter", "projection"}):
+        raise ValueError("invalid_app_limits")
+    for key, (low, high) in bounds.items():
+        if key in limits and (type(limits[key]) is not int or not low <= limits[key] <= high):
+            raise ValueError("invalid_app_limits")
+    if type(limits.get("projection", "full")) is not str or limits.get("projection", "full") not in {"compact", "actionable", "full"}:
+        raise ValueError("invalid_app_projection")
+    filters = limits.get("filter", {})
+    if (type(filters) is not dict or not filters.keys() <= {"automation_id", "control_type", "name"}
+            or any(type(v) is not str or not 1 <= len(v) <= 256
+                   or any(unicodedata.category(c) in {"Cc", "Cs"} for c in v)
+                   for v in filters.values())):
+        raise ValueError("invalid_app_filter")
+    if "name" in filters and not content:
+        raise ValueError("content_scope_not_approved")
 
 
 def validate_request(command: str, arguments: dict) -> None:
@@ -40,8 +111,37 @@ def validate_request(command: str, arguments: dict) -> None:
     if command not in COMMANDS or type(arguments) is not dict:
         raise ValueError("invalid_app_command")
     expected = {"target", "limits", "privacy", "privacy_scope"} if command == "observe" else {"target", "reference", "observation", "privacy", "privacy_scope"}
+    if "execution_mode" in arguments:
+        from .app_stage import BACKGROUND_PATTERNS
+        if command not in BACKGROUND_PATTERNS or arguments["execution_mode"] != "must_background":
+            raise ValueError("invalid_app_execution_mode")
+        expected.add("execution_mode")
     if command == "set_value":
         expected.add("value")
+        if "expected_value_hash" in arguments:
+            import re
+            if type(arguments["expected_value_hash"]) is not str or not re.fullmatch(r"[a-f0-9]{64}", arguments["expected_value_hash"]):
+                raise ValueError("invalid_app_value_version")
+            expected.add("expected_value_hash")
+    if "transition" in arguments:
+        if command != "invoke":
+            raise ValueError("invalid_app_transition")
+        expected.add("transition")
+        transition = arguments["transition"]
+        if type(transition) is not dict or set(transition) != {"precondition", "postcondition"}:
+            raise ValueError("invalid_app_transition")
+        for condition in transition.values():
+            if (type(condition) is not dict or set(condition) != {"reference", "field", "equals"}
+                    or type(condition["field"]) is not str
+                    or condition["field"] not in {"name", "value", "toggle_state", "expand_collapse_state", "selected", "focused"}
+                    or (type(condition["equals"]) is not bool if condition["field"] in {"selected", "focused"}
+                        else type(condition["equals"]) is not str or len(condition["equals"]) > 8192)):
+                raise ValueError("invalid_app_transition")
+            reference = condition["reference"]
+            if (type(reference) is not dict or set(reference) != {"runtime_id", "automation_id"}
+                    or not _runtime_id(reference["runtime_id"]) or type(reference["automation_id"]) is not str
+                    or len(reference["automation_id"]) > 256):
+                raise ValueError("invalid_app_transition")
     if command == "guarded_input":
         expected.add("text")
         if "replace" in arguments:
@@ -61,6 +161,21 @@ def validate_request(command: str, arguments: dict) -> None:
     if "local" in arguments:
         expected.add("local")
         validate_local_scope(arguments["local"])
+    if "diagnostic" in arguments:
+        if command != "observe" or "tree" in arguments:
+            raise ValueError("invalid_app_diagnostic")
+        expected.add("diagnostic")
+        diagnostic = arguments["diagnostic"]
+        if (type(diagnostic) is not dict or set(diagnostic) != {"reference", "observation", "properties"}
+                or type(diagnostic["properties"]) is not list or diagnostic["properties"] != ["help_text"]
+                or arguments["privacy"] != "content_allowed"):
+            raise ValueError("invalid_app_diagnostic")
+        nested = {"target": arguments["target"], "reference": diagnostic["reference"],
+                  "observation": diagnostic["observation"], "privacy": arguments["privacy"],
+                  "privacy_scope": arguments["privacy_scope"], "text": {"offset": 0, "max_chars": 1, "version": None}}
+        validate_request("read_text", nested)
+        if diagnostic["observation"]["root_runtime_id"] != arguments["target"]["root_runtime_id"]:
+            raise ValueError("invalid_app_diagnostic")
     if "tree" in arguments:
         if command != "observe":
             raise ValueError("invalid_app_tree_cursor")
@@ -87,10 +202,7 @@ def validate_request(command: str, arguments: dict) -> None:
         if "tree" in arguments and not target["root_runtime_id"]:
             raise ValueError("invalid_app_tree_cursor")
         limits = arguments["limits"]
-        if (type(limits) is not dict or set(limits) != {"max_nodes", "max_depth"}
-                or type(limits["max_nodes"]) is not int or not 1 <= limits["max_nodes"] <= 192
-                or type(limits["max_depth"]) is not int or not 0 <= limits["max_depth"] <= 8):
-            raise ValueError("invalid_app_limits")
+        validate_observe_limits(limits, content=arguments["privacy"] == "content_allowed")
         return
     ref = arguments["reference"]
     if (type(ref) is not dict or set(ref) != {"runtime_id", "automation_id"}
@@ -196,6 +308,31 @@ def _check_content_scope(guard: WorkerCallGuard, arguments: dict) -> None:
             raise ControlError("app_content_scope_mismatch")
 
 
+def _check_shared_target(guard, arguments):
+    """Exact permit metadata, rechecked after native startup and before return."""
+    if not isinstance(guard, WorkerCallGuard):
+        return  # Internal native protocol fixtures use their own guard.
+    with guard.store.read_transaction() as db:
+        action = db.execute("SELECT task,resources FROM actions WHERE id=?", (guard.action,)).fetchone()
+    if action is None:
+        raise ControlError("worker_action_unavailable")
+    borrowers = [r for r in json.loads(action["resources"]) if r.startswith("web-borrower:")]
+    if not borrowers:
+        return
+    if len(borrowers) != 1:
+        raise ControlError("worker_browser_binding_unavailable")
+    from flower_control.browser_window_policy import BrowserWindowPolicy
+    from flower_control.permissions import process_facts
+    from flower_control.control.native import process_creation_filetime
+    target = arguments["target"]
+    if process_creation_filetime(target["pid"]) != target["process_start_filetime"]:
+        raise ControlError("worker_browser_binding_unavailable")
+    image, _ = process_facts(target["pid"])
+    access = BrowserWindowPolicy(guard.store).inspect(action["task"], target["pid"], image, hwnd=target["hwnd"])
+    if access.shared_resource != borrowers[0]:
+        raise ControlError("worker_browser_binding_unavailable")
+
+
 def normalize_app_result(command: str, result: dict) -> dict:
     """Read-only work cannot have an uncertain UIA write outcome."""
     if command in {"observe", "read_text"}:
@@ -207,14 +344,41 @@ def normalize_app_result(command: str, result: dict) -> dict:
 
 
 async def run_native(command: str, arguments: dict, guard: WorkerCallGuard, *,
-                     native_exe: Path = NATIVE_EXE, deadline_s: float = 5.0,
+                     native_exe: Path | None = None, deadline_s: float = 5.0,
                      native_command: tuple[str, ...] | None = None) -> dict:
     timings = {}
     result = await _run_native(command, arguments, guard, native_exe=native_exe,
                                deadline_s=deadline_s, native_command=native_command, timings=timings)
+    result = normalize_app_result(command, result)
     native_timings = {key: value for key, value in safe_timings(result.get("timing_ms")).items()
                       if key in NATIVE_EXECUTION_FIELDS}
-    return {**normalize_app_result(command, result), "timing_ms": {**native_timings, **timings}}
+    # _run_native returns only after its owned child's finally has completed
+    # job closure and wait. Early provider rejection also takes that path.
+    # Exceptions/failed cleanup never reach here and cannot mint exit proof.
+    try:
+        await check_live_guard(guard, command)
+        await asyncio.to_thread(_check_shared_target, guard, arguments)
+        await check_live_guard(guard, command)
+    except ControlError as error:
+        # A pause or revocation right after the native call must still keep the
+        # page content out of the reply. It must not also throw away the
+        # receipt: the caller needs the dispatched/executor-exit facts to decide
+        # whether anything was executed. _run_native already scrubbed content
+        # before returning, so dropping the result here leaks nothing further.
+        code = getattr(error, "code", None) or str(error)
+        if result.get("state") == "rejected":
+            # Nothing ran and the inner path already produced an exact
+            # rejection; keep its reason instead of relabelling it.
+            return {**result, "native_executor_exited": True,
+                    "timing_ms": {**native_timings, **timings}}
+        return {"state": "outcome_uncertain" if result.get("state") == "outcome_uncertain"
+                and result.get("dispatched") is not False else "not_verified",
+                "dispatched": result.get("dispatched"),
+                "reason": "permit_revoked_during_native_call" if code == "user_paused_or_cancelled" else code,
+                "native_executor_exited": True,
+                "timing_ms": {**native_timings, **timings}}
+    return {**normalize_app_result(command, result), "native_executor_exited": True,
+            "timing_ms": {**native_timings, **timings}}
 
 
 def record_app_phase(store, action: str, command: str, stage: str, dispatched) -> None:
@@ -265,13 +429,15 @@ async def check_live_guard(guard, command):
 
 
 async def _run_native(command: str, arguments: dict, guard: WorkerCallGuard, *,
-                     native_exe: Path = NATIVE_EXE, deadline_s: float = 5.0,
+                     native_exe: Path | None = None, deadline_s: float = 5.0,
                      native_command: tuple[str, ...] | None = None, timings=None) -> dict:
     timings = {} if timings is None else timings
     validate_request(command, arguments)
     await check_live_guard(guard, command)
     if command == "guarded_input":
         raise ControlError("app_guarded_input_requires_high_executor")
+    if native_command is None and native_exe is None:
+        native_exe = native_executable()
     if native_command is None and not native_exe.is_file():
         return {"state": "rejected", "dispatched": False,
                 "reason": "app_native_worker_missing"}
@@ -308,6 +474,8 @@ async def _run_native(command: str, arguments: dict, guard: WorkerCallGuard, *,
                     "reason": "native_response_invalid"}
         if first_result == {"phase": "ready"}:
             try:
+                await check_live_guard(guard, command)
+                await asyncio.to_thread(_check_shared_target, guard, arguments)
                 await check_live_guard(guard, command)
             except ControlError:
                 return {"state": "rejected", "dispatched": False,
@@ -357,7 +525,7 @@ async def _run_native(command: str, arguments: dict, guard: WorkerCallGuard, *,
         if type(result) is not dict or result.get("state") not in ("verified", "not_verified", "outcome_uncertain", "observed", "rejected"):
             return {"state": "outcome_uncertain", "dispatched": True,
                     "reason": "native_response_invalid"}
-        return result
+        return {**result, "native_executor_exited": True}
     finally:
         cleanup_started = time.perf_counter()
         if result_started is not None and "native_result" not in timings:

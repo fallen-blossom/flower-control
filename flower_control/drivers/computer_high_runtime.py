@@ -2,6 +2,7 @@
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, replace
 import hashlib
+import sqlite3
 import time
 import uuid
 
@@ -13,7 +14,7 @@ from flower_control.control.state import ControlError
 from flower_control.window_registry import WindowSelectionError
 from . import computer_native as native
 from .computer_capture import CaptureError
-from .computer_high import assert_target_geometry, input_plan
+from .computer_high import assert_target_geometry, input_plan, sequence_batches
 from .computer_targets import CandidateError, checked_click_arguments, _region_digest
 from .foreground_indicator import ForegroundIndicator, IndicatorError
 from .high_helper import HighHelperError, HighTarget
@@ -111,13 +112,15 @@ def bind_selected_window(runtime, request, current):
 
 
 def recover_release_for_status(runtime, task, key):
-    # Ordinary queries remain useful for a closed window and absent helper.
-    # Only persisted external unconfirmed ledgers warrant a recovery query.
+    # Local release confirmation and the broker's completion ACK are separate
+    # commits. Keep confirmed external bindings queryable too: the original
+    # ACK may have been lost after the durable local completion was accepted.
+    # This reconciles only the exact existing ledger, never its business input.
     with runtime.store.transaction() as db:
         row = db.execute("SELECT b.confirmed,b.executor_process,o.process FROM input_release_bindings b "
             "JOIN actions a ON a.id=b.action JOIN owners o ON o.id=a.owner WHERE a.id=? AND a.task=?",
             (key, task)).fetchone()
-    if not row or row["confirmed"] is not None or row["executor_process"] == row["process"]:
+    if not row or row["executor_process"] == row["process"]:
         return None
     try:
         owner = runtime._task_owner(task)
@@ -126,6 +129,8 @@ def recover_release_for_status(runtime, task, key):
         runtime._high.client.recover_release(runtime.store, owner, key)
         return {"state": "confirmed", "business_outcome_verified": False}
     except (ControlError, HighHelperError) as error:
+        if row['confirmed'] is not None and error.code == 'release_recovery_record_missing':
+            return None
         return {"state": "pending", "reason": error.code, "business_outcome_verified": False}
 
 
@@ -138,6 +143,16 @@ def _complete(receipt):
     return (_released(receipt) and receipt["State"] == "dispatched_unverified"
             and receipt["InputResult"] is not None and receipt["InputResult"]["BusinessComplete"]
             and not receipt["RequiresNewObservation"])
+
+
+def _known_input_prefix(receipt):
+    # A gate rejection adds no requested SendInput events. Zero/partial
+    # native returns leave RequestedEvents > SentEvents; unknown counts and
+    # uncertain release are excluded independently.
+    selected_gate = ((receipt.get('Reason') or '').startswith('privacy_')
+                     or receipt.get('Reason') == 'input_focus_transition_unconfirmed')
+    return (selected_gate and _released(receipt) and receipt['State'] in {'interrupted', 'rejected'}
+            and receipt['RequestedEvents'] == receipt['SentEvents'])
 
 
 def _layout_completed(receipt):
@@ -162,21 +177,28 @@ def _layout_state(receipt):
 _INTERRUPTION_FACTS = {"input_stopped": "explicit_stop", "broker_paused": "explicit_stop",
     "global_write_stopped": "explicit_stop",
     "foreground_changed": "foreground_changed",
+    "new_window_detected": "new_window_detected",
     "geometry_changed": "geometry_changed", "client_geometry_changed": "geometry_changed",
     "target_minimized": "target_minimized", "input_context_changed": "ime_changed",
     "external_input_held": "external_keyboard", "deadline_expired": "deadline_exceeded",
+    "external_keyboard_activity": "external_keyboard", "external_mouse_activity": "external_mouse",
     "desktop_topology_changed": "geometry_changed", "mouse_receiver_changed": "external_mouse"}
 
 
 def _detail(receipt):
     value = receipt["InputResult"]
     detail = {"execution_route": "high_broker", "native_receipt": receipt,
-        "dispatched": True if receipt["ActivationRequested"] or receipt["BusinessEvents"] or receipt["ImeEvents"] else
+        "dispatched": True if receipt["ActivationRequested"] or receipt["BusinessEvents"] or receipt["ImeEvents"] or receipt.get("PointerEvents", 0) or receipt.get("KeyboardReleaseEvents", 0) else
             False if receipt["NativeCountKnown"] else None,
         "input_dispatched": True if receipt["BusinessEvents"] else
             False if receipt["NativeCountKnown"] else None,
         "sent_events": receipt["BusinessEvents"] + receipt["ImeEvents"],
         "business_events": receipt["BusinessEvents"], "ime_events": receipt["ImeEvents"],
+        "pointer_events": receipt.get("PointerEvents", 0),
+        "keyboard_release_events": receipt.get("KeyboardReleaseEvents", 0),
+        "foreground_recoveries": receipt.get("ForegroundRecoveries", 0),
+        "physical_input_dispatched": (True if receipt["BusinessEvents"] or receipt["ImeEvents"] or receipt["ActivationEvents"] or receipt.get("PointerEvents", 0) or receipt.get("KeyboardReleaseEvents", 0)
+            else False if receipt["NativeCountKnown"] else None),
         "activation_events": receipt["ActivationEvents"], "native_count_known": receipt["NativeCountKnown"],
         "sent_batches": value["CompletedPlans"] if value else 0,
         "input_release": receipt["InputRelease"], "foreground": receipt["Foreground"],
@@ -188,6 +210,8 @@ def _detail(receipt):
             "activation_diagnostics": receipt["ActivationDiagnostics"]},
         **({"input_result": value, "sent_segments": value["CompletedSegments"],
              "timed_plan_completed": value["BusinessComplete"]} if value else {})}
+    if receipt.get("PointerPlanningFailure") is not None:
+        detail["pointer_planning_failure"] = dict(receipt["PointerPlanningFailure"])
     if receipt.get("LayoutResult") is not None:
         layout = receipt["LayoutResult"]
         detail.update(dispatched=layout["Dispatched"], layout_result={
@@ -198,14 +222,17 @@ def _detail(receipt):
             "requested_reached": layout["RequestedReached"]},
             semantic_executor=receipt["SemanticExecutor"],
             semantic_executor_exited=receipt["SemanticExecutorExited"])
+    if receipt.get('PrivacyDiagnostics') is not None:
+        detail['privacy_diagnostics'] = receipt['PrivacyDiagnostics']
     return detail
 
 
 def execute_high(runtime, owner, resource, grant, key, command, payload, decision_id,
                  resources, stop, status, *, observation=None, generation=None, batches=None,
                  geometry=None, restore_minimized=False, sequence=None, shared_revision=None,
-                 semantic_candidate=None, region_version=None, layout_plan=None):
+                 semantic_candidate=None, region_version=None, layout_plan=None, control_cycle=None):
     from .computer_mcp import ComputerBoundaryError, _indicator_paths, _plan_input
+    from .indicator_visual import computer_action_label
     store = runtime.store
     stage = indicator = lease_seen = None
     native_receipts, step_observations, checks, sent_prefix = [], [], [], []
@@ -215,18 +242,32 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
     before_windows = frozenset()
     return_parent = None
     sequence_started = False
+    sequence_readback_started = False
     final_sequence = "sequence_stopped"
     terminal = "not_verified"
     original_revision = status.desktop_revision
+    control_cycle = runtime._pin_control_run(grant, status, expected_cycle=control_cycle)
+    run_generation = control_cycle["broker_stop"][3] if runtime.COMPUTER_INPUT_RUN else None
     restore_pending = False
+    external_guard_reason = None
     tool = "flower_computer_activate" if command == "activate" else "flower_computer_input"
 
     def stopped():
-        return (stop.is_set() or grant.expires_at <= store.clock()
-                or store.external_dispatch_stopped(owner, key))
+        nonlocal external_guard_reason
+        if (stop.is_set() or control_cycle["stop"].is_set() or grant.expires_at <= store.clock()
+                or store.external_dispatch_stopped(owner, key)):
+            return True
+        if grant.execution_guard is not None:
+            try:grant.execution_guard()
+            except Exception as error:
+                external_guard_reason=getattr(error,'code','desktop_guard_unavailable')
+                stop.set()
+                return True
+        return False
 
     def check(*, running=True, expected_geometry=None, foreground=False):
-        if stop.is_set():
+        if grant.execution_guard is not None:grant.execution_guard()
+        if stop.is_set() or control_cycle["stop"].is_set():
             raise ComputerBoundaryError("input_stopped")
         runtime._authorized(tool, payload, payload.get("target"), "input", trusted_task=grant.task_id)
         if grant.expires_at <= store.clock():
@@ -239,6 +280,9 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                 if row is None or row[0] != expected_shared + 1:
                     raise ComputerBoundaryError("observation_unavailable")
         native.assert_window(grant.identity)
+        if runtime._takeover_policy is not None and not sequence_readback_started:
+            runtime._takeover_policy.check_dispatch(grant.task_id, grant.identity,
+                allow_activation=command == "activate" or command == "input" and not foreground)
         # The helper restores a minimized target and checks these original
         # observed pixels before business input. Never plan against its iconic
         # bounds, and never replace the observation with restore-time geometry.
@@ -256,7 +300,7 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
             terminal = "outcome_uncertain"
         if (command == "input" and receipt["BusinessEvents"] and not _complete(receipt)
                 and receipt["InputResult"] is not None and not receipt["InputResult"]["BusinessComplete"]
-                and receipt["Reason"] not in _INTERRUPTION_FACTS):
+                and receipt["Reason"] not in _INTERRUPTION_FACTS and not _known_input_prefix(receipt)):
             terminal = "outcome_uncertain"
         if command == "activate" and _released(receipt) and receipt["State"] == "activated" and receipt["Foreground"]:
             terminal = "verified"  # Only this activation fact; business remains unverified.
@@ -317,16 +361,21 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
             if new["visual_scope"] != "target_window_only":
                 raise ComputerBoundaryError("new_window_detected")
         total = len(sequence) if sequence else 1
+        previous_digest = observed["image_digest"] if sequence else None
+        previous_capture = observed.get("capture_descriptor") if sequence else None
         chain_context = store.external_sequence(owner, key, decision_id, total_steps=total) if sequence else nullcontext(None)
         with chain_context as chain:
             try:
                 for index in range(total):
                     # Exactly one native request now. Never send the suffix before
                     # the preceding real capture/expect and fresh Store.observe.
-                    step_command, step_batches = (sequence[index][0], (sequence[index][1],)) if sequence else (
+                    step_command, step_batches = (sequence[index][0], sequence_batches(sequence[index][1])) if sequence else (
                         payload.get("command", command), batches)
                     if index:
-                        check(expected_geometry=geometry, foreground=True)
+                        # This next step is still unexecuted. Its own High
+                        # request restores the exact target under the original
+                        # lane; a user switch between receipts is not Stop.
+                        check(expected_geometry=geometry)
                     if step_command in {"click_candidate", "click_region", "choose_region"}:
                         step_command = "click"
                     if layout_plan is not None:
@@ -336,7 +385,11 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                     else:
                         plan = input_plan(step_command, step_batches,
                             task=grant.task_id, action=key, observation=observation, generation=generation,
-                            sequence_step=index if sequence else None)
+                            sequence_step=index if sequence else None,
+                            settle_final_focus=bool(sequence and index < total - 1 and any(
+                                event.raw.type == 1 for row in sequence[index:]
+                                for batch in sequence_batches(row[1]) for event in batch.steps)),
+                            **({'suppress_pointer_approach':True} if grant.suppress_pointer_approach else {}))
                         operation = plan.operation(restore_minimized=True)
 
                     @contextmanager
@@ -361,11 +414,15 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                                 def on_stop():
                                     stop.set()
                                     store.pause_computer_target(grant.task_id, resource)
+                                    with store.transaction() as db:
+                                        store._mark_stage_stop(db,key)
+                                        db.execute("UPDATE actions SET cancel_requested=1 WHERE id=? AND task=?",(key,grant.task_id))
                                 indicator = runtime._acquire_indicator(grant,
-                                    payload.get("goal_hint") or payload.get("command") or "窗口操作", on_stop, prepare=True, factory=ForegroundIndicator,
+                                    payload.get("goal_hint") or "执行窗口操作", on_stop, prepare=True, factory=ForegroundIndicator,
                                     paths=_indicator_paths(
-                                        tuple(item[1] for item in sequence) if sequence else step_batches or (), geometry))
-                            indicator.set_stage("prepare", checkpoint=f"准备步骤 {index + 1}/{total}" if sequence else
+                                        tuple(batch for item in sequence for batch in sequence_batches(item[1])) if sequence else step_batches or (), geometry),
+                                    next_step=payload.get("next_step"), stop_signal=stop)
+                            indicator.set_stage("prepare", checkpoint=f"准备{computer_action_label(step_command)} · {index + 1}/{total}" if sequence else
                                 "重查目标与窗口外框" if layout_plan is not None else "重查目标与输入位置")
                             if region_version is not None or semantic_candidate is not None:
                                 if restore_pending and win32gui.IsIconic(grant.identity.hwnd):
@@ -376,7 +433,8 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                                 if semantic_candidate is not None:
                                     checked = checked_click_arguments(semantic_candidate, identity=grant.identity,
                                         geometry=geometry, capture=snapshot, computer_observation_id=observation)
-                                    expected_batches = _plan_input("click", checked, geometry)
+                                    expected_batches = _plan_input("click", checked, geometry,
+                                        default_pointer_constraints=grant.pointer_constraints)
                                     # The immutable plan was already sent at prepare;
                                     # compare it, never replace after ready.
                                     if input_plan("click", expected_batches, task=grant.task_id, action=key,
@@ -389,11 +447,15 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                                 store.begin_computer_sequence_step(owner, key, index)
                                 partial_step = index
                             check(expected_geometry=geometry)
-                            indicator.set_stage("input", checkpoint=f"步骤 {index + 1}/{total}" if sequence else
-                                "执行已绑定窗口调整" if layout_plan is not None else "执行已绑定输入")
+                            indicator.set_stage("prepare" if command == "activate" else "input",
+                                checkpoint="切换目标到前台" if command == "activate" else
+                                f"{computer_action_label(step_command)} · {index + 1}/{total}" if sequence else
+                                computer_action_label(payload.get("command", command)))
                             yield
                             actual = lease.result
                             native_receipts.append(actual)
+                            if actual["Foreground"] and runtime._takeover_policy is not None:
+                                runtime._takeover_policy.confirm_activation(grant.task_id, grant.identity)
                             result = {**_detail(actual), "executor_process": lease.executor_process,
                                       "peer_evidence": dict(lease.peer_evidence)}
                             interruption = _INTERRUPTION_FACTS.get(actual["Reason"])
@@ -404,7 +466,7 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                                 # the whole chat. Host cancellation/expiry must
                                 # never acquire that wider persistent effect.
                                 interruption = None
-                            if interruption is not None and lease.go_sent:
+                            if lease.go_sent and (interruption is not None or actual["RequiresNewObservation"]):
                                 stage.interrupt_after_external(lease, interruption)
                             if sequence:
                                 complete = (_released(actual) and actual["InputResult"] is not None
@@ -420,11 +482,18 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                     session = runtime._high.session(grant.task_id)
                     if layout_plan is not None:
                         outcome = session.execute_window_layout(grant.task_id, target, plan,
-                            before_go=before_go, stopped=stopped, resources=resources, deadline_ms=3000)
+                            before_go=before_go, stopped=stopped, resources=resources, deadline_ms=3000,
+                            stop_signal=stop, computer_stop_generation=run_generation)
                     else:
+                        from .computer_work import input_wire_budget
                         outcome = session.execute(grant.task_id, target, operation,
-                            before_go=before_go, stopped=stopped, resources=resources, deadline_ms=5000)
+                            before_go=before_go, stopped=stopped, resources=resources,
+                            deadline_ms=input_wire_budget(operation['Plan']) if operation['Kind'] == 'computer_input_plan' else 5000,
+                            stop_signal=stop, computer_stop_generation=run_generation)
                     receipt = outcome["receipt"]
+                    if receipt.get("Reason") == "computer_stopped":
+                        runtime._native_control_stop(grant.task_id, control_cycle)
+                        stop.set()
                     result = {**_detail(receipt), **{name: outcome[name] for name in
                         ("executor_process", "helper_session_retained", "helper_exited", "helper_exit_reason", "new_connection",
                          "new_helper_process", "peer_evidence", "broker_version", "connection_id", "parent_timings_ms")}}
@@ -445,23 +514,32 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                         reason = "new_window_detected"
                         result.update(new)
                         break
+                    final_readback = index == total - 1
+                    if final_readback:
+                        check(expected_geometry=geometry)
+                        store.begin_sequence_final_readback(owner, key)
+                        sequence_readback_started = True
+                        runtime._finish_indicator(indicator, released=True, action_owner=stop)
                     fresh = runtime._capture_observation(grant, owner, resource,
-                        lambda: check(expected_geometry=geometry, foreground=True), stop.is_set)
+                        lambda: check(expected_geometry=geometry), stop.is_set)
                     with runtime._gate:
                         fresh_meta = runtime._observations[fresh["observation_id"]]
-                        old_meta = runtime._observations[observation]
                     if fresh_meta["broker_revision"] != original_revision:
                         raise ComputerBoundaryError("desktop_revision_changed")
                     expectation = sequence[index][2]
                     digest = fresh_meta["image_digest"]
+                    fresh_capture = fresh_meta.get("capture_descriptor")
+                    if (expectation != "capture_available" and previous_capture is not None and
+                            fresh_capture is not None and previous_capture.source != fresh_capture.source):
+                        raise CaptureError("capture_backend_changed")
                     matched = (expectation == "capture_available" or
-                        expectation == "image_changed" and digest != old_meta["image_digest"] or
-                        expectation == "image_unchanged" and digest == old_meta["image_digest"])
+                        expectation == "image_changed" and digest != previous_digest or
+                        expectation == "image_unchanged" and digest == previous_digest)
                     step_observations.append({"index": index, "command": step_command, "expect": expectation,
                         "observation_id": fresh["observation_id"], "generation": fresh_meta["generation"], "image": fresh["image"]})
                     checks.append({"index": index, "expect": expectation, "matched": matched})
                     # A popup may appear while the screenshot is captured.
-                    check(expected_geometry=geometry, foreground=True)
+                    check(expected_geometry=geometry)
                     new = native.new_visible_followups(grant.identity, before_windows, bind_allowed=False)
                     if new["visual_scope"] != "target_window_only":
                         reason = "new_window_detected"
@@ -471,6 +549,8 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                         reason = "step_condition_unmet"
                         break
                     observation, generation = fresh["observation_id"], fresh_meta["generation"]
+                    previous_digest = digest
+                    previous_capture = fresh_capture
                     expected_shared = fresh_meta.get("shared_revision")
                     # Continuation consumes one additional shared revision. The
                     # capture check above used the preceding dispatch's revision.
@@ -490,6 +570,9 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
     except (ControlError, HighHelperError, native.NativeInputError, ComputerBoundaryError,
             CaptureError, IndicatorError, CandidateError, ValueError) as error:
         reason = getattr(error, "code", "invalid_computer_request")
+        if reason == "computer_stopped":
+            runtime._native_control_stop(grant.task_id, control_cycle)
+            stop.set()
         error_details = dict(error.details) if isinstance(error, HighHelperError) else None
         current = store.status(owner, key)
         if current["state"] == "queued":
@@ -499,21 +582,24 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
         if result is None:
             result = {"execution_route": "high_broker", "business_outcome_verified": False}
         result["reason"] = reason
+        if isinstance(error, CaptureError):
+            result["requires_new_observation"] = True
+            if error.diagnostics:
+                result["capture_diagnostics"] = error.diagnostics
         if error_details:
             result["helper_diagnostics"] = error_details
     finally:
         if indicator is not None:
             released = lease_seen is not None and lease_seen.result is not None and _released(lease_seen.result)
-            if stop.is_set():
-                indicator.set_stage("stopped" if released else "release_unconfirmed",
-                    checkpoint="本次输入已停止" if released else "输入释放尚未确认",
-                    input_release="released" if released else "unknown")
-            runtime._finish_indicator(indicator, stopped=stop.is_set(), released=released)
+            runtime._finish_indicator(indicator, stopped=stop.is_set(), released=released, action_owner=stop)
         with runtime._gate:
             if key not in runtime._host_calls:
                 runtime._stops.pop(key, None)
 
     receipt = store.status(owner, key)
+    if external_guard_reason is not None:
+        result['desktop_guard_stop_reason']=external_guard_reason
+        result['requires_new_observation']=True
     uncertain = receipt["state"] == "outcome_uncertain"
     latest = lease_seen.result if lease_seen is not None else None
     # The Store includes the latest ledger, including a dispatched step whose
@@ -565,9 +651,15 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
             business_events=sum(item["BusinessEvents"] for item in native_receipts),
             ime_events=sum(item["ImeEvents"] for item in native_receipts),
             activation_events=sum(item["ActivationEvents"] for item in native_receipts),
+            pointer_events=sum(item.get("PointerEvents", 0) for item in native_receipts),
+            keyboard_release_events=sum(item.get("KeyboardReleaseEvents", 0) for item in native_receipts),
+            foreground_recoveries=sum(item.get("ForegroundRecoveries", 0) for item in native_receipts),
+            physical_input_dispatched=(True if any(item["BusinessEvents"] or item["ImeEvents"] or item["ActivationEvents"] or item.get("PointerEvents", 0) or item.get("KeyboardReleaseEvents", 0) for item in native_receipts)
+                else None if uncertain or (latest is None and lease_seen is not None and lease_seen.go_sent)
+                    or any(not item["NativeCountKnown"] for item in native_receipts) else False),
             counts_complete=(latest is not None and all(item["NativeCountKnown"] for item in native_receipts)),
             sent_batches=sum((item["InputResult"] or {}).get("CompletedPlans", 0) for item in native_receipts))
-        result["dispatched"] = (True if any(item["ActivationRequested"] or item["BusinessEvents"] or item["ImeEvents"]
+        result["dispatched"] = (True if any(item["ActivationRequested"] or item["BusinessEvents"] or item["ImeEvents"] or item.get("PointerEvents", 0) or item.get("KeyboardReleaseEvents", 0)
             for item in native_receipts) else None if uncertain else False)
         result["input_dispatched"] = (True if any(item["BusinessEvents"] for item in native_receipts)
             else None if uncertain else False)
@@ -607,12 +699,16 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
         if not sequence and (command == "activate" and last["Foreground"] or _complete(last)
                 or layout_plan is not None and _layout_completed(last) and last["RequiresNewObservation"]):
             try:
+                # The original native/facade dispatch and exact release proof
+                # are complete. The following read holds no foreground claim.
+                store.finish_owned_resources(owner, preserve_observations=True)
                 fresh_action = "post-high-" + uuid.uuid4().hex
                 with runtime._gate:
                     runtime._stops[runtime._key(grant.task_id, fresh_action)] = stop
                 post_grant = replace(grant, capture_scope=grant.input_scope) if command == "input" else grant
-                fresh = runtime._execute(owner, resource, post_grant, fresh_action, "observe",
-                    {"target": payload["target"], "action_id": fresh_action})
+                with runtime._observation_indicator(post_grant):
+                    fresh = runtime._execute(owner, resource, post_grant, fresh_action, "observe",
+                        {"target": payload["target"], "action_id": fresh_action})
                 detail = fresh.get("result")
                 if isinstance(detail, dict) and "image" in detail:
                     result.update({name: value for name, value in detail.items()
@@ -620,6 +716,26 @@ def execute_high(runtime, owner, resource, grant, key, command, payload, decisio
                     result["image" if command == "activate" else "visual_recheck"] = detail["image"]
                 else:
                     result.update(requires_new_observation=True, capture_reason=fresh.get("reason"))
-            except (ControlError, ComputerBoundaryError, native.NativeInputError, CaptureError, HighHelperError):
+                    if fresh.get("capture_diagnostics"):
+                        result["capture_diagnostics"] = fresh["capture_diagnostics"]
+                    if fresh.get("privacy_diagnostics"):
+                        result["privacy_diagnostics"] = fresh["privacy_diagnostics"]
+            except (ControlError, ComputerBoundaryError, native.NativeInputError, CaptureError,
+                    HighHelperError, sqlite3.Error) as error:
                 result.update(requires_new_observation=True, capture_reason="post_input_capture_unavailable")
+                if isinstance(error, CaptureError) and error.diagnostics:
+                    result["capture_diagnostics"] = error.diagnostics
+                if getattr(error, "privacy_diagnostics", None):
+                    result["privacy_diagnostics"] = error.privacy_diagnostics
+            finally:
+                # A slow or failed read can race the application's new dialog.
+                # Discover exact owned windows after either outcome; never
+                # replay the completed input or activate a guessed popup.
+                if not stop.is_set():
+                    try:
+                        result.update(native.new_visible_followups(grant.identity, before_windows,
+                            bind_allowed=not store.task_write_stopped(grant.task_id),
+                            window_binder=bind_child))
+                    except (native.NativeInputError, WindowSelectionError, HighHelperError):
+                        result["followup_observation_required"] = True
     return {"receipt": store.status(owner, key), "result": result}

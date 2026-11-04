@@ -10,6 +10,8 @@ import ctypes
 import secrets
 import threading
 import time
+from contextvars import ContextVar
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Iterable
 
@@ -18,11 +20,37 @@ import win32con
 import win32gui
 import win32process
 
+# Internal per-call rendering scope, never a policy writer or MCP argument.
+suppress_pointer_approach = ContextVar('flower_desktop_no_extra_pointer_path',default=False)
+pre_dispatch_recovery = ContextVar('flower_input_pre_dispatch_recovery', default=None)
+
 
 class NativeInputError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def _permission_input_error(error) -> NativeInputError:
+    from .privacy_diagnostics import scan_diagnostics
+    converted = NativeInputError(error.code)
+    diagnostic = scan_diagnostics(getattr(error, "privacy_diagnostics", None))
+    if diagnostic is not None:
+        converted.privacy_diagnostics = diagnostic
+    if getattr(error, 'privacy_cleanup_reason', None) == 'privacy_scan_exit_unconfirmed':
+        converted.privacy_cleanup_reason = 'privacy_scan_exit_unconfirmed'
+    return converted
+
+
+@contextmanager
+def input_privacy_session():
+    from flower_control.permissions import PermissionError
+    from .password_pixels import action_privacy_session
+    try:
+        with action_privacy_session():
+            yield
+    except PermissionError as error:
+        raise _permission_input_error(error) from None
 
 
 class PartialInput(NativeInputError):
@@ -179,6 +207,11 @@ def bind_window(hwnd: int) -> WindowIdentity:
 
 
 def assert_window(identity: WindowIdentity) -> None:
+    from flower_control.permissions import require_window, PermissionError
+    try:
+        require_window(identity.hwnd)
+    except PermissionError as error:
+        raise _permission_input_error(error) from None
     if _read_window_identity(identity.hwnd) != identity:
         raise NativeInputError("window_changed")
 
@@ -467,6 +500,9 @@ def _activation_alt(previous: int, identity: WindowIdentity, preflight, stopped,
     _assert_activation_foreground_allowed(previous)
     steps = (virtual_key(0x12, down=True), virtual_key(0x12, down=False))
     array = (INPUT * 2)(*(step.raw for step in steps))
+    from .input_activity import INPUT_TAG
+    for event in array:
+        event.data.ki.dwExtraInfo = INPUT_TAG
     ledger = HeldInputLedger()
     if on_input_ledger is not None:
         on_input_ledger(ledger)
@@ -526,6 +562,10 @@ def activate_window(identity: WindowIdentity, *, preflight: Callable[[], bool],
     assert_window(identity)
     if not win32gui.IsWindowVisible(identity.hwnd):
         raise NativeInputError("target_not_visible")
+    keyboard = end_keyboard_input(identity, preflight=preflight, stopped=stopped,
+                                 on_input_ledger=on_input_ledger, wait_for_user=True)
+    if progress is not None:
+        progress["keyboard_release_events"] = progress.get("keyboard_release_events", 0) + keyboard
     if any(_user32.GetAsyncKeyState(key) < 0 for key in _EXTERNAL_HOLD_KEYS):
         raise NativeInputError("external_input_held")
     was_minimized = bool(win32gui.IsIconic(identity.hwnd))
@@ -729,8 +769,23 @@ def normalize_absolute(x: int, y: int, desktop: VirtualDesktop) -> tuple[int, in
             or not (desktop.left <= x < desktop.left + desktop.width
                     and desktop.top <= y < desktop.top + desktop.height)):
         raise ValueError("screen point is outside the virtual desktop")
-    return (round((x - desktop.left) * 65535 / max(1, desktop.width - 1)),
-            round((y - desktop.top) * 65535 / max(1, desktop.height - 1)))
+    def coordinate(value, origin, size):
+        # Choose the centre of this pixel's representable integer interval.
+        # The OS divides the 65536 normalized units into physical pixels.
+        low = ((value-origin)*65536 + size-1)//size
+        high = ((value-origin+1)*65536 + size-1)//size-1
+        if low>high or not 0<=low<=high<=65535:
+            raise ValueError("pointer_pixel_unrepresentable")
+        return (low+high)//2
+    return coordinate(x,desktop.left,desktop.width),coordinate(y,desktop.top,desktop.height)
+
+
+def absolute_point(step):
+    if step.desktop is None:
+        raise NativeInputError("mouse_desktop_required")
+    desktop=step.desktop
+    return (desktop.left + step.raw.data.mi.dx*desktop.width//65536,
+            desktop.top + step.raw.data.mi.dy*desktop.height//65536)
 
 
 ULONG_PTR = ctypes.c_size_t
@@ -772,6 +827,8 @@ MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_ABSOLUTE = 0x8000
 MOUSEEVENTF_VIRTUALDESK = 0x4000
 MOUSEEVENTF_WHEEL = 0x0800
+POINTER_MOTION_GROUP_MS = 16
+POINTER_MOTION_CHECK_MS = 80
 _BUTTON_FLAGS = {
     "left": (0x0002, 0x0004, 0),
     "right": (0x0008, 0x0010, 0),
@@ -927,8 +984,15 @@ def mouse_wheel(delta: int, *, horizontal: bool = False) -> InputStep:
 @dataclass(frozen=True)
 class InputBatch:
     steps: tuple[InputStep, ...]
+    pointer_constraints: object | None = field(default=None, kw_only=True)
+    pointer_motion: object | None = field(default=None, kw_only=True)
 
     def __post_init__(self):
+        from .pointer_geometry import MotionConstraints, PointerMotion
+        if self.pointer_constraints is not None and type(self.pointer_constraints) is not MotionConstraints:
+            raise ValueError("invalid_pointer_constraints")
+        if self.pointer_motion is not None and type(self.pointer_motion) is not PointerMotion:
+            raise ValueError("invalid_pointer_motion")
         if not 1 <= len(self.steps) <= 128:
             raise ValueError("batch must contain 1..128 input events")
         held: set[HeldToken] = set()
@@ -949,8 +1013,8 @@ class InputBatch:
             raise ValueError("batch must release every pressed key and button")
 
 
-def plan_batch(steps: Iterable[InputStep]) -> InputBatch:
-    return InputBatch(tuple(steps))
+def plan_batch(steps: Iterable[InputStep], **pointer_options) -> InputBatch:
+    return InputBatch(tuple(steps), **pointer_options)
 
 
 @dataclass(frozen=True)
@@ -961,9 +1025,9 @@ class TimedInputPlan(InputBatch):
 
     def __post_init__(self):
         super().__post_init__()
-        if type(self.duration_ms) is not int or not 1 <= self.duration_ms <= 2000:
+        if type(self.duration_ms) is not int or not 1 <= self.duration_ms <= 3000:
             raise ValueError("invalid hold duration")
-        if not 2 <= len(self.segments) <= 16:
+        if not 2 <= len(self.segments) <= 128:
             raise ValueError("invalid timed segments")
         offsets = tuple(offset for offset, _ in self.segments)
         if (offsets[0] != 0 or offsets[-1] != self.duration_ms
@@ -980,9 +1044,9 @@ class TimedInputPlan(InputBatch):
             raise ValueError("timed plan must end with owned releases")
 
 
-def plan_timed(segments: Iterable[tuple[int, Iterable[InputStep]]], duration_ms: int) -> TimedInputPlan:
+def plan_timed(segments: Iterable[tuple[int, Iterable[InputStep]]], duration_ms: int, **pointer_options) -> TimedInputPlan:
     segments = tuple((offset, tuple(steps)) for offset, steps in segments)
-    return TimedInputPlan(tuple(step for _, steps in segments for step in steps), segments, duration_ms)
+    return TimedInputPlan(tuple(step for _, steps in segments for step in steps), segments, duration_ms, **pointer_options)
 
 
 def plan_unicode_batches(text: str) -> tuple[InputBatch, ...]:
@@ -1003,23 +1067,86 @@ def plan_unicode_batches(text: str) -> tuple[InputBatch, ...]:
     batches: list[InputBatch] = []
     current: list[InputStep] = []
     current_units = 0
+    def flush():
+        nonlocal current_units
+        if current:
+            batches.append(plan_batch(current))
+            current.clear()
+            current_units = 0
     # Narrow port of legacy core.py:text_inputs. ENTER/TAB are actual keys;
     # CRLF is one ENTER and every batch retains its own exact balanced ups.
     for character in text.replace("\r\n", "\n").replace("\r", "\n"):
         character_units = 2 if ord(character) > 0xFFFF else 1
-        if current_units + character_units > 64:
-            batches.append(plan_batch(current))
-            current.clear()
-            current_units = 0
+        navigation = character in ("\n", "\t")
+        if current_units + character_units > 64 or navigation:
+            flush()
         if character in ("\n", "\t"):
             code = 0x0D if character == "\n" else 0x09
             current.extend((virtual_key(code, down=True), virtual_key(code, down=False)))
         else:
             current.extend(unicode_text(character))
         current_units += character_units
-    if current:
-        batches.append(plan_batch(current))
+        # Navigation/submission is its own balanced segment. The next segment
+        # must re-observe focus, privacy, modal state and authority before send.
+        if navigation:
+            flush()
+    flush()
     return tuple(batches)
+
+
+def input_execution_budget(batches: Iterable[InputBatch | TimedInputPlan]) -> int:
+    """Bound High execution work before go; this is not a measured latency SLA.
+
+    Every actual fresh segment is charged; bounded factory motion samples use
+    the lighter non-button weight. Owned release-only segments retain their
+    bypass, and hold time starts at the accepted down. These weights must
+    match ComputerPlans.ExecutionBudget; they grant no input or extra TTL.
+    """
+    batches = tuple(batches)
+    if not 1 <= len(batches) <= 8192:
+        raise ValueError("input_plan_rejected")
+    budget = 2000
+    physical_allowance = 0
+    for batch in batches:
+        batch.__post_init__()
+        timed = isinstance(batch, TimedInputPlan)
+        segments = batch.segments if timed else ((0, batch.steps),)
+        budget += batch.duration_ms if timed else 0
+        first = segments[0][1][0]
+        if first.token is None and first.raw.type == 0 and first.raw.data.mi.dwFlags == 0xc001:
+            budget += 120
+        held = set()
+        for _offset, steps in segments:
+            owned_ups = all(step.token is not None and step.pressed is False and step.token in held
+                            for step in steps)
+            if not owned_ups:
+                motion_sample = (timed and batch.pointer_motion is not None and all(
+                    step.token is None and step.raw.type == 0 and step.raw.data.mi.dwFlags == 0xc001
+                    for step in steps))
+                physical_key = any(step.raw.type == 1 and step.token is not None
+                                   and step.token[0] == "vk" and step.token[1] != 9 for step in steps)
+                # B40 measured 0.34-0.37s per physical key plan. A 50ms
+                # estimate truncated an admitted 32-key sequence at step 17.
+                # Keep Unicode chunk/navigation capacity and charge 500ms for
+                # physical-key provider/check work, never shorten key holds.
+                weight = 500 if not motion_sample and any(step.raw.type == 0 for step in steps) else 50
+                budget += weight
+                if physical_key and weight == 50:
+                    physical_allowance += 450
+            if any(step.pressed and (step.token == ("vk", 9) or
+                                    step.token is not None and step.token[0] == "mouse") for step in steps):
+                budget += 150
+            for step in steps:
+                if step.token is not None:
+                    if step.pressed:
+                        held.add(step.token)
+                    else:
+                        held.remove(step.token)
+    if budget > 30000:
+        raise ValueError("input_plan_budget_exceeded")
+    # Calibration increases the execution deadline, never shrinks the original
+    # admitted plan capacity. The native transport contract caps one lease.
+    return min(30000, max(5000, budget + physical_allowance))
 
 
 def _stop_epoch():
@@ -1029,10 +1156,16 @@ def _stop_epoch():
 
 @dataclass
 class HeldInputLedger:
-    """Tracks only this dispatch's sent down events; never releases all OS keys."""
+    """Tracks exact own downs and counted keyboard preparation, without replay."""
 
     _held: list[HeldToken] = field(default_factory=list, init=False, repr=False)
     blocked: bool = False
+    pointer_events: int = 0
+    _last_dispatch_check: float = field(default=0.0, init=False, repr=False)
+    _mouse_capture: int | None = field(default=None, init=False, repr=False)
+    _gesture_privacy: object = field(default=None, init=False, repr=False)
+    _pending_gesture_privacy: object = field(default=None, init=False, repr=False)
+    keyboard_release_events: int = 0
     _dispatch_count_confirmed: bool = field(default=True, init=False, repr=False)
     thread_id: int = field(default_factory=threading.get_ident, init=False)
     stop_epoch: int = field(default_factory=_stop_epoch, init=False, repr=False)
@@ -1057,10 +1190,24 @@ class HeldInputLedger:
         if threading.get_ident() != self.thread_id:
             raise NativeInputError("input_ledger_wrong_thread")
         self._dispatch_count_confirmed = False
+        self._last_dispatch_check = time.monotonic()
+
+    def _check_mouse_capture(self, capture):
+        if not any(kind=="mouse" for kind,_ in self.held):
+            self._mouse_capture=None
+            return
+        if self._mouse_capture is not None and capture!=self._mouse_capture:
+            raise NativeInputError("pointer_drag_capture_changed")
+        if type(capture) is int and capture:
+            self._mouse_capture=capture
 
     def _record(self, steps: Iterable[InputStep]) -> None:
         if threading.get_ident() != self.thread_id:
             raise NativeInputError("input_ledger_wrong_thread")
+        steps = tuple(steps)
+        reviewed_gesture = self._pending_gesture_privacy
+        if any(step.raw.type == 1 for step in steps):
+            self._clear_gesture_privacy()
         for step in steps:
             if step.token is None:
                 continue
@@ -1068,7 +1215,107 @@ class HeldInputLedger:
                 self._held.append(step.token)
             else:
                 self._held.remove(step.token)
+        if any(step.pressed and step.token is not None and step.token[0] == "mouse" for step in steps):
+            self._gesture_privacy = reviewed_gesture
+        self._pending_gesture_privacy = None
+        if not any(kind == "mouse" for kind, _ in self.held):
+            self._clear_gesture_privacy()
         self._dispatch_count_confirmed = True
+
+    def _clear_gesture_privacy(self):
+        self._gesture_privacy = self._pending_gesture_privacy = None
+
+    def _record_keyboard_ups(self, steps: Iterable[InputStep]) -> None:
+        if threading.get_ident() != self.thread_id or self._held:
+            raise NativeInputError("input_ledger_wrong_thread")
+        if any(step.raw.type != 1 or step.pressed is not False for step in steps):
+            raise NativeInputError("keyboard_preparation_requires_ups")
+        self._dispatch_count_confirmed = True
+
+
+def end_keyboard_input(identity, *, preflight, stopped, on_input_ledger=None, wait_for_user=False):
+    """End one current logical keyboard chord for an admitted AI input phase.
+
+    Only key-up events are possible. No mouse release, key-down, event capture,
+    replay or ongoing suppression is performed. The caller still owns the
+    exact foreground execution resource. Unknown native counts remain unknown.
+    """
+    if stopped() or not preflight():
+        raise NativeInputError("input_stopped")
+    assert_window(identity)
+    previous = win32gui.GetForegroundWindow()
+    _assert_activation_foreground_allowed(previous)
+    if wait_for_user:
+        # Activation waits for the person's own keys and mouse buttons; it
+        # never sends synthetic ups to make a foreground takeover possible.
+        while any(_user32.GetAsyncKeyState(key) < 0 for key in range(1, 255)):
+            if stopped() or not preflight():
+                raise NativeInputError("input_stopped")
+            assert_window(identity)
+            time.sleep(.02)
+        return 0
+    held = {key for key in range(8, 255) if _user32.GetAsyncKeyState(key) < 0}
+    for generic, left, right in ((16, 160, 161), (17, 162, 163), (18, 164, 165)):
+        if held.intersection((left, right)):
+            held.discard(generic)
+    if not held:
+        return 0
+    def check_desktop():
+        # Reuse the existing read-only ordinary-desktop identity probe. A
+        # window grant does not permit global key-ups on a secure desktop.
+        from .desktop_capture_native import _open_ordinary_desktop, _close_desktop
+        from .desktop_capture import DesktopCaptureError
+        try:
+            handle, _ = _open_ordinary_desktop()
+            if not _close_desktop(handle):
+                raise NativeInputError("desktop_handle_close_failed")
+        except DesktopCaptureError:
+            raise NativeInputError("desktop_input_unavailable") from None
+    check_desktop()
+    ledger = HeldInputLedger()
+    if on_input_ledger is not None:
+        on_input_ledger(ledger)
+    # Re-sample the bounded set at dispatch; a released key needs no synthetic
+    # up. New keys are handled by the next safe phase, never a release loop.
+    if stopped() or not preflight():
+        raise NativeInputError("input_stopped")
+    assert_window(identity)
+    if win32gui.GetForegroundWindow() != previous:
+        raise NativeInputError("foreground_changed")
+    _assert_activation_foreground_allowed(previous)
+    steps = tuple(virtual_key(key, down=False) for key in sorted(held)
+                  if _user32.GetAsyncKeyState(key) < 0)
+    if not steps:
+        return 0
+    from ..control.write_gate import session_write_gate, WriteGateError
+    try:
+        session_write_gate().admit(ledger.stop_epoch)
+    except WriteGateError as error:
+        raise NativeInputError(error.code) from error
+    if stopped() or not preflight():
+        raise NativeInputError("input_stopped")
+    assert_window(identity)
+    if win32gui.GetForegroundWindow() != previous:
+        raise NativeInputError("foreground_changed")
+    _assert_activation_foreground_allowed(previous)
+    check_desktop()
+    from .input_activity import INPUT_TAG
+    array = (INPUT * len(steps))(*(step.raw for step in steps))
+    for event in array:
+        event.data.ki.dwExtraInfo = INPUT_TAG
+    ledger._begin_send()
+    try:
+        count = int(_user32.SendInput(len(steps), array, ctypes.sizeof(INPUT)))
+    except Exception:
+        raise NativeInputError("input_release_unconfirmed") from None
+    if not 0 <= count <= len(steps):
+        raise NativeInputError("input_release_unconfirmed")
+    ledger._record_keyboard_ups(steps[:count])
+    ledger.keyboard_release_events += count
+    if count != len(steps):
+        ledger.blocked = True
+        raise NativeInputError("keyboard_preparation_incomplete")
+    return count
 
 
 def _release_step(token: HeldToken) -> InputStep:
@@ -1083,19 +1330,94 @@ def _release_step(token: HeldToken) -> InputStep:
 
 def assert_mouse_receiver(steps, expected, geometry):
     from .computer_input_state import check_mouse_receiver
-    check_mouse_receiver(steps, expected, geometry)
+    return check_mouse_receiver(steps, expected, geometry)
 
 
-def _send_checked(steps: tuple[InputStep, ...], *, expected: WindowIdentity | None,
+def expected_mouse_focus(steps, expected, geometry) -> int | None:
+    """Bind one own mouse-down to its exact child; never guess relative focus."""
+    steps = tuple(steps)
+    mouse_down = lambda step: step.raw.type == 0 and bool(step.raw.data.mi.dwFlags & 0x2a)
+    if not any(mouse_down(step) for step in steps):
+        return None
+    from . import computer_input_state as state
+    state.check_mouse_receiver(steps, expected, geometry)
+    thread, pid = state.win32process.GetWindowThreadProcessId(expected.hwnd)
+    gui = state.GUIThreadInfo()
+    gui.cbSize = ctypes.sizeof(gui)
+    if pid != expected.pid or not state._user32.GetGUIThreadInfo(thread, ctypes.byref(gui)):
+        raise NativeInputError("mouse_receiver_unavailable")
+    if gui.hwndCapture:
+        if win32gui.GetAncestor(int(gui.hwndCapture), 2) != expected.hwnd:
+            raise NativeInputError("mouse_receiver_changed")
+        return None  # Capture proves the root, not the next focused child.
+    point = None
+    clicked = None
+    saw_absolute = any(step.raw.type == 0 and step.raw.data.mi.dwFlags & 0x8000 for step in steps)
+    if not saw_absolute:
+        point = win32gui.GetCursorPos()
+    for step in steps:
+        if step.raw.type != 0:
+            continue
+        mouse = step.raw.data.mi
+        if mouse.dwFlags & 0x8000:
+            desktop = step.desktop
+            if desktop is None or desktop != virtual_desktop():
+                raise NativeInputError("desktop_topology_changed")
+            point = absolute_point(step)
+        elif mouse.dwFlags & 1:
+            point = None
+        if mouse_down(step):
+            clicked = point
+    if clicked is None:
+        return None
+    receiver = win32gui.WindowFromPoint(clicked)
+    if not receiver or win32gui.GetAncestor(receiver, 2) != expected.hwnd:
+        raise NativeInputError("mouse_receiver_changed")
+    return int(receiver)
+
+
+def _send_checked(steps: tuple[InputStep, ...], **kwargs) -> int:
+    """Recover only a proven pre-send refusal; a native attempt is never retried."""
+    began = False
+    original_begin = kwargs.get("before_send")
+    def before_send():
+        nonlocal began
+        began = True
+        if original_begin is not None:
+            original_begin()
+    kwargs["before_send"] = before_send
+    for attempt in range(2):
+        try:
+            return _send_checked_once(steps, **kwargs)
+        except NativeInputError as error:
+            if kwargs.get("privacy_ledger") is not None:
+                kwargs["privacy_ledger"]._clear_gesture_privacy()
+            recover = pre_dispatch_recovery.get()
+            if (attempt or began or kwargs.get("cleanup") or recover is None
+                    or not recover(error.code)):
+                raise
+            if kwargs.get("privacy_ledger") is not None:
+                kwargs["privacy_ledger"]._clear_gesture_privacy()
+    raise NativeInputError("input_stopped")
+
+
+def _send_checked_once(steps: tuple[InputStep, ...], *, expected: WindowIdentity | None,
                geometry: WindowGeometry | None, preflight: Callable[[], bool],
                stopped: Callable[[], bool], cleanup: bool, before_send=None,
-               owned_tokens: tuple[HeldToken, ...] = (), stop_epoch=None, final_preflight=None) -> int:
+               owned_tokens: tuple[HeldToken, ...] = (), stop_epoch=None, final_preflight=None,
+               pointer_approach=False, capture_guard=None, privacy_ledger=None) -> int:
     from ..control.write_gate import session_write_gate, WriteGateError
     write_gate = session_write_gate() if not cleanup else None
     if stop_epoch is None and write_gate is not None:
         stop_epoch = write_gate.snapshot().epoch
     if not callable(preflight) or not callable(stopped):
         raise TypeError("preflight and stopped callbacks are required")
+    if privacy_ledger is not None and any(step.raw.type == 1 for step in steps):
+        privacy_ledger._clear_gesture_privacy()
+    if pointer_approach and (cleanup or owned_tokens or any(step.token is not None or step.raw.type != 0
+            or step.raw.data.mi.dwFlags != (MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK)
+            for step in steps)):
+        raise NativeInputError("pointer_approach_must_only_move")
     if cleanup:
         if any(step.token is None or step.pressed is not False for step in steps):
             raise NativeInputError("cleanup_must_release_held_input_only")
@@ -1112,6 +1434,12 @@ def _send_checked(steps: tuple[InputStep, ...], *, expected: WindowIdentity | No
         assert_foreground(expected)
         if geometry is not None:
             assert_geometry(geometry)
+        from flower_control.privacy import require_unmasked_steps
+        from flower_control.permissions import PermissionError
+        try:
+            require_unmasked_steps(expected, steps, geometry, check_keyboard=False, sweep_motion=pointer_approach, owned_tokens=owned_tokens)
+        except PermissionError as error:
+            raise _permission_input_error(error) from None
         absolute = [step for step in steps if step.raw.type == 0 and
                     step.raw.data.mi.dwFlags & MOUSEEVENTF_ABSOLUTE]
         if absolute:
@@ -1130,7 +1458,9 @@ def _send_checked(steps: tuple[InputStep, ...], *, expected: WindowIdentity | No
                           for kind, value in owned_tokens if kind == "mouse")
         checked_keys = (set(_EXTERNAL_HOLD_KEYS) | planned_keys) - owned_keys
         deadline = time.monotonic() + (0 if owned_tokens else 0.300)
+        waited = False
         while any(_user32.GetAsyncKeyState(key) < 0 for key in checked_keys):
+            waited = True
             if stopped():
                 raise NativeInputError("input_stopped")
             if not preflight():
@@ -1140,16 +1470,47 @@ def _send_checked(steps: tuple[InputStep, ...], *, expected: WindowIdentity | No
                 raise NativeInputError("external_input_held")
             time.sleep(0.010)
         # Waiting and callbacks may have changed the receiver or geometry.
-        if stopped() or not preflight():
+        if stopped() or waited and not preflight():
             raise NativeInputError("input_stopped")
         assert_foreground(expected)
         if geometry is not None:
             assert_geometry(geometry)
         if absolute and any(step.desktop != virtual_desktop() for step in absolute):
             raise NativeInputError("desktop_topology_changed")
-        if any(step.raw.type == 0 for step in steps):
-            assert_mouse_receiver(steps, expected, geometry)
     array = (INPUT * len(steps))(*(step.raw for step in steps))
+    from .input_activity import INPUT_TAG
+    for event in array:
+        if event.type == 0:
+            event.data.mi.dwExtraInfo = INPUT_TAG
+        elif event.type == 1:
+            event.data.ki.dwExtraInfo = INPUT_TAG
+    if not cleanup:
+        try:
+            metadata = None
+            only_owned_ups = bool(steps) and all(step.token is not None and step.pressed is False and step.token in owned_tokens for step in steps)
+            if not pointer_approach and not only_owned_ups:
+                from .password_pixels import password_metadata
+                snapshot = privacy_ledger._gesture_privacy if privacy_ledger is not None else None
+                continuing = (snapshot is not None and snapshot[0] == expected
+                    and bool(steps) and any(kind == "mouse" for kind, _ in owned_tokens)
+                    and all(step.raw.type == 0 and (step.token is None and step.raw.data.mi.dwFlags == 0xc001
+                        or step.token is not None and step.token[0] == "mouse" and step.pressed is False and step.token in owned_tokens)
+                        for step in steps))
+                if continuing:
+                    metadata = snapshot[1]
+                else:
+                    if privacy_ledger is not None: privacy_ledger._clear_gesture_privacy()
+                    metadata = password_metadata(expected, preflight=lambda: preflight() and assert_foreground(expected), stopped=stopped,
+                        keyboard_focus=all(step.raw.type == 1 for step in steps))
+            require_unmasked_steps(expected, steps, geometry, password_info=metadata,
+                check_keyboard=not pointer_approach and not only_owned_ups, sweep_motion=pointer_approach, owned_tokens=owned_tokens)
+            if stopped() or not preflight(): raise NativeInputError("input_stopped")
+            assert_foreground(expected)
+            if geometry is not None: assert_geometry(geometry)
+            if privacy_ledger is not None and metadata is not None and any(step.pressed and step.token is not None and step.token[0] == "mouse" for step in steps):
+                privacy_ledger._pending_gesture_privacy = (expected, dict(metadata, focus_rectangle=None, focus_password=None))
+        except PermissionError as error:
+            raise _permission_input_error(error) from None
     if write_gate is not None:
         try:
             write_gate.admit(stop_epoch)
@@ -1157,15 +1518,228 @@ def _send_checked(steps: tuple[InputStep, ...], *, expected: WindowIdentity | No
             raise NativeInputError(error.code) from error
     if final_preflight is not None and (stopped() or not final_preflight()):
         raise NativeInputError("input_stopped")
+    if not cleanup and not pointer_approach and any(step.raw.type == 0 for step in steps):
+        capture = assert_mouse_receiver(steps, expected, geometry)
+        if capture_guard is not None:
+            capture_guard(capture)
+    if write_gate is not None:
+        try:
+            write_gate.admit(stop_epoch)
+        except WriteGateError as error:
+            raise NativeInputError(error.code) from error
     if before_send is not None:
         before_send()
     try:
         sent = _user32.SendInput(len(steps), array, ctypes.sizeof(INPUT))
     except Exception:
+        if privacy_ledger is not None: privacy_ledger._clear_gesture_privacy()
         raise NativeInputError("input_release_unconfirmed") from None
     if sent != len(steps):
+        if privacy_ledger is not None: privacy_ledger._clear_gesture_privacy()
         raise PartialInput(sent, len(steps), ctypes.get_last_error())
     return sent
+
+
+def _wait_pointer_offset(started, offset_ms, ledger, stopped, preflight=None, expected=None, geometry=None):
+    from ..control.write_gate import session_write_gate, WriteGateError
+    while True:
+        if stopped():
+            raise NativeInputError("input_stopped")
+        try:
+            session_write_gate().admit(ledger.stop_epoch)
+        except WriteGateError as error:
+            raise NativeInputError(error.code) from error
+        if ledger.held and time.monotonic()-ledger._last_dispatch_check >= POINTER_MOTION_CHECK_MS/1000:
+            if preflight is None or not preflight():
+                raise NativeInputError("execution_preflight_failed")
+            assert_foreground(expected)
+            if geometry is not None:
+                assert_geometry(geometry)
+            ledger._last_dispatch_check=time.monotonic()
+        remaining=started+offset_ms/1000-time.monotonic()
+        if remaining<=0:
+            return
+        # No input occurs here. Full authority/privacy/target checks remain
+        # immediately before each actual send, rather than every wait tick.
+        time.sleep(min(.004,remaining))
+
+
+def _pointer_chord_guard(motion, point, final_preflight=None):
+    def guard():
+        if final_preflight is not None and not final_preflight():
+            return False
+        if motion.route is not None and motion.route.obstacles:
+            from .pointer_geometry import segment_clear
+            if not segment_clear(win32gui.GetCursorPos(),point,motion.route.obstacles):
+                raise NativeInputError("pointer_motion_geometry_changed")
+        return True
+    return guard
+
+
+def _play_pointer_motion(motion,ledger,expected,geometry,preflight,stopped,
+                         final_preflight=None,*,desktop,include_endpoint=False):
+    samples=motion.samples if include_endpoint else motion.samples[:-1]
+    started=time.monotonic();index=0;last_offset=0
+    required={tuple(round(value) for value in point) for _distance,point in motion.route.required} if motion.route is not None else set()
+    # At most one native dispatch per 16ms slice. This keeps about 60 visible
+    # positions per second while amortizing full Stop/target/permission checks;
+    # each slice still rechecks the complete real cursor chord before dispatch.
+    batch_window_ms=16
+    while index<len(samples):
+        elapsed=(time.monotonic()-started)*1000
+        sample=samples[index]
+        # Drop only obsolete non-semantic approach points; the normal margin
+        # still applies to the new real chord. Never rush through a whole route.
+        from .pointer_geometry import segment_clear
+        while (index+1<len(samples) and samples[index+1].offset_ms<=elapsed
+                and samples[index+1].offset_ms-last_offset<=20
+                and (motion.route is None or segment_clear(
+                    win32gui.GetCursorPos(),samples[index+1].point,motion.route.obstacles))):
+            index+=1;sample=samples[index]
+        if elapsed-sample.offset_ms>20:
+            started=time.monotonic()-sample.offset_ms/1000
+        _wait_pointer_offset(started,sample.offset_ms,ledger,stopped,preflight,expected,geometry)
+        batch=[sample];next_index=index+1
+        while next_index<len(samples):
+            candidate=samples[next_index]
+            if candidate.offset_ms-sample.offset_ms>batch_window_ms:break
+            if candidate.point in required:break
+            batch.append(candidate);next_index+=1
+        move=tuple(mouse_move(*item.point,desktop) for item in batch)
+        def guard(points=tuple(item.point for item in batch)):
+            if final_preflight is not None and not final_preflight():
+                return False
+            if motion.route is not None and motion.route.obstacles:
+                from .pointer_geometry import segment_clear
+                previous=win32gui.GetCursorPos()
+                for point in points:
+                    if not segment_clear(previous,point,motion.route.obstacles):
+                        raise NativeInputError("pointer_motion_geometry_changed")
+                    previous=point
+            return True
+        try:
+            sent=_send_checked(move,expected=expected,geometry=geometry,preflight=preflight,
+                stopped=stopped,cleanup=False,pointer_approach=not bool(ledger.held),
+                owned_tokens=ledger.held,before_send=ledger._begin_send,
+                stop_epoch=ledger.stop_epoch,final_preflight=guard,capture_guard=ledger._check_mouse_capture,privacy_ledger=ledger)
+        except PartialInput as error:
+            ledger._record(move[:error.sent]);ledger.pointer_events+=error.sent;ledger.blocked=True
+            raise NativeInputError("pointer_motion_incomplete") from error
+        ledger._record(move);ledger.pointer_events+=sent
+        last_offset=batch[-1].offset_ms;index=next_index
+    _wait_pointer_offset(started,motion.duration_ms,ledger,stopped,preflight,expected,geometry)
+
+
+def _confirm_pointer_endpoint(step,ledger,expected,geometry,preflight,stopped,constraints):
+    destination=absolute_point(step)
+    if win32gui.GetCursorPos()==destination:
+        return destination
+    if stopped() or not preflight():
+        raise NativeInputError("input_stopped")
+    # A successful native count does not prove that the pointer is at the
+    # destination. Continue only the held motion, never repeat a button-down.
+    from .pointer_path import plan_pointer_motion
+    desktop=step.desktop
+    try:
+        correction=plan_pointer_motion(win32gui.GetCursorPos(),destination,
+            (desktop.left,desktop.top,desktop.left+desktop.width,desktop.top+desktop.height),
+            constraints=constraints,path_mode="direct",force_motion=True,
+            checkpoint=lambda: _wait_pointer_offset(time.monotonic(),0,ledger,stopped,preflight,expected,geometry))
+    except ValueError as error:
+        raise NativeInputError(str(error)) from error
+    _play_pointer_motion(correction,ledger,expected,geometry,preflight,stopped,desktop=desktop,include_endpoint=True)
+    if win32gui.GetCursorPos()!=destination:
+        raise NativeInputError("pointer_endpoint_unconfirmed")
+    return destination
+
+
+def _owned_release_split(steps):
+    if not any(s.token is not None and s.token[0]=="mouse" and s.pressed is False for s in steps):
+        return None
+    index=next((i for i,s in reversed(tuple(enumerate(steps)))
+        if s.raw.type==0 and s.raw.data.mi.dwFlags==(MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK)),None)
+    if index is None or index==len(steps)-1 or any(
+            s.token is None or s.pressed is not False for s in steps[index+1:]):
+        return None
+    return index+1
+
+
+def _dispatch_input_steps(steps,ledger,*,expected,geometry,preflight,stopped,
+                          constraints=None,motion=None,final_preflight=None,accepted=None):
+    split=_owned_release_split(steps) if motion is not None else None
+    groups=(steps,) if split is None else (steps[:split],steps[split:])
+    total=0;endpoint=None
+    for group in groups:
+        def guard():
+            if final_preflight is not None and not final_preflight():
+                return False
+            if endpoint is not None and win32gui.GetCursorPos()!=endpoint:
+                raise NativeInputError("pointer_endpoint_changed_before_release")
+            if constraints is not None and constraints.obstacles:
+                from .pointer_geometry import MotionConstraints,segment_clear
+                previous=win32gui.GetCursorPos()
+                carrying={token for token in ledger.held if token[0]=="mouse"}
+                point_obstacles=MotionConstraints(obstacles=constraints.obstacles,
+                    uncertainty_px=constraints.uncertainty_px).expanded()
+                body_obstacles=constraints.expanded()
+                for step in group:
+                    if step.raw.type==0 and step.raw.data.mi.dwFlags& MOUSEEVENTF_ABSOLUTE:
+                        point=absolute_point(step)
+                        if not segment_clear(previous,point,body_obstacles if carrying else point_obstacles):
+                            raise NativeInputError("pointer_motion_geometry_changed")
+                        previous=point
+                    if step.token is not None and step.token[0]=="mouse":
+                        if step.pressed:
+                            if not segment_clear(previous,previous,body_obstacles):
+                                raise NativeInputError("pointer_motion_geometry_changed")
+                            carrying.add(step.token)
+                        else:
+                            carrying.discard(step.token)
+            return True
+        try:
+            sent=_send_checked(group,expected=expected,geometry=geometry,
+                preflight=preflight,stopped=stopped,cleanup=False,owned_tokens=ledger.held,
+                before_send=ledger._begin_send,stop_epoch=ledger.stop_epoch,
+                final_preflight=guard if motion is not None or constraints is not None or final_preflight else None,
+                capture_guard=ledger._check_mouse_capture,privacy_ledger=ledger)
+        except PartialInput as error:
+            ledger._record(group[:error.sent]);ledger.blocked=True
+            if accepted is not None:accepted(error.sent)
+            raise PartialInput(total+error.sent,len(steps),error.winerror) from error
+        ledger._record(group)
+        total+=sent
+        if accepted is not None:accepted(sent)
+        if split is not None and endpoint is None:
+            endpoint=_confirm_pointer_endpoint(group[-1],ledger,expected,geometry,preflight,stopped,constraints)
+    return total
+
+
+def _smooth_before(steps,ledger,expected,geometry,preflight,stopped,final_preflight=None,constraints=None):
+    if suppress_pointer_approach.get() or not steps or ledger.held:
+        return
+    first=steps[0]
+    if first.raw.type!=0 or first.raw.data.mi.dwFlags!=(MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK):
+        return
+    desktop=first.desktop
+    if desktop is None:
+        raise NativeInputError("mouse_desktop_required")
+    if stopped() or not preflight():
+        raise NativeInputError("input_stopped")
+    assert_foreground(expected)
+    if geometry is not None:
+        assert_geometry(geometry)
+    if constraints is not None:
+        # Before the down, the cursor is not yet carrying the dragged body.
+        from .pointer_geometry import MotionConstraints
+        constraints=MotionConstraints(obstacles=constraints.obstacles,uncertainty_px=constraints.uncertainty_px)
+    from .pointer_path import plan_pointer_motion
+    motion=plan_pointer_motion(win32gui.GetCursorPos(),absolute_point(first),
+        (desktop.left,desktop.top,desktop.left+desktop.width,desktop.top+desktop.height),
+        constraints=constraints,
+        checkpoint=lambda: _wait_pointer_offset(time.monotonic(),0,ledger,stopped,preflight,expected,geometry))
+    if motion.duration_ms:
+        _play_pointer_motion(motion,ledger,expected,geometry,preflight,stopped,
+            final_preflight,desktop=desktop)
 
 
 def send_batch(batch: InputBatch, ledger: HeldInputLedger, *, expected: WindowIdentity,
@@ -1183,22 +1757,27 @@ def send_batch(batch: InputBatch, ledger: HeldInputLedger, *, expected: WindowId
         raise NativeInputError("geometry_target_mismatch")
     if any(step.raw.type == 0 for step in steps) and geometry is None:
         raise NativeInputError("mouse_geometry_required")
-    try:
-        sent = _send_checked(steps, expected=expected, geometry=geometry,
-                               preflight=preflight, stopped=stopped, cleanup=False,
-                               before_send=ledger._begin_send, stop_epoch=ledger.stop_epoch,
-                               final_preflight=final_preflight)
-    except PartialInput as error:
-        ledger._record(steps[:error.sent])
-        ledger.blocked = True
-        raise
-    ledger._record(steps)
-    return sent
+    _smooth_before(steps, ledger, expected, geometry, preflight, stopped, final_preflight,
+        constraints=batch.pointer_constraints)
+    return _dispatch_input_steps(steps,ledger,expected=expected,geometry=geometry,
+        preflight=preflight,stopped=stopped,constraints=batch.pointer_constraints,
+        motion=batch.pointer_motion,final_preflight=final_preflight)
 
 
 def send_timed_plan(plan: TimedInputPlan, ledger: HeldInputLedger, *, expected: WindowIdentity,
                     geometry: WindowGeometry | None, preflight: Callable[[], bool],
-                    stopped: Callable[[], bool], progress: dict) -> int:
+                    stopped: Callable[[], bool], progress: dict, before_segment=None,
+                    final_preflight=None, after_segment=None) -> int:
+    with input_privacy_session():
+        return _send_timed_plan(plan, ledger, expected=expected, geometry=geometry,
+            preflight=preflight, stopped=stopped, progress=progress,
+            before_segment=before_segment, final_preflight=final_preflight, after_segment=after_segment)
+
+
+def _send_timed_plan(plan: TimedInputPlan, ledger: HeldInputLedger, *, expected: WindowIdentity,
+                    geometry: WindowGeometry | None, preflight: Callable[[], bool],
+                    stopped: Callable[[], bool], progress: dict, before_segment=None,
+                    final_preflight=None, after_segment=None) -> int:
     """Send finite segments once; caller keeps the mutex and cleans this ledger.
 
     Progress is the exact accepted planned prefix, excluding emergency release.
@@ -1210,7 +1789,8 @@ def send_timed_plan(plan: TimedInputPlan, ledger: HeldInputLedger, *, expected: 
     segments = tuple((offset, tuple(InputStep(INPUT.from_buffer_copy(bytes(step.raw)),
                      step.token, step.pressed, step.desktop) for step in segment))
                      for offset, segment in plan.segments)
-    snapshot = plan_timed(segments, plan.duration_ms)
+    snapshot = plan_timed(segments, plan.duration_ms, pointer_constraints=plan.pointer_constraints,
+        pointer_motion=plan.pointer_motion)
     if geometry is not None and geometry.identity != expected:
         raise NativeInputError("geometry_target_mismatch")
     if geometry is None and any(step.raw.type == 0 for step in snapshot.steps):
@@ -1218,21 +1798,64 @@ def send_timed_plan(plan: TimedInputPlan, ledger: HeldInputLedger, *, expected: 
     if set(progress) != {"sent_events", "sent_segments"} or any(progress[name] != 0 for name in progress):
         raise ValueError("timed progress must start empty")
     started = None
-    for offset, steps in snapshot.segments:
+    last_offset=0
+    mandatory={point for _,point in snapshot.pointer_motion.route.required} if snapshot.pointer_motion and snapshot.pointer_motion.route else set()
+    index=0
+    last_full_check=float("-inf")
+    cached_result=True
+    def cached_final(steps,force=False):
+        nonlocal last_full_check,cached_result
+        now=time.monotonic()
+        if force or now-last_full_check>=POINTER_MOTION_CHECK_MS/1000:
+            cached_result=True if final_preflight is None else bool(final_preflight(steps))
+            last_full_check=now
+        return cached_result
+    while index<len(snapshot.segments):
+        offset,steps=snapshot.segments[index]
+        if before_segment is not None:
+            before_segment(steps)
+        final_check = None if final_preflight is None else lambda steps=steps: cached_final(steps,True)
+        if started is None:
+            _smooth_before(snapshot.steps, ledger, expected, geometry, preflight, stopped,
+                final_check, constraints=snapshot.pointer_constraints)
         if started is not None:
-            deadline = started + offset / 1000
-            while True:
-                if stopped():
-                    raise NativeInputError("input_stopped")
-                if not preflight():
-                    raise NativeInputError("execution_preflight_failed")
-                assert_foreground(expected)
-                if geometry is not None:
-                    assert_geometry(geometry)
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+            elapsed=(time.monotonic()-started)*1000
+            automatic=bool(snapshot.pointer_motion and snapshot.pointer_motion.automatic)
+            if automatic and len(steps)==1 and steps[0].token is None and index+1<len(snapshot.segments):
+                next_offset,next_steps=snapshot.segments[index+1]
+                from .pointer_geometry import segment_clear
+                if (absolute_point(steps[0]) not in mandatory and next_offset<=elapsed
+                        and next_offset-last_offset<=20 and next_steps[0].raw.type==0
+                        and next_steps[0].raw.data.mi.dwFlags& MOUSEEVENTF_ABSOLUTE
+                        and segment_clear(win32gui.GetCursorPos(),absolute_point(next_steps[0]),
+                            snapshot.pointer_motion.route.obstacles)):
+                    progress["skipped_motion_segments"]=progress.get("skipped_motion_segments",0)+1
+                    index+=1
+                    continue
+            if automatic and elapsed-offset>20:
+                started=time.monotonic()-offset/1000
+                progress["motion_clock_rebases"]=progress.get("motion_clock_rebases",0)+1
+            _wait_pointer_offset(started,offset,ledger,stopped,preflight,expected,geometry)
+        grouped=list(steps);group_end=offset;next_index=index+1
+        automatic=bool(snapshot.pointer_motion and snapshot.pointer_motion.automatic)
+        if automatic and len(steps)==1 and steps[0].token is None:
+            from .pointer_geometry import segment_clear
+            while next_index<len(snapshot.segments):
+                next_offset,next_steps=snapshot.segments[next_index]
+                if next_offset-offset>POINTER_MOTION_GROUP_MS or len(next_steps)!=1:break
+                candidate=next_steps[0]
+                if (candidate.token is not None or candidate.raw.type!=0
+                        or candidate.raw.data.mi.dwFlags!=0xc001
+                        or absolute_point(candidate) in mandatory
+                        or not segment_clear(absolute_point(grouped[-1]),absolute_point(candidate),
+                            snapshot.pointer_motion.route.obstacles)):
                     break
-                time.sleep(min(0.020, remaining))
+                if before_segment is not None:before_segment(next_steps)
+                grouped.extend(next_steps);group_end=next_offset;next_index+=1
+        steps=tuple(grouped)
+        force=(any(step.token is not None or step.raw.type!=0 for step in steps)
+            or absolute_point(steps[0]) in mandatory)
+        final_check = None if final_preflight is None else lambda steps=steps,force=force: cached_final(steps,force)
         # Validation of the whole envelope proves balance; this per-segment
         # check binds every up and every exemption to the exact active ledger.
         held = set(ledger.held)
@@ -1247,20 +1870,19 @@ def send_timed_plan(plan: TimedInputPlan, ledger: HeldInputLedger, *, expected: 
                 raise NativeInputError("input_release_unconfirmed")
             else:
                 held.remove(step.token)
-        try:
-            sent = _send_checked(steps, expected=expected, geometry=geometry,
-                                 preflight=preflight, stopped=stopped, cleanup=False,
-                                 owned_tokens=ledger.held, before_send=ledger._begin_send, stop_epoch=ledger.stop_epoch)
-        except PartialInput as error:
-            ledger._record(steps[:error.sent])
-            progress["sent_events"] += error.sent
-            ledger.blocked = True
-            raise
-        ledger._record(steps)
-        progress["sent_events"] += sent
+        def accepted(count):
+            progress["sent_events"]+=count
+        _dispatch_input_steps(steps,ledger,expected=expected,geometry=geometry,
+            preflight=preflight,stopped=stopped,constraints=snapshot.pointer_constraints,
+            motion=snapshot.pointer_motion,accepted=accepted,final_preflight=final_check)
         progress["sent_segments"] += 1
+        progress["sent_segments"] += next_index-index-1
+        last_offset=group_end
+        if after_segment is not None:
+            for included in snapshot.segments[index:next_index]:after_segment(included[1])
         if started is None:
             started = time.monotonic()
+        index=next_index
     return progress["sent_events"]
 
 
@@ -1277,6 +1899,7 @@ def release_held(ledger: HeldInputLedger, *, cleanup_owned: Callable[[], bool],
         raise NativeInputError("input_ledger_wrong_thread")
     if not callable(cleanup_owned) or not callable(stopped):
         raise TypeError("cleanup ownership and stopped callbacks are required")
+    ledger._clear_gesture_privacy()
     steps = tuple(_release_step(token) for token in reversed(ledger.held))
     if not steps:
         return 0
