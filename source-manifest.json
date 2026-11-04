@@ -174,13 +174,13 @@
     },
     {
       "path": "docs/BROWSER_PROFILES.md",
-      "bytes": 3626,
-      "sha256": "6449a7d9e95a544edecabbce9dcab2813cb9c4f4117245bf459955ff1641eaf7"
+      "bytes": 4105,
+      "sha256": "bac5c5d80b3dfeab7b292a6502011a2a389140ee920db6bb6ceb7ad2aa398cf0"
     },
     {
       "path": "docs/BROWSER_PROFILES.zh-CN.md",
-      "bytes": 3281,
-      "sha256": "3f3be5a8394dc1db2b483490aef4618832edd69473e44f98393b99470a0ab20a"
+      "bytes": 3746,
+      "sha256": "4dbd1dc4a722a3c4e50967c62c1afd6ed04a62b936a3d8e30b111849a8da7998"
     },
     {
       "path": "docs/CLAUDE_CODE.md",
@@ -194,13 +194,23 @@
     },
     {
       "path": "docs/INSTALL.md",
-      "bytes": 10311,
-      "sha256": "971c131217e7a037bbd8fa06545691d51d22133642a7d0bef9f56c854c7aa859"
+      "bytes": 14040,
+      "sha256": "263417e65bb6184ae59c87aedbcbab4bf2f5c27d477a10427a9ab8e453317365"
     },
     {
       "path": "docs/INSTALL.zh-CN.md",
-      "bytes": 9361,
-      "sha256": "aa807808aebeb56ac9c0e5d69181ed68b921fd6b916fbe1695e90bb9d33b5cea"
+      "bytes": 13599,
+      "sha256": "7543a15002f3628b1d61340161a2e3e815f80123b48a6c9701373edd714548a0"
+    },
+    {
+      "path": "docs/INSTALL_WITH_CODEX.md",
+      "bytes": 2989,
+      "sha256": "5fce1b7970fbf42e3132a9082da200f09cf6511aefe1adb95f5571f73d3c7c6b"
+    },
+    {
+      "path": "docs/INSTALL_WITH_CODEX.zh-CN.md",
+      "bytes": 3069,
+      "sha256": "102e238f6c601b467746126b19a458b8f43964c5c7ed3c2d3eecf02ac39cbf9a"
     },
     {
       "path": "docs/LOCAL_CLIENTS.md",
@@ -214,13 +224,13 @@
     },
     {
       "path": "docs/PERMISSIONS.md",
-      "bytes": 7418,
-      "sha256": "a33470132ab188959638a58461ac1921cea08fa9537ad5f6669257938beb711d"
+      "bytes": 7728,
+      "sha256": "99a2c94b9ae9905ae61a7a70d61bf5f81b9e90e9fc632018c2ebf2a95eb1c831"
     },
     {
       "path": "docs/PERMISSIONS.zh-CN.md",
-      "bytes": 6946,
-      "sha256": "6cbfee524ab25297f9ae5d224b14abb209a6c4cf7379257893c17469ab5608b5"
+      "bytes": 7332,
+      "sha256": "671dfa97a70782f7ff0183f932af1ea039375140ee94c645d0d30bf0ab4f69d3"
     },
     {
       "path": "docs/RELEASE_NOTES.md",
@@ -239,23 +249,23 @@
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
-      "bytes": 6038,
-      "sha256": "cfb88b0a6cb94ba2a51742f567f9737590e1f458cfda01e76d73eaf0eec47fbc"
+      "bytes": 6963,
+      "sha256": "2673b45bbf0823489a097e38b3feccefd13167e6a058cdfd9756b8ff64323b5a"
     },
     {
       "path": "docs/TROUBLESHOOTING.zh-CN.md",
-      "bytes": 5264,
-      "sha256": "17aee9da4b7ce9540ed8bc3c50752309fb430105c82cca938fe0a284f4fda671"
+      "bytes": 6230,
+      "sha256": "a2d438f1f1941a51d3b9d065196e90fca2e9ef1845d96dc90586ed8eb7394424"
     },
     {
       "path": "docs/USAGE.md",
-      "bytes": 5478,
-      "sha256": "20fef8b3139989ace2e5e333b876df1c0ae769615652dc5ba2ba94905870580b"
+      "bytes": 8619,
+      "sha256": "ba67b527ea85779d368c3a32f67c0e7f1f61cfe3f98576947bdd581489184515"
     },
     {
       "path": "docs/USAGE.zh-CN.md",
-      "bytes": 4845,
-      "sha256": "7652382fe9822940b45b5db84e154ebd73b2857f0f5e4e38f1453560c5bc4f10"
+      "bytes": 7935,
+      "sha256": "b41ac67d0f26fd6568f33c55c20f25c7963b3e091cd7537421afad54e2e34013"
     },
     {
       "path": "docs/VALIDATION.md",
@@ -2584,13 +2594,13 @@
     },
     {
       "path": "README.md",
-      "bytes": 6201,
-      "sha256": "c1af8da70c2248e46b26ffff64716f54bece5d0008cba296df8362ec56c284f0"
+      "bytes": 6641,
+      "sha256": "7b428cf02a6a9d055f242d166c319e93d389187c6ed211cffe1a771192ae254b"
     },
     {
       "path": "README.zh-CN.md",
-      "bytes": 6256,
-      "sha256": "b2d41c7911599be51b0439865dede2a7f6eea1379dbc4486c26012d909607238"
+      "bytes": 6663,
+      "sha256": "fc66a39aaa4a7f3312f0c0b7d13ef7e0305e06845bae505f8c088afb37b9b65d"
     },
     {
       "path": "requirements-web.lock",

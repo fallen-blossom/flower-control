@@ -12,12 +12,15 @@ You need:
 
 - Windows 11 x64 with a normal local ASCII path for the source.
 - The current [Codex desktop app](https://developers.openai.com/codex/) and the `codex` CLI.
+- Git for the clone route below. For guided setup, see [Install with Codex](INSTALL_WITH_CODEX.md).
 - [CPython 3.14 x64](https://www.python.org/downloads/windows/).
 - [.NET 10 SDK x64](https://dotnet.microsoft.com/download/dotnet/10.0).
 - [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the x64 desktop C++ workload.
 - A Windows account that can approve its own UAC prompt. Do not install with a different administrator account and assume the helper is bound to your daily account.
 
 Do not place the source on a network drive, in a junction, or in a path containing Chinese characters. Native builds currently require ASCII source, compiler, and output paths.
+
+Run these commands sequentially in **one ordinary PowerShell window**, preserving the variables. Only the generated installer elevates through UAC.
 
 Open PowerShell in the directory that will contain the source. Disable .NET SDK telemetry for this shell:
 
@@ -39,10 +42,12 @@ With Git:
 ```powershell
 git clone https://github.com/fallen-blossom/flower-control.git
 Set-Location .\flower-control
-git checkout v0.1.0-preview.3
+git log -1 --oneline
 ```
 
-With the release ZIP, verify `SHA256SUMS.txt` first, extract the archive, and open PowerShell in the extracted `flower-control` directory. Do not download a random binary from an issue or mirror.
+The default `main` branch contains the preview.3 source plus later tutorial corrections. The `v0.1.0-preview.3` tag is the original release snapshot; check it out only when reproducing that snapshot. Use this online installation guide for corrected instructions.
+
+With the [release ZIP](https://github.com/fallen-blossom/flower-control/releases/tag/v0.1.0-preview.3), run `Get-FileHash -Algorithm SHA256 .\flower-control-0.1.0-preview.3-source.zip` and verify `SHA256SUMS.txt` first, extract the archive, and open PowerShell in the extracted `flower-control` directory. Do not download a random binary from an issue or mirror.
 
 ## 3. Create the Python environment
 
@@ -67,6 +72,8 @@ Create a fresh output directory under the operating-system temp root and build t
 
 ```powershell
 $flowerBuild = Join-Path $env:TEMP ('flower-build-' + [guid]::NewGuid().ToString('N'))
+if ($flowerBuild -match '[^\x00-\x7f]') { throw 'TEMP path must contain ASCII characters; use an ASCII local account/build environment.' }
+New-Item -ItemType Directory -Path $flowerBuild | Out-Null
 & $flowerPython -B -m tools.build_daily_payloads native --output "$flowerBuild\native" --evidence "$flowerBuild\native-evidence.json"
 & $flowerPython -B -m tools.build_daily_payloads app --output "$flowerBuild\app" --evidence "$flowerBuild\app-evidence.json"
 ```
@@ -75,9 +82,13 @@ If Visual Studio is installed in a nonstandard location, add `--compiler-setup <
 
 Prepare the administrator-helper package in a stable local install directory. The native build output stays under the OS temp root, but the generated install package and its recovery scripts must survive a temp cleanup:
 
+Create the `$flowerBuild` parent first; builders create the `native` and `app` children themselves. Continue only after each command succeeds; keep build logs and evidence on failure. An ASCII source path does not fix a non-ASCII TEMP path.
+
 ```powershell
 $flowerPackage = Join-Path $env:LOCALAPPDATA ('FlowerControl\source-install\' + [guid]::NewGuid().ToString('N'))
+if ($flowerPackage -match '[^\x00-\x7f]') { throw 'Choose an accessible stable ASCII package path before continuing.' }
 & $flowerPython -B -m tools.prepare_high_broker_install `
+  --data-root "$env:LOCALAPPDATA\FlowerControl" `
   --native-bin "$flowerBuild\native" `
   --app-bin "$flowerBuild\app" `
   --native-build-evidence "$flowerBuild\native-evidence.json" `
@@ -86,6 +97,8 @@ $flowerPackage = Join-Path $env:LOCALAPPDATA ('FlowerControl\source-install\' + 
 ```
 
 Generate a recipient-local Codex marketplace. The output directory must be new:
+
+`--data-root` pins the user-data root, whose children include `state-v1`. Do not pass the `state-v1` child as the root. Ordinary roles 01/02 require this pinned root; an existing installation must retain its original root.
 
 ```powershell
 & $flowerPython -B -m tools.configure_local_plugin --package "$flowerPackage" --output .flower-local
@@ -133,6 +146,10 @@ Open Codex and review the Flower Hook definition before trusting it. In the Code
 
 ## 7. Verify in a new chat
 
+After starting the scheduled task, find the flower icon in the notification area, possibly under **^ Show hidden icons**. Right-click → **Settings / 设置**, choose **02 Ordinary control / 普通控制** with the actual tier buttons on the left, and wait for the saved tier to read 02. Tier changes apply immediately; list drafts use Ctrl+S. Moving from an ordinary role to 03/04 may request Windows UAC. Permission-page list-layer tabs only change the view.
+
+A fresh policy defaults to **03**, while existing installations retain their policy. Explicitly choose 02 for the first ordinary trial. No administrator launch rules, work authorization, or optional decision provider are needed. See [first use](USAGE.md#first-use-after-installation) for a complete trial and [tray troubleshooting](TROUBLESHOOTING.md#missing-tray-or-recovery) if the icon is absent.
+
 Open a new Codex chat. Ask for a read-only status check first:
 
 > Check the status of the Flower Web, App, and Computer channels. Show the registered tools, loaded source, on-disk source, and helper status. Do not operate a target yet.
@@ -142,7 +159,7 @@ For each channel, confirm:
 - `registered_tools` contains the expected `flower_*` tools.
 - `loaded_source` points to the checkout you installed.
 - `on_disk_source` matches the loaded source hash and version.
-- `high_broker` reports a connected helper with source admission and High control available when that channel needs it.
+- `high_broker` connection, source admission, and executor identity checks pass. **In tier 02, `high_control_available: false` is normal**; verify the ordinary executor. Check High availability only when actually using 03/04.
 - `effective_control` is not stopped or paused unexpectedly.
 
 Then run one harmless test:
@@ -153,38 +170,37 @@ A successful status probe does not prove every target or action. Test one tempor
 
 ## 8. Update an existing installation
 
-The first-install script is not an updater. Keep the old package and state, prepare a new package, then create a bound update plan:
+Stop the first-install route if Flower is already installed. This public snapshot lacks a complete live-update procedure: the retained-High-client path imports `tools.prepare_stopped_host_update`, absent from the archive, and the generated plugin's version-specific MCP paths also need regeneration and refresh after updating.
 
-```powershell
-$flowerUpdate = Join-Path $env:TEMP ('flower-update-' + [guid]::NewGuid().ToString('N'))
-& $flowerPython -B -m tools.prepare_work_authority_update `
-  --package "$flowerPackage" `
-  --output $flowerUpdate
-```
-
-Review the new output and `plan.json`. Launch the generated `Update.ps1` with the same explicit UAC method. A stale plan, a reused operation id, a running old helper, or a source/identity mismatch must be rejected rather than forced.
-
-Do not use the first-install `ApplyInstall.ps1` to replace an existing helper.
+Keep the old package, data root, and state. Report the old version and error in [Issues](https://github.com/fallen-blossom/flower-control/issues) for matching update steps. A normal idle helper should be drained by the updater; busy requests, identity changes, or Stop conflicts require resolution first. Do not overwrite an existing installation with `ApplyInstall.ps1`, delete state, or uninstall merely to bypass checks.
 
 ## 9. Disable or remove
 
-The generated `Disable.ps1` is in the same stable `$flowerPackage` directory recorded by `.flower-local\install-package-path.txt`; it is not copied into `%ProgramFiles%`. First read that saved path, then run the script through UAC:
+**This preview provides a disable script and a plugin-removal command, not a complete one-click uninstaller.** Tier 01 temporarily blocks dispatch; Disable disables the scheduled task and attempts a normal helper shutdown. It retains installed files, profiles, and action data. Removing the plugin does not replace disabling the helper.
+
+The generated `Disable.ps1` is in the stable `$flowerPackage` directory recorded by `.flower-local\install-package-path.txt`, not `%ProgramFiles%`. Using your normal Windows account, open a visible PowerShell with **Run as administrator**, change to the source root, and run this block. It displays the receipt and saves a new log:
 
 ```powershell
 $flowerPackage = Get-Content -LiteralPath .\.flower-local\install-package-path.txt
 if (-not (Test-Path -LiteralPath "$flowerPackage\Disable.ps1")) { throw 'Saved Flower package is unavailable; do not delete state to force disable.' }
 $flowerDisable = (Resolve-Path "$flowerPackage\Disable.ps1").Path
-$flowerStopper = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoProfile', '-File', ('"' + $flowerDisable + '"'))
-if ($flowerStopper.ExitCode -ne 0) { throw 'Flower helper disable did not complete.' }
+$flowerDisableLog = Join-Path $flowerPackage ('disable-result-' + [guid]::NewGuid().ToString('N') + '.json')
+& $flowerDisable | Tee-Object -FilePath $flowerDisableLog
 ```
 
-Keep the script output and require `instance_stopped: true`. If the helper state is unknown, the scheduled task can still be disabled, but do not claim the instance stopped. Then remove the plugin if desired:
+Require `task_state` to be `disabled` or `absent`. `instance_stopped: true` confirms only that instance's exit; exit code alone does not prove it stopped.
+
+**In ordinary roles 01/02, the current Disable script disables autostart but cannot stop the ordinary instance through the High management interface.** It can return `instance_stopped: false`. Use **Exit / 退出** in the tray, then ask Codex to verify the original helper's exact process identity has exited. Preserve unknown results as unknown. Exiting retains your applications and results. If another role also remains unconfirmed, use tray Exit and verify rather than force-killing or deleting state.
+
+After checking the disable result, return to **ordinary PowerShell** to remove the plugin:
 
 ```powershell
 codex plugin remove flower-control@flower-control-local
 ```
 
 This command removes only the Codex plugin. It does **not** disable the scheduled task, stop the administrator helper, remove files under `%ProgramFiles%\FlowerControl`, or delete browser and action data. Run `Disable.ps1` too when you intend to stop Flower. Delete retained data only after identifying the exact local paths and keeping anything you still need.
+
+For complete removal, finish these steps and keep their output, then have Codex inventory the exact installed version, task name, package path, and data directories. Decide which data to retain before removal. This guide supplies no recursive whole-root deletion command.
 
 ## What this preview does not claim
 

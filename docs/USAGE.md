@@ -32,7 +32,40 @@ Name the window or app and choose an accessible control when possible. Flower bi
 
 ### Computer
 
-Select one target window first. The screenshot and input are scoped to that window, not the entire desktop. The frame, elapsed time, and Stop button show that a bounded Computer cycle is active.
+Bind a target window for ordinary control; pointer and keyboard input stay scoped to it. The frame, elapsed time, and Stop button show an active Computer cycle. A separate masked desktop overview does not grant input access to other windows.
+
+## First use after installation
+
+Use ordinary windows and a public page first; administrator rules, work authorization, and optional decision providers are unnecessary.
+
+1. **You choose the tier:** find the flower icon under **^ Show hidden icons**, right-click → **Settings / 设置**, choose actual **02 Ordinary control** on the left, and wait for the saved tier to update. Tier changes are immediate; list drafts use Ctrl+S. A fresh policy defaults to 03; existing policies are retained.
+2. **You open a test document:** start Notepad and create a blank document, separate from important work.
+3. **In a new Codex chat, send:**
+
+> Check whether Flower's three channels are available for ordinary control. Do not modify content. List selectable Notepad windows so I can identify the blank document I just created, then bind it.
+
+4. **Identify the target in chat:** Codex lists candidates and binds a returned candidate ID. A separate generic picker need not appear. Identify your window by the listed title/process; you need not write tool arguments. The settings Ctrl+Alt+8 picker adds list rules and is a different operation.
+5. **Send the input task and inspect the result:**
+
+> In the bound blank Notepad, type “Flower test passed” and read it back. Do not save or close it. End this control session afterwards, preserving Notepad and the text.
+
+You should see the text and receive an actual readback result. A handoff prompt means Codex is waiting for you, not that the action completed.
+
+6. **Try a public page:**
+
+> Open https://example.com in a temporary Flower browser. Read the page title and main heading, then close only this temporary session. Preserve my other browser windows.
+
+The request expresses ordinary temporary-browser task consent; it requires no Luohua grant or guaranteed extra Flower confirmation card. Local tier, genuine chat origin, and Stop checks still apply. Handle logins and Windows UAC yourself.
+
+7. **Describe the target and result for later tasks.** Prefer App/Web structure where useful. For a Computer trial, open Calculator, ask Codex to list and bind it, click one visible digit, and read the result.
+
+## Finish and step away
+
+> This task is complete. Finish App and Computer control, release held input, and close the control indicators. Keep my applications, unsaved documents, and results. Clean only explicitly identified temporary browser sessions from this task and report whether cleanup completed.
+
+App and Computer each use `pause(mode='finish')`; Web finishes an explicit inventory of temporary sessions. These are separate boundaries. Finishing control does not save/close Notepad or exit the tray helper, which remains available for later tasks. Decide yourself whether to save or discard the test document. Closing a chat alone is not verified cleanup.
+
+Choose actual tier **01 Fully stopped** to block new dispatch while away, or use the tray pause to block only Computer. See [permissions](PERMISSIONS.md) for recovery and [profile revocation](BROWSER_PROFILES.md#revoke-personal-profile-access) for removing a personal grant.
 
 ## First requests to try
 

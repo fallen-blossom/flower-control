@@ -16,7 +16,15 @@ Check that the plugin is installed and enabled for the current host:
 codex plugin list
 ```
 
-The expected local identity is `flower-control@flower-control-local`. A count such as “16 configured plugins” is not the current thread's tools schema. The current thread must actually receive the Flower MCP tools and the relevant skill catalog.
+The expected local identity is `flower-control@flower-control-local`. A count such as “16 configured plugins” is not the current thread's tool list. The thread must receive the tools from all three Flower MCP channels. The local generator does not copy or register the repository Skill; a missing Skill alone is not an installation failure.
+
+## Missing tray or recovery
+
+1. Expand **^ Show hidden icons** in the notification area and find the flower icon.
+2. If absent, inspect the installer exit code and scheduled-task start from step 5. Ask Codex for read-only diagnosis; do not rerun the first-install script over it.
+3. In tier 01, open Settings and choose actual tier 02 on the left; wait for the saved tier to update.
+4. For Computer pause, choose **Continue Computer Use / 继续使用 Computer Use**, then request a fresh observation.
+5. For all-writes Stop, use **Resume all writes / 继续全部写入** only when offered. If protection is unrecoverable or no recovery row exists, stay stopped and [report](https://github.com/fallen-blossom/flower-control/issues) the version, error code, and nonprivate status. This preview has no universal one-click repair.
 
 If the plugin is installed but a new chat has no Flower tools:
 

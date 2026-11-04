@@ -20,6 +20,8 @@ Codex plans the task. Flower handles local target binding, permission checks, in
 2. [Permissions and settings](docs/PERMISSIONS.md): the four tiers are **01 fully stopped**, **02 ordinary control**, **03 administrator windows**, and **04 administrator execution**.
 3. [Usage](docs/USAGE.md): Web, App, Computer, target selection, pause, Stop, and common recovery paths.
 
+**Setting up another PC?** Use [the clone commands and Codex installation prompt](docs/INSTALL_WITH_CODEX.md). Already installed? Follow [first use](docs/USAGE.md#first-use-after-installation): choose 02, try a blank Notepad document and public page, then finish control.
+
 This is a **source preview**. The repository contains source and a reproducible local build; it does not contain a signed executable and does not auto-update. A GitHub Release is a version page with source archives and checksums, not an installer and not a portable helper.
 
 ## What is included
@@ -43,13 +45,11 @@ Permissions are local settings. The chat agent cannot write the protected permis
 
 ## First trial
 
-After installation and Hook trust, open a new Codex chat and start with a harmless target:
+After installation and Hook trust, choose actual tier **02 Ordinary control** in tray Settings and wait for the saved tier to update. Tier changes apply immediately; ordinary list drafts use Ctrl+S. Open a new Codex chat and a blank Notepad document, then send:
 
-> Check the Web, App, and Computer status and origin probes. Confirm that the loaded source and helper match the files on disk.
+> Check Flower's three channels. List Notepad windows so I can identify my new blank document, bind it, type “Flower test passed”, and read it back. Do not save or close it. Finish control afterwards, preserving the text.
 
-> Use Flower App on the Notepad window I select, append one line, and read it back without saving to a new path.
-
-> Open a public page in a temporary Flower browser, read its title, then close the temporary session.
+> Open https://example.com in a temporary Flower browser, read its title, then close only that temporary session.
 
 Use a test window or a public page first. Do not give the agent passwords, verification codes, payment information, or private browser profiles.
 

@@ -40,7 +40,11 @@ The grant applies to the current chat and that browser profile, including the ch
 
 For the first personal login, use `flower_web_begin_luohua_login` and `flower_web_finish_luohua_login`. Log in yourself and close the window normally. The current flow does not add a Flower authorization card, Windows Hello, or PIN prompt.
 
-## Logged-in everyday browser
+## Revoke personal-profile access
+
+In the original chat, say: “Revoke this chat's Brave Luohua grant and report its status. Preserve other chats' browsers.” Codex uses `flower_web_request_luohua_access(decision='revoke', browser='brave')` and reads back the status. Revoke Chrome/Edge separately. Revocation stops related chat work but does not itself prove every in-flight input was released; request actual cleanup results. Ordinary resume does not restore a revoked grant.
+
+## Everyday browser windows
 
 App or Computer can work with a browser window you explicitly select, using that window's existing UI and login. This does not turn the ordinary browser into a Flower Web profile. Web does not silently attach to it.
 

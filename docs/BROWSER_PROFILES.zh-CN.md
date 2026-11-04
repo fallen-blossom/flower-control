@@ -40,7 +40,11 @@ Flower 会调用 `flower_web_begin_ai_login`，打开一个人工登录窗口，
 
 首次登录用 `flower_web_begin_luohua_login` 和 `flower_web_finish_luohua_login`。先自己登录，再正常关闭窗口。现行流程不弹 Flower 授权卡，也不要求 Windows Hello 或 PIN。
 
-## 日常浏览器已经登录时
+## 撤销个人资料授权
+
+在原聊天说：“撤销本聊天对 Brave 落花资料的授权，报告状态；不关闭其他聊天的浏览器。”Codex 使用 `flower_web_request_luohua_access(decision='revoke', browser='brave')` 并读回状态；Chrome/Edge 同理，逐浏览器撤销。这会停止本聊天相关动作，但不表示所有在途输入都已确认释放，让 Codex 报告实际收尾结果。普通“继续”不会恢复被撤销的授权。
+
+## 日常浏览器窗口
 
 App 或 Computer 可以操作你明确选择的日常浏览器窗口，继续使用该窗口已有的界面和登录。这不会把日常浏览器变成 Flower Web 资料，Web 也不会悄悄接管它。
 
