@@ -209,13 +209,13 @@
     },
     {
       "path": "docs/PERMISSIONS.md",
-      "bytes": 7419,
-      "sha256": "315b5b6354083c62b7afc407566a84ea9be78a34bdb017e9975d925a6775a461"
+      "bytes": 7418,
+      "sha256": "a33470132ab188959638a58461ac1921cea08fa9537ad5f6669257938beb711d"
     },
     {
       "path": "docs/PERMISSIONS.zh-CN.md",
-      "bytes": 6947,
-      "sha256": "6467b800d54bd4a2dd58c20363457be54a7d2a9a4d4eee98e3113ca36c11ef50"
+      "bytes": 6946,
+      "sha256": "6cbfee524ab25297f9ae5d224b14abb209a6c4cf7379257893c17469ab5608b5"
     },
     {
       "path": "docs/RELEASE_NOTES.md",
@@ -234,23 +234,23 @@
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
-      "bytes": 6039,
-      "sha256": "5a2109f2fd8016e2c7d3a00245e5531682b5941c36a9dc28b46f5ef712817c09"
+      "bytes": 6038,
+      "sha256": "cfb88b0a6cb94ba2a51742f567f9737590e1f458cfda01e76d73eaf0eec47fbc"
     },
     {
       "path": "docs/TROUBLESHOOTING.zh-CN.md",
-      "bytes": 5265,
-      "sha256": "0a1b2097aae8ace272add65492fcdf2aa4b15cc1c741754c5755cb8422aa402c"
+      "bytes": 5264,
+      "sha256": "17aee9da4b7ce9540ed8bc3c50752309fb430105c82cca938fe0a284f4fda671"
     },
     {
       "path": "docs/USAGE.md",
-      "bytes": 5479,
-      "sha256": "01300e67ac614aab861316a09fcfd9c27964f80fd7860ea46d70282787db0269"
+      "bytes": 5478,
+      "sha256": "20fef8b3139989ace2e5e333b876df1c0ae769615652dc5ba2ba94905870580b"
     },
     {
       "path": "docs/USAGE.zh-CN.md",
-      "bytes": 4846,
-      "sha256": "8b9786e7ed42e2988d579b7fa94502513e358891e3e810e54d11515657daae85"
+      "bytes": 4845,
+      "sha256": "7652382fe9822940b45b5db84e154ebd73b2857f0f5e4e38f1453560c5bc4f10"
     },
     {
       "path": "docs/VALIDATION.md",

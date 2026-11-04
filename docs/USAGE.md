@@ -91,4 +91,3 @@ When something stops halfway, ask:
 > Report the current Flower status and the last target identity. Do not repeat the action. Tell me whether the result is confirmed, unknown, stopped, or blocked.
 
 Then decide whether to re-select the target, resume after a fresh observation, lower the permission tier, or leave Flower stopped. The safe default is to preserve the existing denial and Stop state.
-

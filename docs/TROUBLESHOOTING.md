@@ -96,4 +96,3 @@ Keep the failed output directory and `preparation.json` or update `plan.json`. D
 - upload a complete local environment dump.
 
 For an issue, include the release version, build step, exact error code, whether the helper was previously installed, the new-chat status output, and the smallest harmless reproduction.
-

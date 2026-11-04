@@ -97,4 +97,3 @@ The saved policy tier and the icon state are related but not identical. Always r
 - A successful helper connection is not proof that every target action is safe.
 - Password entry, cross-user elevation, UAC secure desktop clicks, and indefinite key holds are outside this preview’s promise.
 - Administrator work-source failures remain fail-closed. Do not fabricate, replay, or consume a pending administrator message to make a status look healthy.
-
